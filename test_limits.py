@@ -492,7 +492,14 @@ class Surfaces(unittest.TestCase):
         for secret in ('s1', 'PRIVATE', '/work/app', 't1', 't2'):
             self.assertNotIn(f'"{secret}"', blob)
         self.assertNotIn('PRIVATE', json.dumps(payload))
-        self.assertEqual(set(payload['limit_hits'][0]), {'harness', 'at', 'reached', 'window_minutes', 'resets_at', 'retries', 'prompt', 'label', 'window'})
+        self.assertEqual(set(payload['limit_hits'][0]), {'harness', 'at', 'local_date', 'reached', 'window_minutes', 'resets_at', 'retries', 'prompt', 'label', 'window'})
+
+    def test_private_report_gives_each_hit_its_filter_scope_and_the_shared_report_none(self):
+        shared, private = self.build(redact=True), self.build(redact=False)
+        self.assertNotIn('scope', shared['limit_hits'][0])
+        scope = private['limit_hits'][0]['scope']
+        self.assertEqual(set(scope), {'project_id', 'session', 'provider', 'model', 'effort', 'agent'})
+        self.assertTrue(scope['session'].startswith('claude:'))
 
     def test_insights_fact(self):
         result = insights.cost_facts(self.records, TABLE, hits=self.hits)

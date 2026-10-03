@@ -217,8 +217,14 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                 found[shown[tuple(k)]] = info
         if found:
             report['prompt_resume'] = found
+    def hit_scope(hit):
+        # private reports only: the hit's own origin row, in the same encoding as the rows' filter values (so the page can match its filters without the hit's turn)
+        scope = hit.get('scope') or {}
+        session = scope.get('session')
+        return dict(project_id=alias('Projekt', scope.get('project_id')), session=None if session in (None, '', 'unknown') else f"{hit['harness']}:{session}",
+                    provider=scope.get('provider'), model=scope.get('model'), effort=scope.get('effort'), agent=scope.get('agent'))
     if limit_hits:
-        report['limit_hits'] = [_hit_payload(h, shown, metadata, prompt_texts, redact) for h in limit_hits]
+        report['limit_hits'] = [_hit_payload(h, shown, metadata, prompt_texts, redact, zone, None if redact else hit_scope) for h in limit_hits]
     if snapshots or getattr(snapshots, 'events', ()):
         report.update(_quota_payload(shares or {}, quota_share.windows(snapshots, last=4, records=whole, cost_of=cost_of, hits=limit_hits if all_hits is None else all_hits), shown, metadata, lambda name: alias('limit', name) if redact else name))  # a limit id is pseudonymized whatever it looks like
     if demo:
@@ -249,10 +255,10 @@ def _quota_payload(shares, windows, shown, metadata, account):
     return out
 
 
-def _hit_payload(hit, shown, metadata, texts=None, redact=True):
+def _hit_payload(hit, shown, metadata, texts=None, redact=True, zone=None, scope_of=None):
     """A limit hit for the page: turns are prompt ordinals (as the rows carry them), never session ids or turn ids; ordinal None = not in this report.
     `label` is what names a turn that has no card: its time and agent, plus (private reports only) a stored prompt preview if there is one.
-    A shared report names only the allowlisted limit types; any other type is "other"."""
+    A shared report names only the allowlisted limit types; any other type is "other". `local_date` is the hit's date in the report's timezone (as the rows' dates are), so the page needs no timezone database of its own. `scope` (private reports only, `scope_of`) is the hit's own origin row metadata as the rows' filter values, for matching the page's project, session, provider, model, effort and agent filters."""
     window = hit.get('window')
     ordinal = lambda turn: shown.get(tuple(turn)) if turn else None
     def label(turn, at):
@@ -260,13 +266,17 @@ def _hit_payload(hit, shown, metadata, texts=None, redact=True):
             return None
         text = None if redact else (texts or {}).get(tuple(turn))
         return dict(at=at, harness=metadata('harness', turn[0], hit), text=text[:200] if isinstance(text, str) and text else None)
-    return dict(harness=metadata('harness', hit['harness'], hit), at=hit['at'], reached=limits.public_reached(hit['reached']) if redact else hit['reached'],
+    local = datetime.fromisoformat(hit['at']).astimezone(zone).date().isoformat() if zone else hit['at'][:10]
+    payload = dict(harness=metadata('harness', hit['harness'], hit), at=hit['at'], local_date=local, reached=limits.public_reached(hit['reached']) if redact else hit['reached'],
                 window_minutes=hit['window_minutes'], resets_at=hit['resets_at'], retries=hit['retries'], prompt=ordinal(hit['turn']),
                 label=label(hit['turn'], hit['at']),
                 window=window and dict(start=window['start'], end=window['end'], requests=window['requests'], unpriced_requests=window['unpriced_requests'],
                                        cost=window['cost'], lower_bound=window['lower_bound'],
                                        top=[dict(prompt=ordinal(t['turn']), label=label(t['turn'], t['first_ts']), requests=t['requests'], cost=t['cost'], share=t['share'], lower_bound=t['lower_bound'])
                                             for t in window['top']]))
+    if scope_of:
+        payload['scope'] = scope_of(hit)
+    return payload
 
 
 STATE_META = re.compile(rb'<meta name="tokenatlas-state" content="([0-9a-f]{32})\.([0-9a-f]{32})">')
