@@ -743,10 +743,10 @@ def value(share):
 
 
 def _percent(label, v):
-    if label not in ('observed', 'estimate') or v is None:
+    if label not in ('observed', 'estimate', 'calibrated') or v is None:
         return 'n/a'
     whole = int(v + 0.5)
-    return '< 1%' if whole < 1 else f"{'≈' if label == 'estimate' else '~'}{whole}%"
+    return '< 1%' if whole < 1 else f"{'~' if label == 'observed' else '≈'}{whole}%"
 
 
 def percent_text(share):
@@ -758,8 +758,15 @@ def line(item, harness):
     """For `top`, from the `quota_share` JSON of a turn (as_json): '~3% of weekly Codex limit', '≈2% of weekly Codex limit (estimate)',
     '< 1% of ...', or 'share of ...: n/a'."""
     name = f"{window_name(item['window_minutes'])} {harness.capitalize()} limit"
-    if item['label'] not in ('observed', 'estimate') or item['delta_percent'] is None:
+    if item['label'] not in ('observed', 'estimate', 'calibrated') or item['delta_percent'] is None:
         return f'share of {name}: n/a'
+    if item['label'] == 'calibrated':  # from the user's own calibration (budget.py), never an observation
+        note = f"your calibration, {item['calibration']['date']}"
+        v = item.get('exact_percent', item['delta_percent'])  # full precision until flooring or rounding
+        if item.get('lower_bound'):  # unpriced, incomplete or ambiguous requests are left out: only a floor, and never '< 1%'
+            floor = int(v)
+            return f"≥{floor}% of your {name} ({note})" if floor >= 1 else f"share of your {name}: unknown (some requests are unpriced, incomplete or ambiguous; {note})"
+        return f"{_percent('calibrated', v)} of your {name} ({note})"
     return f"{_percent(item['label'], item['delta_percent'])} of {name}" + (' (estimate)' if item['label'] == 'estimate' else '')
 
 

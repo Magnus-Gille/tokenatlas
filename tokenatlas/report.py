@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from tokenatlas import __version__
-from tokenatlas import credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share
+from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
 
@@ -100,7 +100,7 @@ def report_state(revision, machine, spec, coverage, token=None, texts_hash=None,
 
 
 def build_report(records, source_status, timezone_name='Europe/Stockholm', redact=True, prompt_texts=None, table=None, lang='auto',
-                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None):
+                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None):
     """prompt_texts ({(harness, session, turn_id): text or None} from prompt_store) and prompt_context ({key: turn_context dict}) are for
     prompt_inputs ({key: input count or None}) are for private reports only (any of them with redact=True raises);
     credit_table is the ChatGPT credit rate card behind `credit_classes` and the credits fact (None = packaged credits.json); table is the price table behind the `price_classes` unit prices (None = packaged prices). `insights` holds the cost facts (insights.py) for the
@@ -227,6 +227,8 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         report['limit_hits'] = [_hit_payload(h, shown, metadata, prompt_texts, redact, zone, None if redact else hit_scope) for h in limit_hits]
     if snapshots or getattr(snapshots, 'events', ()):
         report.update(_quota_payload(shares or {}, quota_share.windows(snapshots, last=4, records=whole, cost_of=cost_of, hits=limit_hits if all_hits is None else all_hits), shown, metadata, lambda name: alias('limit', name) if redact else name))  # a limit id is pseudonymized whatever it looks like
+    if budgets and not redact:  # a shared report has no calibrated share: with the turn costs it would give the budget (the plan size) away
+        report.update(_calibration_payload(budgets, whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
     if demo:
         report['demo'] = True
     if prompt_inputs is not None:
@@ -252,6 +254,28 @@ def _quota_payload(shares, windows, shown, metadata, account):
         out['quota_windows'] = [dict(harness=metadata('harness', w['harness'], w), account=None if w['account'] == w['harness'] else account(w['account']), minutes=w['minutes'], resets_at=w['resets_at'], start=w['start'],
                                      peak_percent=w['peak_percent'], peak_at=w['peak_at'], hit=w['hit'], snapshots=w['snapshots'],
                                      cost=w.get('cost'), unpriced_requests=w.get('unpriced_requests'), uncertain_requests=w.get('uncertain_requests', 0), lower_bound=w.get('lower_bound', False)) for w in windows]
+    return out
+
+
+def _calibration_payload(budgets, whole, assigned, cost_of, found, shown, table):
+    """The user's quota calibration (budget.py): `quota_shares` entries labeled 'calibrated' for the cards that have no observed or estimated
+    share (list price of the turn over the derived budget, the weekly one first), and `quota_calibration`, the note with the derived budgets.
+    Private reports only (build_report): percentages next to turn costs would reveal the plan size."""
+    derived = {(b['harness'], b['minutes'], b.get('plan')): b for b in budgets}
+    costs = budget.turn_costs(whole, assigned, cost_of, table)  # the whole turn's identified cost, as `top` computes it
+    out = {}
+    shares = dict(found)
+    for key, ordinal in shown.items():
+        if ordinal in shares and shares[ordinal]['label'] in ('observed', 'estimate'):
+            continue
+        item = budget.share(derived, key[0], *costs[key]) if key in costs else None
+        if item:
+            shares[ordinal] = dict(harness=key[0], minutes=item['window_minutes'], label='calibrated', percent=item['exact_percent'], shared_with=None,
+                                   date=item['calibration']['date'], lower_bound=item['lower_bound'])
+    if shares:
+        out['quota_shares'] = shares
+    out['quota_calibration'] = [dict(harness=b['harness'], minutes=b['minutes'], plan=b.get('plan'), source=b['source'], budget_usd=round(b['budget_usd'], 2), readings=b['readings'],
+                                     spread=b['spread'] and [round(v, 2) for v in b['spread']], date=b['date']) for b in budgets]
     return out
 
 

@@ -325,6 +325,37 @@ only while a Claude Code UI session is open and its statusline refreshes (v2.1.8
 claude.ai chat are not recorded; the percentage is account-wide, so use on other devices moves it too. `tokenatlas doctor` (`claude_quota`) shows
 whether the statusline command is configured with `--record-quota`, whether the file exists, the number of snapshots and the age of the last one.
 
+**Your own calibration (Claude and Codex).** Claude exposes no percentage in its logs, so tokenatlas cannot observe a Claude turn's
+share. You can give it your plan's size instead. Read the used percentage of a window in `/usage` (Claude Code) or the Codex
+limits display, then:
+
+```bash
+tokenatlas quota calibrate --harness claude --window 7d --used 52% --resets "2026-10-09 21:00"
+tokenatlas quota set --harness claude --window 7d --budget-usd 900   # or a size you know yourself
+tokenatlas quota show                                                # the derived budget, its spread and the readings
+tokenatlas quota forget --harness claude                             # delete
+```
+
+A reading stores the used percentage with the list price tokenatlas saw for that harness's own provider (Anthropic, OpenAI) in the
+window. **Claude:** with `--resets` the window is reset minus the window length, up to the time you read it; without it, the trailing
+5 hours or 7 days, marked approximate. **Codex:** always the trailing window (Codex windows roll), and `--resets` is only
+recorded. Repeating a reading with the same harness, window and time replaces it. A reading remembers the price table it was
+priced with; when `top` or the report use another table (`top --prices`), the readings' costs and so the budget are recomputed
+from the history with the selected table, so a relative price change can move all calibrated shares: a doubled price on one model
+changes both the turns' costs and the calibration's denominator, so the other models' turns move too. **Codex plans:** readings and budgets are kept per plan (`--plan pro`, from the quota snapshot
+on the observations; default the plan seen in the window or on the latest Codex observation, an error when several plans were
+active in the window). Only requests on that plan count toward the cost seen and receive a calibrated share; a request without
+a quota snapshot has an unknown plan, is left out and makes a turn's share a floor. `quota set` without `--plan` fits any plan
+that has none of its own. Several accounts of one plan cannot be told apart by plan, so `quota calibrate` refuses a window in which more than one account's counter was detected (use `quota set --budget-usd` instead), and turns on such a plan get no calibrated share. Claude carries no plan information, so Claude readings are per harness. The budget is
+the median of cost seen / used over your readings, shown with the min-max spread and the reading count; readings older than 8
+windows are ignored (`--keep N`). A manual budget wins. Turns with no observed or estimated share then show
+"≈ 4% of your weekly Claude limit (your calibration, 2026-10-03)" in `top` and `top --json` (`quota_share.label` is
+`calibrated`, with a `calibration` object), on the report's turn cards, and the report lists the derived budgets under "Your
+calibration" (not in a shared report, where the budget is your plan size). Readings are kept in `quota-budget.json` next to the
+history (0600); nothing leaves the machine. Caveats: list price is a proxy and a weekly window's list price per percent varies 2-3x
+between weeks, so treat the figure as rough and take a few readings; a calibration made on one model mix drifts when the mix
+changes; and usage tokenatlas does not see (claude.ai chat, other machines, cloud tasks) is in the percentage you read but not in the cost seen, so the budget comes out too small and turn shares too large. A turn with unpriced, incomplete or ambiguous requests shows a floor ("≥ 3%"), or "unknown" when the floor is under 1%. Shared reports carry no calibrated shares (with the turn costs they would reveal the budget).
+
 ## Fixed context overhead
 
 `tokenatlas overhead --refresh` reports the floor tokens of a session's first request, the sizes of
