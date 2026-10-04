@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-10-04
+
 ### Changed
 
 - Claude: `tokenatlas statusline` now records quota snapshots by default (#117, #92). If your Claude Code statusline runs `tokenatlas statusline`, recording starts with its next run after you upgrade. Each snapshot is a timestamp, the session id and the 5-hour and weekly percentages and reset times that Claude Code already shows in its statusline, appended to `claude-quota.jsonl` (0600) next to the history database; it stays local and nothing is sent. Turn it off with `--no-record-quota` on the statusline command or `TOKENATLAS_NO_QUOTA=1`; to remove what was recorded, turn recording off first, then delete `claude-quota.jsonl` and `claude-quota.last` (and `claude-quota.lock` if present) next to the history database. `--record-quota` is still accepted and does nothing; `statusline --setup` prints the command without a flag and documents the opt-out. `doctor` now reports recording as active when the statusline is tokenatlas's and not opted out, and warns when the statusline is not tokenatlas's (no snapshots possible) or recording is disabled. The #92 guarantees are unchanged: 0600, no symlinks, a non-blocking lock, and a failure never affects the status line.
