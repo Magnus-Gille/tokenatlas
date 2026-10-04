@@ -244,25 +244,68 @@ class ReportReviewTests(unittest.TestCase):
         self.assertNotIn('inference-gille', private)
         self.assertIn('inference-gille', json.dumps(decode_html(private)))
 
-    def test_redacted_models_use_public_family_allowlist(self):
-        visible = ('claude-opus-5-5', 'claude-haiku-4-5-20251001', 'gpt-5.6-luna', 'gpt-6-astra',
-                   'codex-auto-review', 'gpt-5.3-codex-spark', 'openai/gpt-oss-120b',
-                   'qwen/qwen3-coder', 'zai-org/GLM-4.7', 'mistralai/codestral-22b',
-                   'qwen/qwen3-coder:free', 'codestral-latest')
-        hidden = ('ft:gpt-4o-2024-08-06:acme-corp::abc123', 'magnus-macbook', 'stealth/ox-alpha',
-                  'gpt-4o:ft-acme',
-                  'big-pickle', '<synthetic>')
-        rows = [observation(f'v{i}', provider='openai', model=m) for i, m in enumerate(visible)]
-        rows += [observation(f'h{i}', provider='openai', model=m) for i, m in enumerate(hidden)]
-        rows += [observation('n1', provider='m5', model='claude-opus-5-5'),
-                 observation('n2', provider='inference-gille', model='gpt-5.6-luna')]
+    def test_redacted_models_show_only_exact_packaged_public_identifiers(self):  # #133
+        visible = (('anthropic', 'claude-opus-5-5'), ('anthropic', 'claude-haiku-4-5-20251001'), ('openai', 'gpt-5.6-luna'),
+                   ('openai', 'gpt-6-astra'), ('openai-codex', 'gpt-5.5'), ('openrouter', 'qwen/qwen3-coder'),
+                   ('openrouter', 'openai/gpt-oss-120b'), ('openrouter', 'z-ai/glm-5.3'))
+        hidden = ('ft:gpt-4o-2024-08-06:acme-corp::abc123', 'magnus-macbook', 'stealth/ox-alpha', 'big-pickle', '<synthetic>',
+                  'claude-opus-5-5-acme-internal', 'gpt-5.5:ft-acme', 'Claude-Opus-5-5')
+        rows = [observation(f'v{i}', provider=p, model=m) for i, (p, m) in enumerate(visible)]
+        rows += [observation(f'w{i}', provider='openai', model=m) for i, m in enumerate(hidden)]
+        rows += [observation('x1', provider='m5', model='claude-opus-5-5'),
+                 observation('x2', provider='inference-gille', model='gpt-5.6-luna'),
+                 observation('x3', provider='anthropic', model='gpt-5.6-luna')]  # a public name under the wrong provider is not verified
         shown = [r['model'] for r in expand(build_report(rows, {}))]
-        self.assertTrue(set(visible) <= set(shown))
+        self.assertEqual(shown[:len(visible)], [m for _, m in visible])
         encoded = json.dumps(shown)
         for model in hidden + ('m5', 'inference-gille'):
             self.assertNotIn(model, encoded)
-        self.assertEqual(sum(v in visible for v in shown), len(visible))
-        self.assertTrue(all(v.startswith('model ') for v in shown if v not in visible))
+        self.assertTrue(all(v.startswith('model ') for v in shown[len(visible):] if v != 'unknown'))
+        local = [r['model'] for r in expand(build_report(rows, {}, redact=False))]
+        self.assertEqual(local, [r['model'] for r in rows])
+
+    def test_private_suffix_under_every_family_is_in_no_shared_payload_or_page(self):  # #133
+        families = ('claude', 'gpt', 'o1', 'o3', 'codex', 'gemini', 'gemma', 'mistral', 'codestral', 'ministral', 'magistral', 'pixtral',
+                    'devstral', 'qwen', 'llama', 'deepseek', 'glm', 'kimi', 'grok')
+        orgs = ('openai', 'anthropic', 'google', 'qwen', 'z-ai', 'zai-org', 'mistralai', 'meta-llama', 'deepseek', 'moonshotai', 'x-ai')
+        providers = ('anthropic', 'openai', 'openai-codex', 'openrouter', 'opencode', 'berget', 'google', 'mistral')
+        marker = 'zq-acme-internal'
+        models = [f'{f}-5-{marker}' for f in families] + [f'{o}/{f}-{marker}' for o in orgs for f in ('gpt', 'qwen')] + [f'claude-opus-5-5-{marker}:free']
+        rows, n = [], 0
+        for provider in providers:
+            for model in models:
+                n += 1
+                rows.append(observation(f'p{n}', provider=provider, model=model, ts=f'2026-10-{1 + n % 20:02d}T10:{n % 60:02d}:00+00:00',
+                                        tokens=dict(fresh_input=1000, cache_read=10, cache_write=0, output=100, reasoning=0)))
+        rows.append(observation('pub', provider='anthropic', model='claude-opus-5-5'))
+        rows.append(observation('pubx', provider='openai', model='gpt-5.5'))
+        html = render_report(build_report(rows, {}, now=datetime.fromisoformat('2026-10-25T00:00:00+00:00')))
+        payload = json.dumps(decode_html(html))
+        for text in (payload, page_text(html)):
+            self.assertNotIn(marker, text)
+        self.assertIn('claude-opus-5-5', payload)
+        self.assertIn('gpt-5.5', payload)
+        private = json.dumps(decode_html(render_report(build_report(rows, {}, redact=False, now=datetime.fromisoformat('2026-10-25T00:00:00+00:00')))))
+        self.assertIn(marker, private)
+
+    def test_private_models_are_pseudonymized_in_insight_facts_and_energy_keys(self):  # #133
+        marker = 'zq-acme-internal'
+        big = dict(fresh_input=2_000_000, cache_read=0, cache_write=0, output=1_000_000, reasoning=0)
+        rows = [observation('a', provider='openai', harness='codex', model=f'gpt-5.5-{marker}', tokens=big),   # openai, not rated: credits "unrated"
+                observation('b', provider='openai', harness='codex', model='gpt-5.5', tokens=big),
+                observation('c', provider='anthropic', model=f'claude-opus-5-5-{marker}', tokens=big),
+                observation('d', provider='anthropic', model='claude-opus-5-5', tokens=big)]
+        report = build_report(rows, {}, now=datetime.fromisoformat('2026-10-25T00:00:00+00:00'))
+        text = json.dumps(report)
+        self.assertNotIn(marker, text)
+        facts = {f['id']: f for w in report['insights']['windows'] for f in w['facts']}
+        credits = facts['credits']['values']
+        codex_private = [r['model'] for r in expand(report) if r['harness'] == 'codex' and r['model'].startswith('model ')]
+        self.assertEqual([x['name'] for x in credits['unrated']], codex_private)  # the same pseudonym the rows carry
+        self.assertEqual([m['name'] for m in credits['models']], ['gpt-5.5'])
+        self.assertIn('claude-opus-5-5', json.dumps(facts['model_share']))
+        for key in report['energy']['multipliers'].values():
+            self.assertNotIn(marker, json.dumps(key))
 
 
 class PayloadV2Tests(unittest.TestCase):

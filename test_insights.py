@@ -578,15 +578,15 @@ class Report(unittest.TestCase):
 
     def test_shared_report_redacts_names_and_has_no_private_strings(self):
         table = copy.deepcopy(TABLE)
-        table['models'] += [entry('internal-secret-model', 1, 1, 10, provider='openrouter'), entry('internal-alt', 1, 1, 1, provider='openrouter')]
+        table['models'] += [entry('internal-secret-model', 1, 1, 10, provider='openrouter'), entry('internal-alt', 1, 1, 1, provider='openrouter'), entry('gpt-5.5', 1, 1, 10)]
         rows = [ob('a', model='internal-secret-model', provider='openrouter', out=M, session='private-session-id', turn='private-turn', project='/w/secretapp'),
-                ob('b', '2026-09-10T11:00:00+00:00', model='gpt-a', fresh=M, session='private-session-id', turn='private-turn')]
+                ob('b', '2026-09-10T11:00:00+00:00', model='gpt-5.5', fresh=M, session='private-session-id', turn='private-turn')]
         rep = build_report(rows, {}, redact=True, table=table, now=self.NOW)
         text = json.dumps(rep['insights'])
         for private in ('internal-secret-model', 'internal-alt', 'secretapp', 'private-session-id', 'private-turn', '/w/'):
             self.assertNotIn(private, text)
         names = [m['name'] for m in by_id(rep['insights']['windows'][1])['model_share']['values']['models']]
-        self.assertEqual(sorted(names), ['gpt-a', rep['columns']['dict']['model'][0]])
+        self.assertEqual(sorted(names), ['gpt-5.5', rep['columns']['dict']['model'][0]])  # only a packaged public identifier stays visible
         self.assertRegex(rep['columns']['dict']['model'][0], r'^model \d{3}$')
         local = build_report(rows, {}, redact=False, table=table, now=self.NOW)
         self.assertIn('internal-secret-model', json.dumps(local['insights']))
