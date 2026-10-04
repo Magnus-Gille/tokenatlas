@@ -742,8 +742,11 @@ def value(share):
     return share['estimate'] if share['label'] == 'estimate' else None
 
 
+AUTO_SOURCE_TEXT = {'limit_hit': 'limit hits', 'statusline': 'statusline readings', 'limit_hit+statusline': 'limit hits and statusline readings'}
+
+
 def _percent(label, v):
-    if label not in ('observed', 'estimate', 'calibrated') or v is None:
+    if label not in ('observed', 'estimate', 'calibrated', 'auto-calibrated') or v is None:
         return 'n/a'
     whole = int(v + 0.5)
     return '< 1%' if whole < 1 else f"{'~' if label == 'observed' else '≈'}{whole}%"
@@ -758,8 +761,15 @@ def line(item, harness):
     """For `top`, from the `quota_share` JSON of a turn (as_json): '~3% of weekly Codex limit', '≈2% of weekly Codex limit (estimate)',
     '< 1% of ...', or 'share of ...: n/a'."""
     name = f"{window_name(item['window_minutes'])} {harness.capitalize()} limit"
-    if item['label'] not in ('observed', 'estimate', 'calibrated') or item['delta_percent'] is None:
+    if item['label'] not in ('observed', 'estimate', 'calibrated', 'auto-calibrated') or item['delta_percent'] is None:
         return f'share of {name}: n/a'
+    if item['label'] == 'auto-calibrated':  # from budgets tokenatlas derived itself (budget.py, #116), never an observation
+        note = 'estimated from your ' + AUTO_SOURCE_TEXT.get(item['calibration']['source'], 'history')
+        v = item.get('exact_percent', item['delta_percent'])
+        if item.get('lower_bound'):
+            floor = int(v)
+            return f"≥{floor}% of the {name} ({note})" if floor >= 1 else f"share of the {name}: unknown (some requests are unpriced, incomplete or ambiguous; {note})"
+        return f"{_percent('calibrated', v)} of the {name} ({note})"
     if item['label'] == 'calibrated':  # from the user's own calibration (budget.py), never an observation
         note = f"your calibration, {item['calibration']['date']}"
         v = item.get('exact_percent', item['delta_percent'])  # full precision until flooring or rounding

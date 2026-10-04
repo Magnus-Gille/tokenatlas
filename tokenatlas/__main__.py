@@ -214,6 +214,15 @@ def _hits(history,records,events=None):
     return limits.limit_hits(records,history.limit_events() if events is None else events,pricing.load_prices())  # no shortcut: a full window with no reached type is a hit too
 
 
+def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=None):
+    """(automatic budgets, skipped counts) from the whole history: limit hits and Claude statusline readings (budget.auto_budgets, #116). Computed, never stored."""
+    from tokenatlas import budget, quota_share
+    records=history.records() if records is None else records
+    if hits is None:hits=_hits(history,records)
+    if snapshots is None:snapshots=quota_share.snapshots_from_records(records,claude=_claude_quota(db))
+    return budget.auto_budgets(records,hits,snapshots,table,*(() if keep is None else (keep,)))
+
+
 def _events(events):
     """Codex quota-only observations (zero-token, status 'event'): window readings that are no requests; they only add to a window's peak and hit."""
     return [e for e in events if (e.get('quota') or {}).get('status')=='event']
@@ -421,7 +430,12 @@ def main(argv=None):
             return _overhead.run(args)
         if args.command=='quota':
             from tokenatlas import budget,pricing
-            if args.quota!='calibrate':return budget.run(args,args.db,None,pricing.load_prices,print) or 0
+            if args.quota!='calibrate':
+                if args.quota=='show' and args.db.expanduser().is_file():
+                    with History(args.db) as history:  # the automatic budgets are computed from the history (#116)
+                        history.connection.execute('BEGIN')
+                        return budget.run(args,args.db,None,pricing.load_prices,print,lambda keep:_auto_budgets(history,args.db,pricing.load_prices(),keep=keep)) or 0
+                return budget.run(args,args.db,None,pricing.load_prices,print) or 0
             if not args.db.expanduser().is_file():raise ValueError('history database does not exist; run refresh first')
             with History(args.db) as history:
                 history.connection.execute('BEGIN')
@@ -510,10 +524,14 @@ def main(argv=None):
                 keep={prompts.ident(r) for r in history.records(start,end,args.harness,args.project)} if filtered else None
                 result=prompts.top_prompts(everything,table,args.limit,args.by,keep)
                 hits=limits.limit_hits(everything,history.limit_events(),table)  # windows come from the whole history; the CLI filters then pick the hits
+                all_hits=hits
                 if filtered:hits=limits.scope_hits(hits,history.records(start,end,args.harness,args.project),args.harness,start,end,args.project,universe=everything)
                 limits.mark_turns(result['prompts'],hits)
-                quota_share.mark_turns(result['prompts'],quota_share.compute(everything,table,only={(p['harness'],p['session'],p['turn_id']) for p in result['prompts']},claude=_claude_quota(args.db))[1])
+                snaps,shares=quota_share.compute(everything,table,only={(p['harness'],p['session'],p['turn_id']) for p in result['prompts']},claude=_claude_quota(args.db))
+                quota_share.mark_turns(result['prompts'],shares)
                 derived=budget.load_derived(budget.path_for(args.db),table=table,records_fn=lambda:everything)
+                if any((p.get('quota_share') or {}).get('label') not in ('observed','estimate') for p in result['prompts']):  # automatic budgets only matter for a turn without its own share (#116)
+                    derived=budget.combine(derived,_auto_budgets(history,args.db,table,everything,all_hits,snaps or None)[0])
                 if derived:  # only where there is no observed or estimated share; the turn's whole identified cost, whatever the filters keep
                     memo={};budget.mark_turns(result['prompts'],derived,budget.turn_costs(everything,prompts.assign_prompts(everything),insights.memo_cost(table,memo),table))
                 texts,ctx=prompt_store.visible_all(store,everything,table)  # only the global top k: never text or context outside it

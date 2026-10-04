@@ -685,5 +685,229 @@ class Report(unittest.TestCase):
         self.assertIn("s.lower_bound", page.split('<script', 1)[0] + page)
 
 
+RESETS = datetime(2026, 10, 8, 9, tzinfo=UTC)
+
+
+def hit(at, cost_window=(None, None), reached='five_hour', minutes=300, harness='claude', plan=None, resets=None, limit_id=None):
+    """A limit hit as limits.limit_hits shapes it (only the fields budget reads)."""
+    resets = resets or at + timedelta(hours=1)
+    start = resets - timedelta(minutes=minutes) if harness == 'claude' else at - timedelta(minutes=minutes)
+    return dict(harness=harness, at=at.isoformat(), reached=reached, window_minutes=minutes, resets_at=resets.isoformat(), rolling=harness != 'claude',
+                window=dict(start=start.isoformat(), end=at.isoformat()), origin=dict(plan_type=plan, limit_id=limit_id))
+
+
+def snap(t, used, minutes=10080, due=RESETS):
+    return dict(harness='claude', account='claude', t=t, used_percent=used, window=(minutes, due.isoformat()), key=('claude', 'claude', minutes, due.isoformat(), None, 0, 0))
+
+
+class Automatic(unittest.TestCase):
+    """Issue #116: budgets from limit hits and statusline readings already in the history; never stored."""
+    T = datetime(2026, 10, 3, 9, tzinfo=UTC)
+
+    def test_a_budget_from_one_limit_hit(self):
+        recs = [rec('a', self.T - timedelta(hours=2)), rec('b', self.T - timedelta(hours=1), out=2_000_000)]
+        auto, skipped = budget.auto_budgets(recs, [hit(self.T)], [], TABLE)
+        got = auto[('claude', 300, None)]
+        self.assertAlmostEqual(got['budget_usd'], cost_of(recs))  # 100% of the window is what the logs saw in it
+        self.assertEqual((got['source'], got['points'], got['spread'], skipped), ('limit_hit', 1, [got['budget_usd']] * 2, {}))
+        self.assertEqual((got['first_date'], got['date']), ('2026-10-03', '2026-10-03'))
+
+    def test_a_budget_from_several_limit_hits_is_the_median_of_the_last_windows(self):
+        recs, hits = [], []
+        for i, out in enumerate((1_000_000, 3_000_000, 2_000_000)):
+            t = self.T + timedelta(days=i)
+            recs.append(rec(f'r{i}', t - timedelta(hours=1), out=out))
+            hits.append(hit(t))
+        auto, _ = budget.auto_budgets(recs, hits, [], TABLE)
+        costs = sorted(cost_of([r]) for r in recs)
+        got = auto[('claude', 300, None)]
+        self.assertAlmostEqual(got['budget_usd'], costs[1])
+        self.assertEqual((got['points'], got['windows']), (3, 3))
+        self.assertEqual([round(v, 6) for v in got['spread']], [round(costs[0], 6), round(costs[2], 6)])
+        self.assertEqual(budget.auto_budgets(recs, hits, [], TABLE, keep=1)[0][('claude', 300, None)]['points'], 1)  # only the latest window
+
+    def test_a_budget_from_statusline_rises(self):
+        recs = [rec('a', self.T + timedelta(minutes=30), out=2_000_000)]
+        snaps = [snap(self.T, 10), snap(self.T + timedelta(minutes=60), 30)]
+        auto, _ = budget.auto_budgets(recs, [], snaps, TABLE)
+        got = auto[('claude', 10080, None)]
+        self.assertAlmostEqual(got['budget_usd'], cost_of(recs) / 0.2)
+        self.assertEqual((got['source'], got['points']), ('statusline', 1))
+
+    def test_small_movements_are_ignored_and_accumulate_to_the_threshold(self):
+        recs = [rec('a', self.T + timedelta(minutes=30), out=2_000_000), rec('b', self.T + timedelta(minutes=90), out=2_000_000)]
+        small = [snap(self.T, 10), snap(self.T + timedelta(minutes=60), 14), snap(self.T + timedelta(minutes=100), 9)]
+        self.assertEqual(budget.auto_budgets(recs, [], small, TABLE), ({}, {}))
+        # 10 -> 14 is ignored, but the anchor stays at 10, so 10 -> 16 is one point of 6 points over the cost since the anchor
+        more = [snap(self.T, 10), snap(self.T + timedelta(minutes=60), 14), snap(self.T + timedelta(minutes=100), 16)]
+        got = budget.auto_budgets(recs, [], more, TABLE)[0][('claude', 10080, None)]
+        self.assertAlmostEqual(got['budget_usd'], cost_of(recs) / 0.06)
+        self.assertEqual(got['points'], 1)
+
+    def test_a_window_with_little_cost_is_skipped_and_counted(self):
+        tiny = [rec('a', self.T + timedelta(minutes=30), out=1_000)]
+        auto, skipped = budget.auto_budgets(tiny, [hit(self.T + timedelta(hours=1))], [snap(self.T, 10), snap(self.T + timedelta(minutes=60), 40)], TABLE)
+        self.assertEqual((auto, skipped), ({}, {'little_cost': 2}))
+
+    def test_unpriced_and_ambiguous_requests(self):
+        t = self.T + timedelta(minutes=30)
+        unpriced = [rec('a', t, out=2_000_000), dict(rec('b', t), model='no-such-model')]
+        snaps = [snap(self.T, 10), snap(self.T + timedelta(minutes=60), 40)]
+        self.assertEqual(budget.auto_budgets(unpriced, [hit(self.T + timedelta(hours=1))], snaps, TABLE), ({}, {'unpriced': 2}))
+        ambiguous = [rec('a', t, out=2_000_000), dict(rec('b', t, out=50_000_000), id_synthetic=True)]  # an ambiguous request is in no cost
+        got = budget.auto_budgets(ambiguous, [], snaps, TABLE)[0][('claude', 10080, None)]
+        self.assertAlmostEqual(got['budget_usd'], cost_of(ambiguous[:1]) / 0.3)
+
+    def test_only_the_subscription_provider_counts(self):
+        t = self.T + timedelta(minutes=30)
+        other = [dict(rec('a', t, out=2_000_000), provider='openrouter')]
+        self.assertEqual(budget.auto_budgets(other, [hit(self.T + timedelta(hours=1))], [snap(self.T, 10), snap(self.T + timedelta(minutes=60), 40)], TABLE), ({}, {'little_cost': 2}))
+
+    def test_codex_window_full_hits_are_a_per_plan_fallback(self):
+        recs = [rec('a', self.T - timedelta(hours=1), harness='codex', plan='pro', out=2_000_000), rec('b', self.T - timedelta(hours=1), harness='codex', plan='team', out=9_000_000)]
+        auto, skipped = budget.auto_budgets(recs, [hit(self.T, reached='window_full', harness='codex', plan='pro')], [], TABLE)
+        self.assertEqual(list(auto), [('codex', 300, 'pro')])
+        self.assertAlmostEqual(auto[('codex', 300, 'pro')]['budget_usd'], cost_of(recs[:1]))
+        self.assertEqual(budget.auto_budgets(recs, [hit(self.T, reached='window_full', harness='codex')], [], TABLE), ({}, {'no_plan': 1}))
+
+    def test_two_accounts_counters_in_one_window_are_not_one_80_point_rise(self):
+        # two sessions report different counters (10% and 90%) of one window instance; the real snapshot processing splits them into two counters
+        base = datetime(2026, 10, 3, 9, tzinfo=UTC)
+        recs = [rec(f'x{i}', base + timedelta(minutes=i), out=2_000_000, session='sa' if i % 2 else 'sb') for i in range(8)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'claude-quota.jsonl'
+            rows = [dict(ts=(base + timedelta(minutes=i, seconds=30)).isoformat(), session='sa' if i % 2 else 'sb', seven_day=dict(used_percent=10 if i % 2 else 90, resets_at=RESETS.isoformat()))
+                    for i in range(8)]
+            path.write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
+            snaps = quota_share.snapshots_from_records(recs, claude=path)
+        self.assertEqual(len({s['key'][5] for s in snaps}), 2)
+        self.assertEqual(budget.auto_budgets(recs, [], snaps, TABLE), ({}, {'ambiguous': 1}))
+        # a limit hit in the same split window is not one inflated budget either (and a hit in another window still counts)
+        window_hit = hit(base + timedelta(minutes=8), minutes=10080, reached='seven_day', resets=RESETS)
+        self.assertEqual(budget.auto_budgets(recs, [window_hit], snaps, TABLE), ({}, {'ambiguous': 2}))
+        later = hit(base + timedelta(days=10), minutes=10080, reached='seven_day', resets=RESETS + timedelta(days=7))
+        got, skipped = budget.auto_budgets(recs + [rec('late', base + timedelta(days=9), out=2_000_000)], [later], snaps, TABLE)
+        self.assertEqual((list(got), skipped), ([('claude', 10080, None)], {'ambiguous': 1}))
+
+    def test_a_custom_codex_limit_never_feeds_or_receives_the_default_budget(self):
+        custom = lambda r: dict(r, quota=dict(r['quota'], limit_id='codex_bengalfox'))
+        t = self.T - timedelta(hours=1)
+        recs = [rec('d', t, harness='codex', out=2_000_000), custom(rec('c', t, harness='codex', out=9_000_000))]
+        hits = [hit(self.T, reached='window_full', harness='codex', plan='pro', limit_id='codex'), hit(self.T, reached='window_full', harness='codex', plan='pro', limit_id='codex_bengalfox')]
+        auto, skipped = budget.auto_budgets(recs, hits, [], TABLE)
+        self.assertEqual(skipped, {'other_limit': 1})
+        self.assertAlmostEqual(auto[('codex', 300, 'pro')]['budget_usd'], cost_of(recs[:1]))  # the custom limit's request is not in the default window
+        assigned = prompts.assign_prompts(recs)
+        costs = budget.turn_costs(recs, assigned, lambda r: prompts._cost(r, TABLE), TABLE)
+        self.assertEqual(costs[('codex', 's1', 'd')][2], 'pro')
+        self.assertEqual(costs[('codex', 's1', 'c')][2], budget.MIXED)  # no default-limit budget fits a turn on another limit
+        self.assertIsNone(budget.share(auto, 'codex', *costs[('codex', 's1', 'c')]))
+
+    def test_a_plan_less_custom_limit_request_makes_the_turn_mixed(self):
+        t = self.T
+        custom = dict(rec('c', t + timedelta(minutes=1), harness='codex', turn='t', out=9_000_000), quota={'limit_id': 'codex_bengalfox', 'plan_type': None, 'reached': None, 'windows': []})
+        recs = [rec('d', t, harness='codex', plan='pro', turn='t', out=2_000_000), custom]
+        costs = budget.turn_costs(recs, prompts.assign_prompts(recs), lambda r: prompts._cost(r, TABLE), TABLE)
+        self.assertEqual(costs[('codex', 's1', 't')][2], budget.MIXED)
+
+    def test_manual_budgets_and_readings_win(self):
+        auto = {('claude', 10080, None): dict(budget_usd=50.0, source='limit_hit', readings=1, points=1, windows=1, spread=[50.0, 50.0], first_date='2026-10-03', date='2026-10-03'),
+                ('claude', 300, None): dict(budget_usd=9.0, source='statusline', readings=1, points=1, windows=1, spread=[9.0, 9.0], first_date='2026-10-03', date='2026-10-03')}
+        manual = {('claude', 10080, None): dict(budget_usd=100.0, source='manual', readings=0, spread=None, date='2026-10-01')}
+        merged = budget.combine(manual, auto)
+        self.assertEqual(merged, manual)  # not even the automatic 5-hour one is mixed in
+        self.assertEqual(budget.share(merged, 'claude', 4.0)['label'], 'calibrated')
+        self.assertEqual(budget.combine({}, auto), auto)
+        self.assertEqual(budget.share(auto, 'claude', 5.0)['label'], 'auto-calibrated')
+
+    def test_an_auto_share_only_without_an_observed_or_estimated_share(self):
+        auto = {('claude', 10080, None): dict(budget_usd=100.0, source='limit_hit', readings=2, points=2, windows=2, spread=[80.0, 130.0], first_date='2026-09-20', date='2026-10-03')}
+        observed = dict(window_minutes=10080, delta_percent=3, label='observed', before=1, after=4, shared_with=0)
+        items = [dict(harness='claude', session='s', turn_id=t, quota_share=q) for t, q in (('a', None), ('b', observed), ('c', dict(observed, label='estimate')))]
+        costs = {('claude', 's', t): (4.0, False, None) for t in 'abc'}
+        budget.mark_turns(items, auto, costs)
+        self.assertEqual([i['quota_share']['label'] for i in items], ['auto-calibrated', 'observed', 'estimate'])
+        self.assertEqual(quota_share.line(items[0]['quota_share'], 'claude'), '≈4% of the weekly Claude limit (estimated from your limit hits)')
+        sl = dict(auto[('claude', 10080, None)], source='statusline')
+        self.assertEqual(quota_share.line(budget.share({('claude', 300, None): sl}, 'claude', 20.0), 'claude'), '≈20% of the 5-hour Claude limit (estimated from your statusline readings)')
+        lb = budget.share(auto, 'claude', 4.0, lower_bound=True)
+        self.assertEqual(quota_share.line(lb, 'claude'), '≥4% of the weekly Claude limit (estimated from your limit hits)')
+
+    def report(self, redact):
+        t = self.T
+        recs = [rec('a', t - timedelta(hours=2)), rec('b', t - timedelta(hours=1), out=2_000_000), rec('c', t + timedelta(days=1))]
+        return report.build_report(recs, {}, now=NOW, redact=redact, all_hits=[hit(t)])
+
+    def test_private_report_has_auto_shares_and_shared_report_has_none(self):
+        private = self.report(False)
+        self.assertEqual({v['label'] for v in private['quota_shares'].values()}, {'auto-calibrated'})
+        self.assertEqual({v['source'] for v in private['quota_shares'].values()}, {'limit_hit'})
+        self.assertEqual(private['quota_calibration'][0]['source'], 'limit_hit')
+        shared = json.dumps(self.report(True))
+        for needle in ('auto-calibrated', 'quota_calibration', 'quota_shares', 'budget_usd', 'limit_hit"'):
+            self.assertNotIn(needle, shared)
+
+    def test_strings_in_both_languages(self):
+        page = report.render_report(self.report(False))
+        i18n = json.loads(gzip.decompress(base64.b64decode(re.search(r'id="report-i18n"[^>]*>([^<]+)<', page).group(1))).decode())
+        for lang in ('sv', 'en'):
+            for key in ('qs_auto', 'qs_auto_lt1', 'qs_auto_lb', 'qs_auto_unknown', 'qs_auto_title', 'qc_auto', 'qs_src_limit_hit', 'qs_src_statusline', 'qs_src_limit_hit_statusline'):
+                self.assertTrue(i18n[lang][key], (lang, key))
+        self.assertEqual(i18n['en']['qs_auto'], '≈ {n}% of {w} (estimated from {src})')
+
+
+class AutomaticCli(unittest.TestCase):
+    run_cli = Cli.run_cli
+
+    def setUp(self):
+        Cli.setUp(self)
+        rows = [dict(ts='2026-10-02T08:00:00+00:00', session='s1', seven_day=dict(used_percent=10, resets_at=RESETS.isoformat())),
+                dict(ts='2026-10-02T09:30:00+00:00', session='s1', seven_day=dict(used_percent=40, resets_at=RESETS.isoformat()))]
+        (self.db.parent / 'claude-quota.jsonl').write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
+
+    def test_quota_show_lists_automatic_budgets_separately(self):
+        with History(self.db) as h:
+            spend = cost_of([r for r in h.records() if r['ts'].startswith('2026-10-02')])
+        code, out, _ = self.run_cli('quota', 'show', '--json')
+        shown = json.loads(out)
+        self.assertEqual((code, shown['derived'], shown['readings']), (0, [], []))
+        (got,) = shown['automatic']
+        self.assertEqual((got['harness'], got['minutes'], got['source'], got['points']), ('claude', 10080, 'statusline', 1))
+        self.assertAlmostEqual(got['budget_usd'], spend / 0.3)
+        self.assertEqual((got['first_date'], got['date'], shown['automatic_skipped']), ('2026-10-02', '2026-10-02', {}))
+        code, text, _ = self.run_cli('quota', 'show')
+        self.assertIn('automatic budgets', text)
+        self.assertIn('statusline, median of 1 point in 1 window', text)
+        self.assertFalse(budget.path_for(self.db).exists())  # computed, never stored
+
+    def quota_file(self, *rows):
+        lines = [dict(ts=ts, session='s1', seven_day=dict(used_percent=used, resets_at=due)) for ts, used, due in rows]
+        (self.db.parent / 'claude-quota.jsonl').write_text('\n'.join(json.dumps(r) for r in lines) + '\n')
+
+    def test_keep_reaches_the_automatic_derivation(self):
+        a, b = '2026-10-05T09:00:00+00:00', '2026-10-12T09:00:00+00:00'
+        self.quota_file(('2026-10-01T08:00:00+00:00', 10, a), ('2026-10-01T09:30:00+00:00', 40, a), ('2026-10-02T08:00:00+00:00', 10, b), ('2026-10-02T09:30:00+00:00', 40, b))
+        full = json.loads(self.run_cli('quota', 'show', '--json')[1])['automatic'][0]
+        self.assertEqual((full['points'], full['windows']), (2, 2))
+        one = json.loads(self.run_cli('quota', 'show', '--json', '--keep', '1')[1])['automatic'][0]
+        self.assertEqual((one['points'], one['windows']), (1, 1))
+
+    def test_skipped_points_are_shown_without_any_budget(self):
+        self.quota_file(('2026-10-05T08:00:00+00:00', 10, RESETS.isoformat()), ('2026-10-05T09:30:00+00:00', 40, RESETS.isoformat()))  # no requests in between
+        text = self.run_cli('quota', 'show')[1]
+        self.assertIn('no budget yet', text)
+        self.assertIn('automatic points skipped: 1 little cost', text)
+        self.assertNotIn('automatic budgets (', text)
+
+    def test_top_gives_old_claude_turns_an_auto_share_and_a_manual_budget_wins(self):
+        code, out, _ = self.run_cli('top', '-n', '5', '--json')
+        self.assertEqual(code, 0, out)
+        labels = {p['quota_share']['label'] for p in json.loads(out)['prompts'] if p['quota_share']}
+        self.assertEqual(labels, {'auto-calibrated'})
+        self.run_cli('quota', 'set', '--harness', 'claude', '--window', '7d', '--budget-usd', '1000')
+        labels = {p['quota_share']['label'] for p in json.loads(self.run_cli('top', '-n', '5', '--json')[1])['prompts'] if p['quota_share']}
+        self.assertEqual(labels, {'calibrated'})
+
+
 if __name__ == '__main__':
     unittest.main()

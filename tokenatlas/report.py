@@ -227,8 +227,11 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         report['limit_hits'] = [_hit_payload(h, shown, metadata, prompt_texts, redact, zone, None if redact else hit_scope) for h in limit_hits]
     if snapshots or getattr(snapshots, 'events', ()):
         report.update(_quota_payload(shares or {}, quota_share.windows(snapshots, last=4, records=whole, cost_of=cost_of, hits=limit_hits if all_hits is None else all_hits), shown, metadata, lambda name: alias('limit', name) if redact else name))  # a limit id is pseudonymized whatever it looks like
-    if budgets and not redact:  # a shared report has no calibrated share: with the turn costs it would give the budget (the plan size) away
-        report.update(_calibration_payload(budgets, whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
+    if not redact:  # a shared report has no calibrated share, manual or automatic: with the turn costs it would give the budget (the plan size) away
+        auto, _ = budget.auto_budgets(whole, all_hits if all_hits is not None else limit_hits, snapshots, table)  # computed here from the history, never stored (#116)
+        merged = budget.combine({(b['harness'], b['minutes'], b.get('plan')): b for b in budgets or ()}, auto)
+        if merged:
+            report.update(_calibration_payload(budget.public(merged), whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
     if demo:
         report['demo'] = True
     if prompt_inputs is not None:
@@ -270,12 +273,13 @@ def _calibration_payload(budgets, whole, assigned, cost_of, found, shown, table)
             continue
         item = budget.share(derived, key[0], *costs[key]) if key in costs else None
         if item:
-            shares[ordinal] = dict(harness=key[0], minutes=item['window_minutes'], label='calibrated', percent=item['exact_percent'], shared_with=None,
-                                   date=item['calibration']['date'], lower_bound=item['lower_bound'])
+            shares[ordinal] = dict(harness=key[0], minutes=item['window_minutes'], label=item['label'], percent=item['exact_percent'], shared_with=None,
+                                   date=item['calibration']['date'], lower_bound=item['lower_bound'], **({'source': item['calibration']['source']} if item['label'] == 'auto-calibrated' else {}))
     if shares:
         out['quota_shares'] = shares
     out['quota_calibration'] = [dict(harness=b['harness'], minutes=b['minutes'], plan=b.get('plan'), source=b['source'], budget_usd=round(b['budget_usd'], 2), readings=b['readings'],
-                                     spread=b['spread'] and [round(v, 2) for v in b['spread']], date=b['date']) for b in budgets]
+                                     spread=b['spread'] and [round(v, 2) for v in b['spread']], date=b['date'],
+                                     **({'first_date': b.get('first_date')} if budget.is_auto(b) else {})) for b in budgets]
     return out
 
 
