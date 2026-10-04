@@ -4,11 +4,13 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-10-04
+
 ### Fixed
 
 - Quota budget: an automatic budget (#116) is now used for shares only with enough consistent evidence: at least 3 points from at least 2 distinct windows, the largest at most 4 times the smallest. A single limit hit (for example "≈ $0.65 per 5 hours") no longer turns a normal turn into several hundred percent. A budget without enough evidence is still listed by `quota show` (and `--json`: `used`, `not_used`) with the reason ("not enough evidence yet (1 of 3 points)", "points disagree too much (spread ×5.0)"). An automatic share above 100% of a window is shown as unknown ("share unknown: the automatic estimate does not fit this turn"), never as a number, and `quota show` counts those turns. The share text now names the evidence: "≈ 4% of the weekly Claude limit (estimated from 5 limit hits)", "12 statusline readings" or both (sv equivalents). Manual calibration is unchanged.
 
-## [1.14.0] - 2026-10-04
+## [1.14.0] - 2026-10-04 (not published to PyPI; superseded by 1.14.1)
 
 ### Changed
 
