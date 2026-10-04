@@ -14,6 +14,9 @@ All notable changes to this project are documented in this file. The project fol
 - Report: quota shares name the limit the same way everywhere (cards, `top`, insights, "At a glance"): "weekly Codex limit", "5-hour Claude limit" (sv "veckogränsen för Codex", "5-timmarsgränsen för Claude") (#115).
 - Tests: `CollectSignalWindowTest` no longer flakes on macOS CI when signalling a process group whose leader has exited (`PermissionError`); `_stop_group` already treated it like `ProcessLookupError`, now covered by a unit test (#113).
 - Report: limit windows on phones: the "Limit windows" table becomes one small card per window at 640 px and below instead of clipping the Resets column.
+### Added
+
+- Quota budget: automatic calibration from your own history (#116). Without any `quota calibrate` reading, tokenatlas derives budgets at `report`, `top` and `quota show` time (nothing is stored) from Claude limit hits (the list price seen in the hit's window is "100% = $X") and from Claude statusline readings (the cost between readings that rose by at least 5 percentage points over that rise; windows with under $0.50 or an unpriced request are skipped and counted). The budget per harness and window is the median of the last 8 windows' points, with count and spread; Codex `window_full` hits are the fallback. Manual readings and `quota set` always win. Turns with no observed, estimated or manually calibrated share get `label: "auto-calibrated"` (`≈ 4% of the weekly Claude limit (estimated from your limit hits)`; whole percent, `≥` for a floor), so old Claude history has shares. `quota show` (and `--json`, key `automatic`) lists the automatic budgets separately with source, point count, spread and date range. Usage the logs do not see makes the budget too small and shares too large. Private reports only; shared reports carry no automatic shares or budgets.
 
 ## [1.13.0] - 2026-10-04
 

@@ -73,12 +73,26 @@ see (other machines, cloud tasks) and unpriced models (13% of events) account fo
    estimated share. Usage outside the logs (chat, other machines, cloud tasks) is in the percentage read but not in the cost seen, so the budget comes
    out too small and shares too large; a change of model mix drifts it. A turn with unpriced, incomplete or ambiguous requests shows a
    floor ("≥ 3%"), never "< 1%". Shared reports carry no calibrated shares.
+4. Without any manual input (#116), tokenatlas calibrates itself from evidence already in the history, at report, `top` and `quota show`
+   time, and stores nothing. A **limit hit** (a rejected Claude request at 100% with `resets_at`, or a Codex `window_full` hit) says the
+   window was full: the list-price cost it saw in the window (Claude: `[resets_at - window, hit]`) is "100% = $X". Claude **statusline
+   snapshots** (#92) give "rise of Δ points = $Y": per window instance a reading is compared with an anchor reading, and once the
+   percentage has risen by at least 5 points the cost since the anchor over Δ/100 is one point (then the anchor moves; lower readings
+   from a stale session never move it). Windows with less than $0.50 of cost, with an unpriced request, with an ambiguous (synthetic id)
+   request left in, or on another provider are skipped and counted, never guessed. So are a hit under another limit id (a per-model limit such as `codex_bengalfox`: `other_limit`) and a Claude window instance with more than one account's counter (`ambiguous`, as in the shares' counter split); a turn that ran under another limit id gets no budget of the default limit. The budget per harness and window is the median of
+   the points in the last 8 windows, with count and spread. Manual readings and `quota set` always win, and are never mixed with an
+   automatic budget of the same harness. A turn with no observed, estimated or manually calibrated share then gets an
+   **auto-calibrated** share: "≈ 4% of the weekly Claude limit (estimated from your limit hits)" (or "... statusline readings"), whole
+   percent, "≥" when a request is unpriced, incomplete or ambiguous, and never "< 1%" for a floor. Codex uses only its `window_full`
+   hits, as a fallback for a turn without a snapshot-based share. Bias: usage the logs do not see (claude.ai chat, other machines)
+   makes every point and so the budget too small and the share too large; a limit hit's cost is only what the logs saw. Shared
+   reports carry no automatic shares or budgets. `tokenatlas quota show` lists the automatic budgets separately (`automatic` in `--json`).
 
 ## Wording rules
 
 - Say "~3% of the weekly Codex limit (observed)" (Claude: "~6% of the 5-hour Claude limit"; sv "5-timmarsgränsen för Claude", "veckogränsen för Claude") or "≈ 3% (estimate)". Never show decimals for a whole-percent counter.
   Show "< 1%" when the counter did not move.
-- A calibrated share is always "≈", says "your calibration" and its date, and is never called exact or observed.
+- A calibrated share is always "≈", says "your calibration" and its date, and is never called exact or observed. An auto-calibrated one says "estimated from your limit hits / statusline readings" instead.
 - Name a window by its length (`window_minutes`, or Claude's `five_hour` / `seven_day`), never by the `primary` /
   `secondary` slot.
 - "Share of what tokenatlas saw" is not "share of your limit". When a section adds up costs inside a window, say so.

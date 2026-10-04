@@ -12,6 +12,7 @@ import re
 import statistics
 import sys
 import tempfile
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,6 +26,11 @@ MIXED = '\0mixed'  # a turn whose requests ran on more than one plan: no budget 
 PLANNED = ('codex',)  # harnesses whose quota snapshots name a plan
 ROLLING = ('codex',)  # Codex windows are rolling ([reading - window, reading]); Claude's weekly window resets at a fixed time
 KEEP = 8  # readings older than this many windows are ignored
+AUTO_RISE = 5.0  # automatic statusline points need the percentage to rise by at least this many points (the 1% resolution and noise dominate below)
+AUTO_MIN_COST = 0.50  # ... and the window to hold at least this much list-price cost (USD); a limit hit needs the same
+AUTO = ('limit_hit', 'statusline')  # the sources of automatic points; a budget from both is 'limit_hit+statusline'
+DEFAULT_LIMIT = lambda harness, limit_id: limit_id in (None, harness)  # a harness's own limit; a per-model limit (e.g. codex_bengalfox) is another counter
+AUTO_HIT_REACHED = {'claude': ('five_hour', 'seven_day'), 'codex': ('window_full',)}
 
 
 def path_for(db):
@@ -124,9 +130,9 @@ def turn_costs(records, assigned, cost_of, table=None):
     (prompts.assign_prompts) and `cost_of(record) -> USD or None`. Ambiguous (id_synthetic) requests are left out, as in readings and quota_share; a turn with
     an ambiguous, unpriced or incomplete request is a lower bound. Only the harness's subscription provider counts (provider aliases from `table`): a turn on
     another provider has no entry, so it gets no calibrated share. Codex requests are scoped by plan (plan_of): a request without a quota snapshot has an
-    unknown plan, is left out and makes the turn a lower bound; a turn spanning plans has plan MIXED, and so does one on a plan with several detected
+    unknown plan, is left out and makes the turn a lower bound; a turn spanning plans has plan MIXED, and so does one with a request under another limit id (a per-model limit) and one on a plan with several detected
     accounts (multi_counter_plans): no budget fits it. Claude has no plan (None)."""
-    out = {}
+    out, other = {}, set()
     multi = multi_counter_plans(records) if any(r['harness'] in PLANNED and plan_of(r) for r in records) else frozenset()
     canon = _canon(table)
     for record, a in zip(records, assigned):
@@ -135,6 +141,9 @@ def turn_costs(records, assigned, cost_of, table=None):
         key = tuple(a[:3])
         by_plan, lower = out.setdefault(key, [{}, False])
         plan = plan_of(record) if record['harness'] in PLANNED else None
+        if not DEFAULT_LIMIT(record['harness'], (record.get('quota') or {}).get('limit_id')):
+            other.add(key)  # it ran under another limit's counter (checked first, whatever its plan or id): no budget of the default limit fits the turn
+            continue
         if record.get('id_synthetic') or (record['harness'] in PLANNED and plan is None):
             out[key][1] = True
             continue
@@ -144,7 +153,7 @@ def turn_costs(records, assigned, cost_of, table=None):
         by_plan[plan] = by_plan.get(plan, 0.0) + (c or 0.0)
     result = {}
     for key, (by_plan, lower) in out.items():
-        if len(by_plan) > 1 or any(p in multi for p in by_plan):
+        if key in other or len(by_plan) > 1 or any(p in multi for p in by_plan):
             result[key] = (sum(by_plan.values()), True, MIXED)
         else:
             plan, cost = next(iter(by_plan.items()), (None, 0.0))
@@ -184,10 +193,11 @@ def reprice(data, table, records_fn=None):
     return dict(data, readings=out)
 
 
-def cost_seen(records, table, harness, start, end, plan=None):
+def cost_seen(records, table, harness, start, end, plan=None, default_limit=False):
     """(list-price USD, unpriced requests, excluded requests) of one harness's requests on its subscription provider in [start, end]; ambiguous (id_synthetic)
     requests are left out. For Codex only requests of `plan` count (a request on another plan is another account's usage and is ignored); a request without
-    a quota snapshot has an unknown plan and is left out and counted as excluded."""
+    a quota snapshot has an unknown plan and is left out and counted as excluded. With `default_limit`, a request that ran under another limit id (a per-model
+    limit) is left out too: it is not usage of the default limit's counter."""
     total, unpriced, excluded = 0.0, 0, 0
     canon = _canon(table)
     for r in records:
@@ -195,6 +205,8 @@ def cost_seen(records, table, harness, start, end, plan=None):
             continue
         t = prompts._t(r['ts'])
         if not start <= t <= end:
+            continue
+        if default_limit and not DEFAULT_LIMIT(harness, (r.get('quota') or {}).get('limit_id')):
             continue
         if harness in PLANNED:
             p = plan_of(r)
@@ -360,6 +372,141 @@ def derive(data, now=None, keep=KEEP):
     return out
 
 
+def _ledger(records, table, harness):
+    """The harness's identified, subscription-provider requests as (sorted times, cumulative USD, cumulative unpriced count), for cost between two times by bisect."""
+    canon = _canon(table)
+    rows = sorted(((prompts._t(r['ts']), prompts._cost(r, table)) for r in records if _provider_ok(r, harness, canon) and not r.get('id_synthetic')), key=lambda x: x[0])
+    times, usd, bad = [t for t, _ in rows], [0.0], [0]
+    for _, c in rows:
+        usd.append(usd[-1] + (c or 0.0))
+        bad.append(bad[-1] + (c is None))
+    return times, usd, bad
+
+
+def _between(ledger, start, end, inclusive_start=True):
+    """(USD, unpriced requests) in [start, end] (or (start, end])."""
+    times, usd, bad = ledger
+    i = bisect_left(times, start) if inclusive_start else bisect_right(times, start)
+    j = bisect_right(times, end)
+    return (usd[j] - usd[i], bad[j] - bad[i]) if j > i else (0.0, 0)
+
+
+def auto_points(records, hits, snapshots, table):
+    """(points, skipped): automatic calibration points from evidence already in the history, never stored. A point is {harness, minutes, plan, source,
+    usd (list price of the window at 100%), cost, percent, at (datetime), window_end (datetime)}.
+    - `limit_hit`: a Claude rejection (five_hour / seven_day) or a Codex `window_full` hit with a known window says the window was at 100% at `at`;
+      the logged list-price cost in the hit's window ([resets_at - window, hit] for Claude, trailing for Codex) is usd, at 1.00. It is only what the logs saw.
+    - `statusline`: per Claude window instance, readings are compared with an anchor reading (the first, then each one that moved >= AUTO_RISE points):
+      usd = Claude cost after the anchor up to the reading / (rise / 100). Lower readings (a stale idle session) never move the anchor.
+    A point whose window holds less than AUTO_MIN_COST, has an unpriced request, runs under another limit id (`other_limit`), has several Claude counters in the window instance (`ambiguous`), has an ambiguous or plan-less Codex request, or whose Codex plan has several
+    accounts is skipped and counted in `skipped` by reason. Ambiguous (id_synthetic) requests and other providers are never in a cost."""
+    points, skipped = [], {}
+    skip = lambda why: skipped.__setitem__(why, skipped.get(why, 0) + 1)
+    multi = multi_counter_plans(records) if any(r['harness'] in PLANNED and plan_of(r) for r in records) else frozenset()
+    series = {}  # snapshot key (quota_share's window instance and counter split) -> its readings
+    for s in snapshots or ():
+        if s.get('harness') == 'claude' and s.get('account') == 'claude' and s['window'][0] in WINDOWS.values() and not s.get('straggler'):
+            series.setdefault(s['key'], []).append(s)
+    instances = {}
+    for key in series:
+        instances.setdefault((*key[:5], key[6]), []).append(key)  # key[5] is the counter number within the instance
+    split = []  # (minutes, start, end) of Claude window instances with more than one account's counter
+    for keys in instances.values():
+        if len(keys) > 1:
+            minutes, due = series[keys[0]][0]['window']
+            split.append((minutes, prompts._t(due) - timedelta(minutes=minutes), prompts._t(due)))
+    for hit in hits or ():
+        harness, minutes, window = hit.get('harness'), hit.get('window_minutes'), hit.get('window')
+        if harness not in AUTO_HIT_REACHED or hit.get('reached') not in AUTO_HIT_REACHED[harness] or minutes not in WINDOWS.values():
+            continue
+        if not window:
+            skip('no_window')
+            continue
+        if not DEFAULT_LIMIT(harness, (hit.get('origin') or {}).get('limit_id')):
+            skip('other_limit')  # another limit's counter says nothing about the default one
+            continue
+        if harness == 'claude' and any(m == minutes and begin < prompts._t(window['end']) and prompts._t(window['start']) < due for m, begin, due in split):
+            skip('ambiguous')  # two accounts' counters in this window: its cost cannot be attributed to one of them
+            continue
+        plan = None
+        if harness in PLANNED:
+            plan = ((hit.get('origin') or {}).get('plan_type') or '').strip().lower() or None
+            if plan is None:
+                skip('no_plan')
+                continue
+            if plan in multi:
+                skip('ambiguous')
+                continue
+        start, end = prompts._t(window['start']), prompts._t(window['end'])
+        cost, unpriced, excluded = cost_seen(records, table, harness, start, end, plan, default_limit=True)
+        if unpriced or excluded:
+            skip('unpriced')
+        elif cost < AUTO_MIN_COST:
+            skip('little_cost')
+        else:
+            at = prompts._t(hit['at'])
+            resets = hit.get('resets_at')
+            points.append(dict(harness=harness, minutes=minutes, plan=plan, source='limit_hit', usd=cost, cost=cost, percent=100.0, at=at,
+                               window_end=prompts._t(resets) if resets and not hit.get('rolling') else at))
+    ledger = _ledger(records, table, 'claude') if series else None
+    for keys in instances.values():
+        if len(keys) > 1:
+            skip('ambiguous')  # more than one account's counter in the window: the cost between two readings cannot be attributed to one of them
+            continue
+        found = sorted(series[keys[0]], key=lambda s: s['t'])
+        minutes, due = found[0]['window']
+        anchor = found[0]
+        for s in found[1:]:
+            rise = s['used_percent'] - anchor['used_percent']
+            if rise < AUTO_RISE:
+                continue  # a small or negative movement: the anchor stays
+            cost, unpriced = _between(ledger, anchor['t'], s['t'], inclusive_start=False)
+            if unpriced:
+                skip('unpriced')
+            elif cost < AUTO_MIN_COST:
+                skip('little_cost')
+            else:
+                points.append(dict(harness='claude', minutes=minutes, plan=None, source='statusline', usd=cost / (rise / 100), cost=cost, percent=rise, at=s['t'], window_end=prompts._t(due)))
+            anchor = s
+    return points, skipped
+
+
+def derive_auto(points, keep=KEEP):
+    """{(harness, minutes, plan): {budget_usd, source: 'limit_hit' | 'statusline' | 'limit_hit+statusline', readings (= points), points, windows, spread: [min, max],
+    first_date, date (YYYY-MM-DD)}}: the median of the points in the last `keep` windows (distinct window ends) of each (harness, window length, plan)."""
+    by = {}
+    for p in points:
+        by.setdefault((p['harness'], p['minutes'], p['plan']), []).append(p)
+    out = {}
+    for key, found in by.items():
+        recent = set(sorted({p['window_end'] for p in found})[-keep:])
+        found = [p for p in found if p['window_end'] in recent]
+        values = [p['usd'] for p in found]
+        out[key] = dict(budget_usd=statistics.median(values), source='+'.join(x for x in AUTO if any(p['source'] == x for p in found)), readings=len(values), points=len(values),
+                        windows=len(recent), spread=[min(values), max(values)], first_date=min(p['at'] for p in found).date().isoformat(), date=max(p['at'] for p in found).date().isoformat())
+    return out
+
+
+def auto_budgets(records, hits, snapshots, table, keep=KEEP):
+    """(derive_auto(...), skipped) for the history: see auto_points."""
+    points, skipped = auto_points(records, hits, snapshots, table)
+    return derive_auto(points, keep), skipped
+
+
+def is_auto(b):
+    return b.get('source') in AUTO or b.get('source') == 'limit_hit+statusline'
+
+
+def combine(manual, auto):
+    """Budgets for shares: `manual` (readings and `quota set`, see derive) always win. An automatic budget is used only for a harness (and plan) the user
+    has no budget of any window for, so a manual weekly budget is never mixed with an automatic 5-hour one."""
+    out = dict(manual)
+    for (h, m, p), v in (auto or {}).items():
+        if not any(hh == h and q in (p, None) for (hh, _, q) in manual):
+            out[(h, m, p)] = v
+    return out
+
+
 def load_derived(path, now=None, keep=KEEP, table=None, records_fn=None):
     """derive(load(path)); {} when there is no file. A damaged file is reported on stderr by the caller; here it just yields nothing. With a price `table`,
     readings priced with another table are recomputed from the history (`records_fn`) or dropped as stale (reprice), so a turn's share never moves with the table."""
@@ -373,7 +520,7 @@ def load_derived(path, now=None, keep=KEEP, table=None, records_fn=None):
 
 def public(derived):
     """The derived budgets as a sorted list of plain dicts (JSON, report)."""
-    return [dict(harness=h, minutes=m, plan=p, **v) for (h, m, p), v in sorted(derived.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or ''))]
+    return [dict(v, harness=h, minutes=m, plan=p) for (h, m, p), v in sorted(derived.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or ''))]
 
 
 def share(derived, harness, cost, lower_bound=False, plan=None):
@@ -388,14 +535,14 @@ def share(derived, harness, cost, lower_bound=False, plan=None):
         if b:
             exact = cost / b['budget_usd'] * 100  # kept whole for the floor and the under-1% decisions; only the JSON value is rounded
             shown = math.floor(exact * 100) / 100 if lower_bound else round(exact, 2)  # a floor is never rounded up
-            return dict(window_minutes=minutes, delta_percent=shown, exact_percent=exact, label='calibrated', before=None, after=None, shared_with=None,
+            return dict(window_minutes=minutes, delta_percent=shown, exact_percent=exact, label='auto-calibrated' if is_auto(b) else 'calibrated', before=None, after=None, shared_with=None,
                         lower_bound=bool(lower_bound), calibration=dict(budget_usd=round(b['budget_usd'], 2), readings=b['readings'],
                                                                         spread=b['spread'] and [round(v, 2) for v in b['spread']], date=b['date'], source=b['source']))
     return None
 
 
 def mark_turns(items, derived, costs):
-    """Give each ranked turn without an observed or estimated share (quota_share is None or unknown) a calibrated one. `costs` is turn_costs over the whole
+    """Give each ranked turn without an observed or estimated share (quota_share is None or unknown) a calibrated one ('auto-calibrated' for an automatic budget). `costs` is turn_costs over the whole
     history (never the filtered turn's own cost, which may be partial), keyed by (harness, session, turn_id)."""
     if not derived:
         return items
@@ -410,8 +557,8 @@ def mark_turns(items, derived, costs):
     return items
 
 
-def run(args, db, records_fn, table_fn, out):
-    """The `quota` command; `records_fn()` and `table_fn()` are only called by calibrate."""
+def run(args, db, records_fn, table_fn, out, auto_fn=None):
+    """The `quota` command; `records_fn()` and `table_fn()` are only called by calibrate; `auto_fn(keep)` -> (automatic budgets, skipped) is called by show."""
     path = path_for(db)
     now = datetime.now(timezone.utc)
     if args.quota == 'calibrate':
@@ -431,16 +578,17 @@ def run(args, db, records_fn, table_fn, out):
             raise ValueError('--keep must be at least 1')
         data = load(path)
         derived = derive(data, now, args.keep)
+        auto, skipped = auto_fn(args.keep) if auto_fn else ({}, {})
         bad = invalid_entries(data)
         if args.json:
-            out(json.dumps(dict(derived=public(derived), readings=data['readings'], budgets=data['budgets'], keep_windows=args.keep, file=str(path), invalid_entries=bad), indent=2, sort_keys=True))
+            out(json.dumps(dict(derived=public(derived), automatic=public(auto), automatic_skipped=skipped, readings=data['readings'], budgets=data['budgets'], keep_windows=args.keep, file=str(path), invalid_entries=bad), indent=2, sort_keys=True))
         else:
             stale = sum(_valid(x) and x.get('table') != table_id(table_fn()) for x in data['readings']) if table_fn else 0
-            out(render(data, derived, now, args.keep) + (f'\nnote: {stale} reading{"s" * (stale != 1)} priced with another price table; `top` and the report reprice from the history' if stale else '')
+            out(render(data, derived, now, args.keep, auto, skipped) + (f'\nnote: {stale} reading{"s" * (stale != 1)} priced with another price table; `top` and the report reprice from the history' if stale else '')
                 + (f'\nwarning: {bad} malformed entr{"y" if bad == 1 else "ies"} in {path} ignored' if bad else ''))
 
 
-def render(data, derived, now, keep):
+def render(data, derived, now, keep, auto=None, skipped=None):
     name = {300: '5-hour', 10080: 'weekly'}
     lines = []
     for (h, m, p), v in sorted(derived.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or '')):
@@ -456,5 +604,13 @@ def render(data, derived, now, keep):
         if _valid(x):
             old = now - prompts._t(x['taken_at']) > timedelta(minutes=x['minutes'] * keep)
             lines.append(f"  reading {x['taken_at'][:16]} {x['harness']}{' ' + x['plan'] if x.get('plan') else ''} {name[x['minutes']]}: {x['used'] * 100:g}% used, ${x['cost_usd']:,.2f} seen{' (approximate)' if x.get('approximate') else ''}{' (ignored: older than ' + str(keep) + ' windows)' if old else ''}")
+    if auto:
+        lines.append('automatic budgets (computed from your history, not stored; manual readings and `quota set` win):')
+        for (h, m, p), v in sorted(auto.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or '')):
+            lo, hi = v['spread']
+            lines.append(f"  {h}{' ' + p if p else ''} {name[m]}: ≈ ${v['budget_usd']:,.0f} ({v['source'].replace('_', ' ').replace('+', ' + ')}, median of {v['points']} point{'s' * (v['points'] != 1)} in {v['windows']} window{'s' * (v['windows'] != 1)}, "
+                         f"range ${lo:,.0f}-${hi:,.0f}, {v['first_date']} to {v['date']})")
+    if skipped:
+        lines.append('automatic points skipped: ' + ', '.join(f'{n} {why.replace("_", " ")}' for why, n in sorted(skipped.items())))
     lines.append("List price is a proxy: the budget drifts with the model mix, and usage outside these logs (chat, other machines, cloud tasks) makes the budget too small and shares too large.")
     return '\n'.join(lines)
