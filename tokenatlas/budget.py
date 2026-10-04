@@ -28,6 +28,9 @@ ROLLING = ('codex',)  # Codex windows are rolling ([reading - window, reading]);
 KEEP = 8  # readings older than this many windows are ignored
 AUTO_RISE = 5.0  # automatic statusline points need the percentage to rise by at least this many points (the 1% resolution and noise dominate below)
 AUTO_MIN_COST = 0.50  # ... and the window to hold at least this much list-price cost (USD); a limit hit needs the same
+AUTO_MIN_POINTS = 3  # an automatic budget is used for shares only with at least this many points ...
+AUTO_MIN_WINDOWS = 2  # ... from at least this many distinct windows ...
+AUTO_MAX_SPREAD = 4.0  # ... whose largest point is at most this many times the smallest; otherwise it is only listed (`quota show`), with the reason
 AUTO = ('limit_hit', 'statusline')  # the sources of automatic points; a budget from both is 'limit_hit+statusline'
 DEFAULT_LIMIT = lambda harness, limit_id: limit_id in (None, harness)  # a harness's own limit; a per-model limit (e.g. codex_bengalfox) is another counter
 AUTO_HIT_REACHED = {'claude': ('five_hour', 'seven_day'), 'codex': ('window_full',)}
@@ -473,7 +476,8 @@ def auto_points(records, hits, snapshots, table):
 
 def derive_auto(points, keep=KEEP):
     """{(harness, minutes, plan): {budget_usd, source: 'limit_hit' | 'statusline' | 'limit_hit+statusline', readings (= points), points, windows, spread: [min, max],
-    first_date, date (YYYY-MM-DD)}}: the median of the points in the last `keep` windows (distinct window ends) of each (harness, window length, plan)."""
+    first_date, date (YYYY-MM-DD), by_source, used, not_used}}: `used` is False (with the reason in `not_used`) unless there are AUTO_MIN_POINTS points from AUTO_MIN_WINDOWS windows
+    within a spread of AUTO_MAX_SPREAD; combine() leaves such a budget out of the shares. The median of the points in the last `keep` windows (distinct window ends) of each (harness, window length, plan)."""
     by = {}
     for p in points:
         by.setdefault((p['harness'], p['minutes'], p['plan']), []).append(p)
@@ -482,8 +486,18 @@ def derive_auto(points, keep=KEEP):
         recent = set(sorted({p['window_end'] for p in found})[-keep:])
         found = [p for p in found if p['window_end'] in recent]
         values = [p['usd'] for p in found]
+        lo, hi = min(values), max(values)
+        if len(values) < AUTO_MIN_POINTS:
+            reason = f'not enough evidence yet ({len(values)} of {AUTO_MIN_POINTS} points)'
+        elif len(recent) < AUTO_MIN_WINDOWS:
+            reason = f'not enough evidence yet ({len(values)} points in {len(recent)} of {AUTO_MIN_WINDOWS} windows)'
+        elif hi / lo > AUTO_MAX_SPREAD:
+            reason = f'points disagree too much (spread ×{hi / lo:.1f})'
+        else:
+            reason = None
         out[key] = dict(budget_usd=statistics.median(values), source='+'.join(x for x in AUTO if any(p['source'] == x for p in found)), readings=len(values), points=len(values),
-                        windows=len(recent), spread=[min(values), max(values)], first_date=min(p['at'] for p in found).date().isoformat(), date=max(p['at'] for p in found).date().isoformat())
+                        by_source={x: sum(p['source'] == x for p in found) for x in AUTO if any(p['source'] == x for p in found)}, windows=len(recent), spread=[lo, hi],
+                        first_date=min(p['at'] for p in found).date().isoformat(), date=max(p['at'] for p in found).date().isoformat(), used=reason is None, not_used=reason)
     return out
 
 
@@ -502,9 +516,28 @@ def combine(manual, auto):
     has no budget of any window for, so a manual weekly budget is never mixed with an automatic 5-hour one."""
     out = dict(manual)
     for (h, m, p), v in (auto or {}).items():
+        if not v.get('used', True):
+            continue  # listed by `quota show`, never behind a share
         if not any(hh == h and q in (p, None) for (hh, _, q) in manual):
             out[(h, m, p)] = v
     return out
+
+
+def auto_status(manual, key, v):
+    """'not_used' (too little or inconsistent evidence), 'overridden' (the user has a calibration for the harness: it wins) or 'used' (behind shares)."""
+    if not v.get('used', True):
+        return 'not_used'
+    return 'used' if combine(manual, {key: v}).get(key) is v else 'overridden'
+
+
+def over_cap(auto, manual, records, table, measured=frozenset()):
+    """How many turns `top` and the report would show as unknown because an automatic budget does not fit them (more than 100% of a window). Same precedence
+    as the shares: a turn in `measured` (it has an observed or estimated share) and a harness with a manual budget or reading are not counted."""
+    derived = combine(manual, auto)
+    if not any(is_auto(v) for v in derived.values()):
+        return 0
+    costs = turn_costs(records, prompts.assign_prompts(records), lambda r: prompts._cost(r, table), table)
+    return sum(1 for key, c in costs.items() if key not in measured and (share(derived, key[0], *c) or {}).get('unfit'))
 
 
 def load_derived(path, now=None, keep=KEEP, table=None, records_fn=None):
@@ -534,10 +567,14 @@ def share(derived, harness, cost, lower_bound=False, plan=None):
         b = None if plan == MIXED else derived.get((harness, minutes, plan)) or derived.get((harness, minutes, None))
         if b:
             exact = cost / b['budget_usd'] * 100  # kept whole for the floor and the under-1% decisions; only the JSON value is rounded
+            if is_auto(b) and exact > 100:  # more than a whole window cannot be: the automatic estimate does not fit this turn, so no number
+                return dict(window_minutes=minutes, delta_percent=None, exact_percent=None, label='auto-calibrated', before=None, after=None, shared_with=None, lower_bound=bool(lower_bound),
+                            unfit=True, calibration=dict(budget_usd=round(b['budget_usd'], 2), readings=b['readings'], spread=b['spread'] and [round(v, 2) for v in b['spread']], date=b['date'],
+                                                         source=b['source'], by_source=b.get('by_source')))
             shown = math.floor(exact * 100) / 100 if lower_bound else round(exact, 2)  # a floor is never rounded up
             return dict(window_minutes=minutes, delta_percent=shown, exact_percent=exact, label='auto-calibrated' if is_auto(b) else 'calibrated', before=None, after=None, shared_with=None,
                         lower_bound=bool(lower_bound), calibration=dict(budget_usd=round(b['budget_usd'], 2), readings=b['readings'],
-                                                                        spread=b['spread'] and [round(v, 2) for v in b['spread']], date=b['date'], source=b['source']))
+                                                                        spread=b['spread'] and [round(v, 2) for v in b['spread']], date=b['date'], source=b['source'], **({'by_source': b.get('by_source')} if is_auto(b) else {})))
     return None
 
 
@@ -557,8 +594,8 @@ def mark_turns(items, derived, costs):
     return items
 
 
-def run(args, db, records_fn, table_fn, out, auto_fn=None):
-    """The `quota` command; `records_fn()` and `table_fn()` are only called by calibrate; `auto_fn(keep)` -> (automatic budgets, skipped) is called by show."""
+def run(args, db, records_fn, table_fn, out, auto_fn=None, cap_fn=None):
+    """The `quota` command; `records_fn()` and `table_fn()` are only called by calibrate; `auto_fn(keep)` -> (automatic budgets, skipped) and `cap_fn(auto, manual)` -> turns the used ones do not fit are called by show."""
     path = path_for(db)
     now = datetime.now(timezone.utc)
     if args.quota == 'calibrate':
@@ -579,16 +616,17 @@ def run(args, db, records_fn, table_fn, out, auto_fn=None):
         data = load(path)
         derived = derive(data, now, args.keep)
         auto, skipped = auto_fn(args.keep) if auto_fn else ({}, {})
+        unfit = cap_fn(auto, derived) if cap_fn and auto else 0
         bad = invalid_entries(data)
         if args.json:
-            out(json.dumps(dict(derived=public(derived), automatic=public(auto), automatic_skipped=skipped, readings=data['readings'], budgets=data['budgets'], keep_windows=args.keep, file=str(path), invalid_entries=bad), indent=2, sort_keys=True))
+            out(json.dumps(dict(derived=public(derived), automatic=[dict(x, status=auto_status(derived, (x['harness'], x['minutes'], x['plan']), auto[(x['harness'], x['minutes'], x['plan'])])) for x in public(auto)], automatic_skipped=skipped, automatic_turns_over_100_percent=unfit, readings=data['readings'], budgets=data['budgets'], keep_windows=args.keep, file=str(path), invalid_entries=bad), indent=2, sort_keys=True))
         else:
             stale = sum(_valid(x) and x.get('table') != table_id(table_fn()) for x in data['readings']) if table_fn else 0
-            out(render(data, derived, now, args.keep, auto, skipped) + (f'\nnote: {stale} reading{"s" * (stale != 1)} priced with another price table; `top` and the report reprice from the history' if stale else '')
+            out(render(data, derived, now, args.keep, auto, skipped, unfit) + (f'\nnote: {stale} reading{"s" * (stale != 1)} priced with another price table; `top` and the report reprice from the history' if stale else '')
                 + (f'\nwarning: {bad} malformed entr{"y" if bad == 1 else "ies"} in {path} ignored' if bad else ''))
 
 
-def render(data, derived, now, keep, auto=None, skipped=None):
+def render(data, derived, now, keep, auto=None, skipped=None, unfit=0):
     name = {300: '5-hour', 10080: 'weekly'}
     lines = []
     for (h, m, p), v in sorted(derived.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or '')):
@@ -608,8 +646,11 @@ def render(data, derived, now, keep, auto=None, skipped=None):
         lines.append('automatic budgets (computed from your history, not stored; manual readings and `quota set` win):')
         for (h, m, p), v in sorted(auto.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or '')):
             lo, hi = v['spread']
-            lines.append(f"  {h}{' ' + p if p else ''} {name[m]}: ≈ ${v['budget_usd']:,.0f} ({v['source'].replace('_', ' ').replace('+', ' + ')}, median of {v['points']} point{'s' * (v['points'] != 1)} in {v['windows']} window{'s' * (v['windows'] != 1)}, "
-                         f"range ${lo:,.0f}-${hi:,.0f}, {v['first_date']} to {v['date']})")
+            lines.append(f"  {h}{' ' + p if p else ''} {name[m]}: ≈ ${v['budget_usd']:,.2f} ({v['source'].replace('_', ' ').replace('+', ' + ')}, median of {v['points']} point{'s' * (v['points'] != 1)} in {v['windows']} window{'s' * (v['windows'] != 1)}, "
+                         f"range ${lo:,.2f}-${hi:,.2f}, {v['first_date']} to {v['date']}) " + {'used': 'used for shares', 'overridden': 'overridden by your calibration',
+                                                                                                   'not_used': f"NOT USED: {v.get('not_used')}"}[auto_status(derived, (h, m, p), v)])
+    if unfit:
+        lines.append(f'{unfit} turn{"s" * (unfit != 1)} over 100% of a window with the automatic budget: shown as unknown, not as a number')
     if skipped:
         lines.append('automatic points skipped: ' + ', '.join(f'{n} {why.replace("_", " ")}' for why, n in sorted(skipped.items())))
     lines.append("List price is a proxy: the budget drifts with the model mix, and usage outside these logs (chat, other machines, cloud tasks) makes the budget too small and shares too large.")

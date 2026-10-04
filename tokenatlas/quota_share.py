@@ -742,7 +742,11 @@ def value(share):
     return share['estimate'] if share['label'] == 'estimate' else None
 
 
-AUTO_SOURCE_TEXT = {'limit_hit': 'limit hits', 'statusline': 'statusline readings', 'limit_hit+statusline': 'limit hits and statusline readings'}
+def auto_evidence(calibration):
+    """'5 limit hits', '12 statusline readings' or '5 limit hits and 12 statusline readings': the evidence size behind an automatic budget."""
+    by = calibration.get('by_source') or {}
+    parts = [f"{n} {word}{'s' * (n != 1)}" for key, word in (('limit_hit', 'limit hit'), ('statusline', 'statusline reading')) if (n := by.get(key))]
+    return ' and '.join(parts) or 'your history'
 
 
 def _percent(label, v):
@@ -761,10 +765,14 @@ def line(item, harness):
     """For `top`, from the `quota_share` JSON of a turn (as_json): '~3% of weekly Codex limit', '≈2% of weekly Codex limit (estimate)',
     '< 1% of ...', or 'share of ...: n/a'."""
     name = f"{window_name(item['window_minutes'])} {harness.capitalize()} limit"
+    if item['label'] == 'auto-calibrated' and item.get('unfit'):
+        return 'share unknown: the automatic estimate does not fit this turn'
     if item['label'] not in ('observed', 'estimate', 'calibrated', 'auto-calibrated') or item['delta_percent'] is None:
         return f'share of {name}: n/a'
     if item['label'] == 'auto-calibrated':  # from budgets tokenatlas derived itself (budget.py, #116), never an observation
-        note = 'estimated from your ' + AUTO_SOURCE_TEXT.get(item['calibration']['source'], 'history')
+        if item.get('unfit'):  # more than a whole window: the estimate does not fit this turn
+            return 'share unknown: the automatic estimate does not fit this turn'
+        note = 'estimated from ' + auto_evidence(item['calibration'])
         v = item.get('exact_percent', item['delta_percent'])
         if item.get('lower_bound'):
             floor = int(v)

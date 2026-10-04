@@ -223,6 +223,14 @@ def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=No
     return budget.auto_budgets(records,hits,snapshots,table,*(() if keep is None else (keep,)))
 
 
+def _over_cap(history,db,auto,manual):
+    """Turns shown as unknown because an automatic budget does not fit them, with the precedence of `top` (observed or estimated share, then manual, then automatic)."""
+    from tokenatlas import budget, pricing, quota_share
+    records,table=history.records(),pricing.load_prices()
+    shares=quota_share.compute(records,table,claude=_claude_quota(db))[1]
+    return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate')})
+
+
 def _events(events):
     """Codex quota-only observations (zero-token, status 'event'): window readings that are no requests; they only add to a window's peak and hit."""
     return [e for e in events if (e.get('quota') or {}).get('status')=='event']
@@ -434,7 +442,7 @@ def main(argv=None):
                 if args.quota=='show' and args.db.expanduser().is_file():
                     with History(args.db) as history:  # the automatic budgets are computed from the history (#116)
                         history.connection.execute('BEGIN')
-                        return budget.run(args,args.db,None,pricing.load_prices,print,lambda keep:_auto_budgets(history,args.db,pricing.load_prices(),keep=keep)) or 0
+                        return budget.run(args,args.db,None,pricing.load_prices,print,lambda keep:_auto_budgets(history,args.db,pricing.load_prices(),keep=keep),lambda auto,manual:_over_cap(history,args.db,auto,manual)) or 0
                 return budget.run(args,args.db,None,pricing.load_prices,print) or 0
             if not args.db.expanduser().is_file():raise ValueError('history database does not exist; run refresh first')
             with History(args.db) as history:

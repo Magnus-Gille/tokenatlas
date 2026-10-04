@@ -403,6 +403,16 @@ async function ready(page, errors, what = 'report') {
             }
             const h=await newPage({locale:T.locale},withLimitHit(fixture));assert.ok((await h.page.locator('#glance-text').innerText()).includes(sv?'1 gränsträff i perioden: 1 mot 5-timmarsgränsen.':'1 limit hit in the period: 1 five-hour.'));
             const q=await newPage({locale:T.locale},withTopShare(fixture)),qt=norm(await q.page.locator('#glance-text').innerText());assert.ok(qt.includes(sv?'~26 % av veckogränsen för Codex':'~26% of the weekly Codex limit'),qt);assert.deepEqual(q.errors,[]);await q.context.close();
+            {  // #116: automatic shares name their evidence; one above a whole window is unknown, never a number
+              const auto=(extra)=>edited(fixture,d=>{d.quota_shares=Object.fromEntries([0,1,2,3,4,5,6,7,8,9].map(i=>[i,{harness:'claude',minutes:10080,label:'auto-calibrated',percent:4,shared_with:null,date:'2026-10-03',lower_bound:false,source:'limit_hit',hits:0,readings:0,unfit:false,...extra}]))});
+              const lim=sv?'veckogränsen för Claude':'the weekly Claude limit',from=sv?'uppskattad från':'estimated from';
+              const cases=[[{hits:5,source:'limit_hit'},sv?`≈ 4 % av ${lim} (${from} 5 gränsträffar)`:`≈ 4% of ${lim} (${from} 5 limit hits)`],
+                [{hits:1,source:'limit_hit'},sv?`≈ 4 % av ${lim} (${from} 1 gränsträff)`:`≈ 4% of ${lim} (${from} 1 limit hit)`],
+                [{readings:12,source:'statusline'},sv?`≈ 4 % av ${lim} (${from} 12 statusradsavläsningar)`:`≈ 4% of ${lim} (${from} 12 statusline readings)`],
+                [{hits:1,readings:12,source:'limit_hit+statusline'},sv?`≈ 4 % av ${lim} (${from} 1 gränsträff och 12 statusradsavläsningar)`:`≈ 4% of ${lim} (${from} 1 limit hit and 12 statusline readings)`],
+                [{percent:null,unfit:true,hits:3,source:'limit_hit'},sv?'andel okänd: den automatiska uppskattningen passar inte den här turen':'share unknown: the automatic estimate does not fit this turn']];
+              for(const [extra,want] of cases){const a=await newPage({locale:T.locale},auto(extra)),got=norm(await a.page.locator('#top-prompts .qs').first().innerText());assert.equal(got,want);assert.deepEqual(a.errors,[]);await a.context.close()}
+            }
             const qc=await newPage({locale:T.locale},withTopShare(fixture,'estimate',8,'claude')),qct=norm(await qc.page.locator('#glance-text').innerText()),cardt=norm(await qc.page.locator('#top-prompts .qs').first().innerText()),claudeLimit=sv?'veckogränsen för Claude':'the weekly Claude limit';assert.ok(qct.includes(claudeLimit)&&cardt.includes(claudeLimit)&&!/Claude Code/.test(qct+cardt),'#115: summary and card name the same Claude limit: '+qct+' | '+cardt);assert.deepEqual(qc.errors,[]);await qc.context.close();
           }
           const none=await newPage({locale:T.locale},fixture);assert.equal(await none.page.locator('#limit-hits').isVisible(),false);assert.deepEqual(none.errors,[]);await none.context.close();

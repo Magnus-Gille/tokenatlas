@@ -821,37 +821,88 @@ class Automatic(unittest.TestCase):
         self.assertEqual(budget.share(auto, 'claude', 5.0)['label'], 'auto-calibrated')
 
     def test_an_auto_share_only_without_an_observed_or_estimated_share(self):
-        auto = {('claude', 10080, None): dict(budget_usd=100.0, source='limit_hit', readings=2, points=2, windows=2, spread=[80.0, 130.0], first_date='2026-09-20', date='2026-10-03')}
+        auto = {('claude', 10080, None): dict(budget_usd=100.0, source='limit_hit', readings=5, points=5, windows=3, spread=[80.0, 130.0], by_source={'limit_hit': 5}, first_date='2026-09-20', date='2026-10-03', used=True, not_used=None)}
         observed = dict(window_minutes=10080, delta_percent=3, label='observed', before=1, after=4, shared_with=0)
         items = [dict(harness='claude', session='s', turn_id=t, quota_share=q) for t, q in (('a', None), ('b', observed), ('c', dict(observed, label='estimate')))]
         costs = {('claude', 's', t): (4.0, False, None) for t in 'abc'}
         budget.mark_turns(items, auto, costs)
         self.assertEqual([i['quota_share']['label'] for i in items], ['auto-calibrated', 'observed', 'estimate'])
-        self.assertEqual(quota_share.line(items[0]['quota_share'], 'claude'), '≈4% of the weekly Claude limit (estimated from your limit hits)')
-        sl = dict(auto[('claude', 10080, None)], source='statusline')
-        self.assertEqual(quota_share.line(budget.share({('claude', 300, None): sl}, 'claude', 20.0), 'claude'), '≈20% of the 5-hour Claude limit (estimated from your statusline readings)')
+        self.assertEqual(quota_share.line(items[0]['quota_share'], 'claude'), '≈4% of the weekly Claude limit (estimated from 5 limit hits)')
+        sl = dict(auto[('claude', 10080, None)], source='statusline', by_source={'statusline': 12})
+        self.assertEqual(quota_share.line(budget.share({('claude', 300, None): sl}, 'claude', 20.0), 'claude'), '≈20% of the 5-hour Claude limit (estimated from 12 statusline readings)')
+        both = dict(sl, by_source={'limit_hit': 1, 'statusline': 12})
+        self.assertEqual(quota_share.line(budget.share({('claude', 300, None): both}, 'claude', 20.0), 'claude'), '≈20% of the 5-hour Claude limit (estimated from 1 limit hit and 12 statusline readings)')
         lb = budget.share(auto, 'claude', 4.0, lower_bound=True)
-        self.assertEqual(quota_share.line(lb, 'claude'), '≥4% of the weekly Claude limit (estimated from your limit hits)')
+        self.assertEqual(quota_share.line(lb, 'claude'), '≥4% of the weekly Claude limit (estimated from 5 limit hits)')
+
+    def pts(self, *usd, days=None, source='limit_hit'):
+        days = days or range(len(usd))
+        return [dict(harness='claude', minutes=10080, plan=None, source=source, usd=u, cost=u, percent=100.0, at=self.T + timedelta(days=d), window_end=self.T + timedelta(days=d, hours=1)) for u, d in zip(usd, days)]
+
+    def test_too_little_or_inconsistent_evidence_is_listed_but_not_used(self):
+        key = ('claude', 10080, None)
+        for usd, days, reason in (((90.0,), None, 'not enough evidence yet (1 of 3 points)'), ((90.0, 100.0), None, 'not enough evidence yet (2 of 3 points)'),
+                                  ((90.0, 100.0, 95.0), (0, 0, 0), 'not enough evidence yet (3 points in 1 of 2 windows)'),
+                                  ((10.0, 50.0, 20.0), None, 'points disagree too much (spread ×5.0)')):
+            auto = budget.derive_auto(self.pts(*usd, days=days))
+            self.assertEqual((auto[key]['used'], auto[key]['not_used']), (False, reason))
+            self.assertEqual(budget.combine({}, auto), {})  # no share
+            self.assertIsNone(budget.share(budget.combine({}, auto), 'claude', 4.0))
+        ok = budget.derive_auto(self.pts(90.0, 100.0, 95.0, days=(0, 1, 1)))[key]
+        self.assertEqual((ok['used'], ok['not_used'], ok['windows']), (True, None, 2))
+        self.assertEqual(budget.share(budget.combine({}, {key: ok}), 'claude', 9.5)['label'], 'auto-calibrated')
+        four = budget.derive_auto(self.pts(10.0, 40.0, 20.0))[key]  # exactly 4x is still consistent
+        self.assertTrue(four['used'])
+
+    def test_a_share_above_a_whole_window_is_unknown_not_a_number(self):
+        auto = {('claude', 10080, None): dict(budget_usd=2.0, source='limit_hit', readings=3, points=3, windows=2, spread=[1.0, 3.0], by_source={'limit_hit': 3}, first_date='2026-09-20', date='2026-10-03', used=True)}
+        got = budget.share(auto, 'claude', 5.0)
+        self.assertEqual((got['label'], got['delta_percent'], got['unfit']), ('auto-calibrated', None, True))
+        self.assertEqual(quota_share.line(got, 'claude'), 'share unknown: the automatic estimate does not fit this turn')
+        recs = [rec('big', self.T, out=2_000_000), rec('small', self.T + timedelta(hours=1), out=1_000)]
+        auto[('claude', 10080, None)]['budget_usd'] = cost_of(recs[:1]) / 2  # the big turn is 200% of the window
+        self.assertEqual(budget.over_cap(auto, {}, recs, TABLE), 1)
+        self.assertEqual(budget.share(auto, 'claude', cost_of(recs[1:]))['label'], 'auto-calibrated')
+        self.assertIn('1 turn over 100% of a window with the automatic budget', budget.render(budget._empty(), {}, NOW, 8, auto, {}, 1))
+        self.assertEqual(budget.over_cap(auto, {}, recs[1:], TABLE), 0)
+        self.assertEqual(budget.over_cap(auto, {}, recs, TABLE, measured={('claude', 's1', 'big')}), 0)  # it has an observed or estimated share: that wins
+        manual = {('claude', 10080, None): dict(budget_usd=10_000.0, source='manual', readings=0, spread=None, date='2026-10-01')}
+        self.assertEqual(budget.over_cap(auto, manual, recs, TABLE), 0)  # top shows the manual share
+        self.assertEqual([budget.auto_status(manual, ('claude', 10080, None), auto[('claude', 10080, None)]), budget.auto_status({}, ('claude', 10080, None), auto[('claude', 10080, None)]),
+                          budget.auto_status({}, ('claude', 10080, None), dict(auto[('claude', 10080, None)], used=False, not_used='x'))], ['overridden', 'used', 'not_used'])
+        manual = {('claude', 10080, None): dict(budget_usd=2.0, source='manual', readings=0, spread=None, date='2026-10-01')}
+        self.assertEqual(budget.share(manual, 'claude', 5.0)['delta_percent'], 250.0)  # manual calibration is unchanged
 
     def report(self, redact):
         t = self.T
-        recs = [rec('a', t - timedelta(hours=2)), rec('b', t - timedelta(hours=1), out=2_000_000), rec('c', t + timedelta(days=1))]
-        return report.build_report(recs, {}, now=NOW, redact=redact, all_hits=[hit(t)])
+        recs = [rec(f'r{i}', t + timedelta(days=i) - timedelta(hours=1), out=1_000_000) for i in range(3)] + [rec('c', t + timedelta(days=10), out=500_000)]
+        hits = [hit(t + timedelta(days=i)) for i in range(3)]
+        return report.build_report(recs, {}, now=NOW, redact=redact, all_hits=hits)
 
     def test_private_report_has_auto_shares_and_shared_report_has_none(self):
         private = self.report(False)
         self.assertEqual({v['label'] for v in private['quota_shares'].values()}, {'auto-calibrated'})
-        self.assertEqual({v['source'] for v in private['quota_shares'].values()}, {'limit_hit'})
-        self.assertEqual(private['quota_calibration'][0]['source'], 'limit_hit')
+        self.assertEqual({(v['source'], v['hits'], v['readings']) for v in private['quota_shares'].values()}, {('limit_hit', 3, 0)})
+        self.assertEqual((private['quota_calibration'][0]['source'], private['quota_calibration'][0]['readings']), ('limit_hit', 3))
         shared = json.dumps(self.report(True))
         for needle in ('auto-calibrated', 'quota_calibration', 'quota_shares', 'budget_usd', 'limit_hit"'):
             self.assertNotIn(needle, shared)
+
+    def test_a_share_that_does_not_fit_is_unknown_in_the_report_payload(self):
+        t = self.T
+        recs = [rec(f'r{i}', t + timedelta(days=i) - timedelta(hours=1), out=1_000_000) for i in range(3)] + [rec('big', t + timedelta(days=10), out=9_000_000)]  # 9x a window's cost
+        payload = report.build_report(recs, {}, now=NOW, redact=False, all_hits=[hit(t + timedelta(days=i)) for i in range(3)])
+        shares = payload['quota_shares']
+        unfit = [v for v in shares.values() if v['unfit']]
+        self.assertEqual(len(unfit), 1)
+        self.assertEqual((unfit[0]['label'], unfit[0]['percent'], unfit[0]['hits'], unfit[0]['readings']), ('auto-calibrated', None, 3, 0))
+        self.assertTrue(all(v['percent'] is not None and v['percent'] <= 100 for v in shares.values() if not v['unfit']))
 
     def test_strings_in_both_languages(self):
         page = report.render_report(self.report(False))
         i18n = json.loads(gzip.decompress(base64.b64decode(re.search(r'id="report-i18n"[^>]*>([^<]+)<', page).group(1))).decode())
         for lang in ('sv', 'en'):
-            for key in ('qs_auto', 'qs_auto_lt1', 'qs_auto_lb', 'qs_auto_unknown', 'qs_auto_title', 'qc_auto', 'qs_src_limit_hit', 'qs_src_statusline', 'qs_src_limit_hit_statusline'):
+            for key in ('qs_auto', 'qs_auto_lt1', 'qs_auto_lb', 'qs_auto_unknown', 'qs_auto_title', 'qc_auto', 'qs_src_limit_hit', 'qs_src_statusline', 'qs_src_limit_hit_statusline', 'qs_ev_hit1', 'qs_ev_hits', 'qs_ev_read1', 'qs_ev_reads', 'qs_ev_and', 'qs_auto_unfit'):
                 self.assertTrue(i18n[lang][key], (lang, key))
         self.assertEqual(i18n['en']['qs_auto'], '≈ {n}% of {w} (estimated from {src})')
 
@@ -874,11 +925,14 @@ class AutomaticCli(unittest.TestCase):
         (got,) = shown['automatic']
         self.assertEqual((got['harness'], got['minutes'], got['source'], got['points']), ('claude', 10080, 'statusline', 1))
         self.assertAlmostEqual(got['budget_usd'], spend / 0.3)
+        self.assertEqual((got['used'], got['not_used']), (False, 'not enough evidence yet (1 of 3 points)'))
         self.assertEqual((got['first_date'], got['date'], shown['automatic_skipped']), ('2026-10-02', '2026-10-02', {}))
         code, text, _ = self.run_cli('quota', 'show')
         self.assertIn('automatic budgets', text)
         self.assertIn('statusline, median of 1 point in 1 window', text)
+        self.assertIn('NOT USED: not enough evidence yet (1 of 3 points)', text)
         self.assertFalse(budget.path_for(self.db).exists())  # computed, never stored
+        self.assertEqual([p['quota_share'] for p in json.loads(self.run_cli('top', '-n', '5', '--json')[1])['prompts']], [None, None])  # one point backs no share
 
     def quota_file(self, *rows):
         lines = [dict(ts=ts, session='s1', seven_day=dict(used_percent=used, resets_at=due)) for ts, used, due in rows]
@@ -899,12 +953,29 @@ class AutomaticCli(unittest.TestCase):
         self.assertIn('automatic points skipped: 1 little cost', text)
         self.assertNotIn('automatic budgets (', text)
 
+    def enough_evidence(self):
+        with History(self.db) as h:  # a third request, so that three points in two windows exist
+            r = why.AttributionRecord(harness='claude', provider='anthropic', timestamp=datetime(2026, 10, 2, 9, 40, tzinfo=UTC), session_id='s1', call_id='c9', model=MODEL, effort=None, project='app',
+                                      entrypoint='cli', thread_kind='main', agent='main', fresh_input=0, cache_read=0, cache_write=0, output=1_000_000, reasoning=0, turn_id='t9', turn_confidence='derived',
+                                      raw_usage={'input_tokens': 0, 'output_tokens': 1_000_000, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0})
+            h._insert(h.connection, _encode(normalize(r, 'm')))
+            h.connection.commit()
+        a, b = '2026-10-05T09:00:00+00:00', '2026-10-12T09:00:00+00:00'
+        self.quota_file(('2026-10-01T08:00:00+00:00', 10, a), ('2026-10-01T09:30:00+00:00', 40, a), ('2026-10-02T08:00:00+00:00', 10, b), ('2026-10-02T09:30:00+00:00', 40, b),
+                        ('2026-10-02T10:00:00+00:00', 70, b))
+
     def test_top_gives_old_claude_turns_an_auto_share_and_a_manual_budget_wins(self):
+        self.enough_evidence()
+        shown = json.loads(self.run_cli('quota', 'show', '--json')[1])['automatic'][0]
+        self.assertEqual((shown['used'], shown['status'], shown['points'], shown['windows']), (True, 'used', 3, 2))
         code, out, _ = self.run_cli('top', '-n', '5', '--json')
         self.assertEqual(code, 0, out)
         labels = {p['quota_share']['label'] for p in json.loads(out)['prompts'] if p['quota_share']}
         self.assertEqual(labels, {'auto-calibrated'})
         self.run_cli('quota', 'set', '--harness', 'claude', '--window', '7d', '--budget-usd', '1000')
+        shown = json.loads(self.run_cli('quota', 'show', '--json')[1])
+        self.assertEqual((shown['automatic'][0]['status'], shown['automatic_turns_over_100_percent']), ('overridden', 0))
+        self.assertIn('overridden by your calibration', self.run_cli('quota', 'show')[1])
         labels = {p['quota_share']['label'] for p in json.loads(self.run_cli('top', '-n', '5', '--json')[1])['prompts'] if p['quota_share']}
         self.assertEqual(labels, {'calibrated'})
 
