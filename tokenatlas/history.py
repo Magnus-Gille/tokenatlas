@@ -19,6 +19,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tokenatlas import why
+from tokenatlas.provenance import REMOTE_PATH, is_machine_id
 
 OBSERVATION_VERSION = 1  # the 'v' field inside observation dicts
 SCHEMA_VERSION = 2  # PRAGMA user_version of the SQLite layout
@@ -28,7 +29,7 @@ FIELDS = ('fresh_input', 'cache_read', 'cache_write', 'output')
 ALL_FIELDS = FIELDS + ('reasoning',)
 
 
-_REMOTE_PATH = re.compile(r'm-[^/:\\]*:')  # imported source paths are '<machine>:<path>'; local ones are absolute
+_REMOTE_PATH = REMOTE_PATH
 
 
 def _owned_by_current_user(info):
@@ -460,6 +461,7 @@ class History:
             if migrate:
                 for table in ('observations', 'sources', 'files'):
                     c.execute(f'ALTER TABLE {table} RENAME TO v1_{table}')
+            needs_origin = 'origin' not in {r['name'] for r in c.execute('PRAGMA table_info(files)')}
             for sql in (
                 'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
                 'CREATE TABLE IF NOT EXISTS strings (id INTEGER PRIMARY KEY, value TEXT NOT NULL UNIQUE)',
@@ -475,8 +477,15 @@ class History:
             for column in ('tariff', 'quota', 'flags'):
                 if column not in have:
                     c.execute(f'ALTER TABLE observations ADD COLUMN {column} INTEGER')  # additive within schema 2
+            if 'origin' not in {r['name'] for r in c.execute('PRAGMA table_info(files)')}:
+                c.execute('ALTER TABLE files ADD COLUMN origin TEXT')  # additive within schema 2: 'local' = written by a local refresh
             if migrate:
                 self._migrate_v1(c)
+            if needs_origin:
+                # Conservative backfill: only a row a local refresh checkpointed (refresh sets root; import never does) is
+                # local. Everything else, including rows from earlier imports, stays NULL = ineligible for text capture
+                # until a local refresh of that file marks it local again.
+                c.execute("UPDATE files SET origin='local' WHERE root IS NOT NULL")
             c.execute('INSERT OR IGNORE INTO meta VALUES (?,?)', ('machine', 'm-' + uuid.uuid4().hex))
             c.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
             c.commit()
@@ -687,7 +696,7 @@ class History:
                     # Never checkpoint an incomplete tail; try it again next refresh.
                     checkpoint = before if not diagnostics['partial_lines'] and not changed else None
                     stored = (str(root),checkpoint,json.dumps(diagnostics))
-                    c.execute('UPDATE files SET root=?,fingerprint=?,diagnostics=? WHERE id=?', (*stored,file_id))
+                    c.execute("UPDATE files SET root=?,fingerprint=?,diagnostics=?,origin='local' WHERE id=?", (*stored,file_id))
                     dirty = dirty or not previous or (previous['fingerprint'],previous['diagnostics']) != stored[1:]
                 except (OSError, UnicodeError) as exc:
                     result['read_errors'] += 1
@@ -705,6 +714,10 @@ class History:
             c.rollback()
             self._strings, self._values = {}, {}
             raise
+
+    def local_source_paths(self):
+        """Source paths with positive evidence of local collection (a local refresh wrote them); imports never qualify."""
+        return {r[0] for r in self.connection.execute("SELECT path FROM files WHERE origin='local'")}
 
     @staticmethod
     def _file_id(c, harness, path):
@@ -745,8 +758,12 @@ class History:
             shutil.copyfile(snapshot, copy)
             os.chmod(copy, 0o600)
             try:
-                raw = sqlite3.connect(str(copy))
+                raw = sqlite3.connect(copy.as_uri() + '?mode=ro', uri=True)  # read-only: no attacker trigger can fire
                 try:
+                    raw.execute('PRAGMA trusted_schema=OFF')
+                    active = raw.execute("SELECT type FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1").fetchone()
+                    if active:  # tokenatlas's own schema has neither; they could rewrite data when the copy is opened
+                        raise ValueError(f'snapshot contains a {active[0]}; not a tokenatlas history database')
                     version = raw.execute('PRAGMA user_version').fetchone()[0]
                     found = raw.execute("SELECT value FROM meta WHERE key='machine'").fetchone() if version in (1, SCHEMA_VERSION) else None
                 finally:
@@ -757,8 +774,12 @@ class History:
                 raise ValueError(f'unsupported snapshot schema version {version}')
             if not found:
                 raise ValueError('snapshot has no machine id')
+            if not is_machine_id(found[0]):
+                raise ValueError('snapshot machine id is not a tokenatlas machine id (m-<32 hex>)')
             with History(copy) as source:  # migrates v1 and adds the tariff, quota and flags columns on the copy only
                 machine, items = source.machine, source.records(include_limit_events=True)
+            if not is_machine_id(machine):  # opening the copy writes; re-check the id actually used for prefixing
+                raise ValueError('snapshot machine id is not a tokenatlas machine id (m-<32 hex>)')
         result = dict(harness='import', root=label, source_machine=machine, observations_seen=len(items),
                       new=0, merged=0, status='ok', last_attempt=utcnow())
         if machine == self.machine:

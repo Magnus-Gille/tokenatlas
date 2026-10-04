@@ -14,6 +14,8 @@ import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .provenance import local_file
 from urllib.parse import urlsplit
 
 from .prompt_text import (
@@ -121,9 +123,9 @@ def _tools(raw: dict, harness: str, names_inputs: list[tuple[object, object]]) -
 
 def _first_file(sources: object, parent_only: bool = True):
     for source in sources if isinstance(sources, (list, tuple, set)) else [sources]:
-        if isinstance(source, (str, Path)) and Path(source).is_file() and not (
-                parent_only and "subagents" in Path(source).parts):
-            yield Path(source)
+        path = local_file(source)
+        if path is not None and not (parent_only and "subagents" in path.parts):
+            yield path
 
 
 def _blocks(message: dict, row: dict) -> list:

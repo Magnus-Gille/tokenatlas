@@ -689,7 +689,7 @@ def _v1_database(path, records, files):
         'CREATE TABLE files (harness TEXT, path TEXT, root TEXT, fingerprint TEXT, diagnostics TEXT, PRIMARY KEY(harness,path))',
         'CREATE TABLE imports (harness TEXT, root TEXT, data TEXT, PRIMARY KEY(harness,root))'):
         connection.execute(sql)
-    connection.execute("INSERT INTO meta VALUES ('machine','m-legacy')")
+    connection.execute("INSERT INTO meta VALUES ('machine','m-a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1')")
     for record in records:
         item = {k: v for k, v in record.items() if k != 'sources'}
         key = _key(item)
@@ -982,7 +982,7 @@ class HistoryStorageTests(unittest.TestCase):
         size_before = legacy.stat().st_size
         gone.unlink()
         with History(legacy) as h:
-            self.assertEqual(h.machine, 'm-legacy')
+            self.assertEqual(h.machine, 'm-a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1')
             self.assertEqual(sorted(h.records(), key=lambda r: r['id']), sorted(records, key=lambda r: r['id']))
             self.assertEqual([r['sources'] for r in h.records() if r['id'] == 'only-gone'], [[str(gone)]])
             self.assertEqual(h.connection.execute('PRAGMA user_version').fetchone()[0], 2)
@@ -1049,6 +1049,169 @@ class HistoryStorageTests(unittest.TestCase):
         per_observation = (self.root / 'h.sqlite3').stat().st_size / count
         print(f'\nhistory size: {per_observation:.1f} bytes per observation over {count} observations')
         self.assertLessEqual(per_observation, 300)
+
+
+
+
+class PromptProvenanceTests(unittest.TestCase):
+    """#132: only locally collected sources reach prompt and context capture."""
+
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        self.source=self.root/'logs/a.jsonl';write_claude(self.source)
+
+    def capture(self, h):
+        from tokenatlas import prompt_store
+        from test_pricing import TABLE
+        store=self.root/'top.json'
+        prompt_store.update(store,h.records(),TABLE,h.machine,k=3,local=h.local_source_paths())
+        return [e['text'] or e.get('context') for e in json.loads(store.read_bytes())['entries'] if e['text'] or any((e.get('context') or {}).values())]
+
+    def snapshot_with_machine(self):
+        """Snapshot of another machine's history."""
+        snap=self.root/'other.snap'
+        with History(self.root/'other.sqlite3') as other:
+            other.refresh('claude',self.source.parent)
+            other.snapshot(snap)
+        return snap
+
+    def test_local_source_still_yields_preview(self):
+        with History(self.root/'mine.sqlite3') as h:
+            h.refresh('claude',self.source.parent)
+            self.assertEqual(self.capture(h),['PRIVATE PROMPT'])
+
+    def test_imported_source_never_yields_preview_even_with_forged_machine(self):
+        with History(self.root/'mine.sqlite3') as h:
+            snap=self.snapshot_with_machine()
+            self.assertEqual(h.import_snapshot(snap,'laptop')['new'],1)
+            self.assertTrue(all(s.startswith(('m-',)) for r in h.records() for s in r['sources']))
+            self.assertEqual(self.capture(h),[])
+            # forge: the imported observation claims this machine's id; its source is still an imported reference
+            h.connection.execute('UPDATE observations SET machine=?',(h._sid(h.connection,h.machine),))
+            h.connection.commit()
+            self.assertEqual({r['machine'] for r in h.records()},{h.machine})
+            self.assertEqual(self.capture(h),[])
+
+    @unittest.skipIf(os.name=='nt','a directory named m-<id>: cannot exist on Windows')
+    def test_forged_prefixed_reference_resolving_relative_to_cwd_is_rejected(self):
+        from tokenatlas.provenance import local_file
+        from tokenatlas.prompt_text import extract_prompt
+        from tokenatlas.turn_context import turn_context
+        cwd=os.getcwd();self.addCleanup(os.chdir,cwd)
+        os.chdir(self.root)
+        (self.root/('m-'+'e'*0+'0'*32+':')).mkdir()
+        (self.root/('m-'+'0'*32+':')/'a.jsonl').write_text(self.source.read_text())
+        ref='m-'+'0'*32+':/a.jsonl'
+        self.assertTrue(Path(ref).is_file())  # the relative path really would be readable
+        self.assertIsNone(local_file(ref))
+        self.assertIsNone(extract_prompt('claude',ref,'session','prompt-1'))
+        self.assertEqual(turn_context('claude',[ref],'session','prompt-1')['inputs']['first'],None)
+
+    def test_relative_and_non_regular_sources_are_rejected(self):
+        from tokenatlas.provenance import local_file, local_sources
+        cwd=os.getcwd();self.addCleanup(os.chdir,cwd)
+        os.chdir(self.root)
+        self.assertIsNone(local_file('logs/a.jsonl'))
+        self.assertIsNone(local_file(self.root/'logs'))  # a directory
+        self.assertIsNone(local_file(self.root/'missing.jsonl'))
+        self.assertEqual(local_file(self.source),self.source)
+        self.assertEqual(local_sources(['logs/a.jsonl','m-'+'0'*32+':/a',str(self.source)]),[str(self.source)])
+
+    def test_import_and_reimport_still_merge_and_dedupe(self):
+        with History(self.root/'mine.sqlite3') as h:
+            h.refresh('claude',self.source.parent)
+            snap=self.snapshot_with_machine()
+            first=h.import_snapshot(snap,'laptop')
+            self.assertEqual((first['new'],first['merged']),(0,1))  # same provider request id: merges with the local copy
+            before=h.records(),h.revision
+            again=h.import_snapshot(snap,'laptop')
+            self.assertEqual((again['new'],again['merged']),(0,1))
+            self.assertEqual((h.records(),h.revision),before)
+            self.assertEqual(len(before[0]),1)
+            local=[s for s in before[0][0]['sources'] if not s.startswith('m-')]
+            self.assertEqual(local,[str(self.source)])
+        with History(self.root/'third.sqlite3') as h:
+            self.assertEqual(h.import_snapshot(snap,'laptop')['new'],1)
+            self.assertEqual(h.import_snapshot(snap,'laptop')['new'],0)
+            self.assertEqual(len(h.records()),1)
+
+    def test_pre_upgrade_history_quarantines_rows_without_local_refresh_evidence(self):
+        """A schema-2 database without files.origin: a forged import row passes every syntax check but is never read."""
+        from tokenatlas import prompt_store
+        from test_pricing import TABLE
+        forged=self.root/'forged/f.jsonl';write_claude(forged,request='reqf')
+        db=self.root/'old.sqlite3'
+        with History(db) as h:
+            h.refresh('claude',self.source.parent)
+            h.refresh('claude',forged.parent)
+            # what an earlier import left: no root/fingerprint (import never sets them) on a drive-style, absolute path
+            h.connection.execute('UPDATE files SET root=NULL,fingerprint=NULL,diagnostics=NULL WHERE path=?',(str(forged),))
+            h.connection.commit()
+            try:
+                h.connection.execute('ALTER TABLE files DROP COLUMN origin');h.connection.commit()
+            except sqlite3.OperationalError:
+                self.skipTest('SQLite without DROP COLUMN')
+        with History(db) as h:
+            self.assertEqual(h.local_source_paths(),{str(self.source)})
+            self.assertIn(str(forged),{s for r in h.records() for s in r['sources']})  # still reported and deduped
+            seen=[]
+            def extract(harness,source,session,turn_id,limit=200):seen.append(source);return None
+            def context(harness,sources,session,turn_id,start=None,end=None):seen.extend(sources);return None
+            records=[dict(r,machine=h.machine) for r in h.records()]  # observation identity claims to be local
+            with patch('tokenatlas.provenance._plain',lambda text:True):  # and the syntax check accepts a drive-style path
+                prompt_store.update(self.root/'t.json',records,TABLE,h.machine,k=5,extract=extract,context=context,
+                                    local=h.local_source_paths())
+            self.assertNotIn(str(forged),seen)
+            self.assertEqual(set(seen),{str(self.source)})
+            self.assertEqual(self.capture(h),['PRIVATE PROMPT'])  # the genuine local source still works
+            h.refresh('claude',forged.parent)  # a local refresh of a genuinely local file re-marks it local
+            self.assertEqual(h.local_source_paths(),{str(self.source),str(forged)})
+
+    def test_import_marks_sources_as_not_local(self):
+        with History(self.root/'mine.sqlite3') as h:
+            h.import_snapshot(self.snapshot_with_machine(),'laptop')
+            self.assertEqual(h.local_source_paths(),set())
+            h.refresh('claude',self.source.parent)
+            self.assertEqual(h.local_source_paths(),{str(self.source)})
+
+    def test_snapshot_with_a_non_conforming_machine_id_is_rejected_and_imports_nothing(self):
+        for n,forged in enumerate(('C','c:','m-x','M-'+'0'*32,'m-'+'A'*32,'m-'+'0'*31,'m-'+'0'*32+':','m-'+'0'*32+'\n','')):
+            db=self.root/f'other{n}.sqlite3';snap=self.root/f'forged{n}.snap'
+            with History(db) as other:
+                other.refresh('claude',self.source.parent)
+                other.connection.execute("UPDATE meta SET value=? WHERE key='machine'",(forged,))
+                other.connection.commit()
+            raw=sqlite3.connect(str(db));out=sqlite3.connect(str(snap))
+            raw.backup(out);out.close();raw.close()
+            with History(self.root/f'mine{n}.sqlite3') as h:
+                with self.assertRaisesRegex(ValueError,'machine id'):
+                    h.import_snapshot(snap,'laptop')
+                self.assertEqual(h.records(),[])
+
+    def test_snapshot_with_a_trigger_or_view_is_rejected_and_imports_nothing(self):
+        for n,ddl in enumerate((
+                "CREATE TRIGGER t BEFORE INSERT ON meta BEGIN UPDATE meta SET value='C' WHERE key='machine'; END",
+                "CREATE VIEW v AS SELECT 1")):
+            db=self.root/f'trig{n}.sqlite3';snap=self.root/f'trig{n}.snap'
+            with History(db) as other:
+                other.refresh('claude',self.source.parent)
+                other.connection.execute(ddl);other.connection.commit()
+            raw=sqlite3.connect(str(db));out=sqlite3.connect(str(snap))
+            raw.backup(out);out.close();raw.close()
+            with History(self.root/f'mine{n}.sqlite3') as h:
+                with self.assertRaisesRegex(ValueError,'trigger|view'):
+                    h.import_snapshot(snap,'laptop')
+                self.assertEqual(h.records(),[])
+                self.assertEqual(h.connection.execute('SELECT count(*) FROM sources').fetchone()[0],0)
+
+    @unittest.skipIf(os.name=='nt','a drive-letter path is a legitimate local path on Windows')
+    def test_drive_like_and_prefixed_references_are_never_local(self):
+        from tokenatlas.provenance import local_file, local_sources
+        refs=['C:/Users/alice/x.jsonl','C:\\Users\\alice\\x.jsonl','m-x:/a','x:/a']
+        self.assertEqual(local_sources(refs+[str(self.source)]),[str(self.source)])
+        self.assertTrue(all(local_file(r) is None for r in refs))
 
 
 if __name__=='__main__':unittest.main()

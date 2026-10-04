@@ -226,7 +226,7 @@ class SnapshotImportTests(unittest.TestCase):
         before = (sha(legacy), legacy.stat().st_mtime_ns)
         code, out, err = self.imp(legacy, 'old')
         self.assertEqual(code, 0, err)
-        self.assertEqual(json.loads(out)['source_machine'], 'm-legacy')
+        self.assertEqual(json.loads(out)['source_machine'], 'm-a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1')
         self.assertEqual((sha(legacy), legacy.stat().st_mtime_ns), before)
         with sqlite_ro(legacy) as c:
             self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 1)
