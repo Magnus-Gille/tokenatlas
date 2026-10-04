@@ -24,7 +24,7 @@ Side idea: a hook cannot read the value, but a hook-driven tool could reuse the 
 - Wrapper constraints that follow from the docs: (a) must be fast, because slow scripts get cancelled and a cancelled wrapper may not finish recording, so write the snapshot first (atomic, small) and then run the inner command; (b) forward stdin byte-for-byte and stdout (ANSI/OSC 8 are rendered as-is; multiple lines supported); (c) `padding` and `refreshInterval` belong to the settings entry, so preserve them when installing; (d) stderr is only logged under `--debug`; (e) `statusLine` is a single slot, so install must save the original command and be reversible; managed/`allowManagedHooksOnly` settings can restrict `statusLine`; (f) no documented per-run timeout was found, which is an open question.
 - `/usage` and statusline values are the same data source (changelog v2.1.243: statusline `rate_limits` and `/usage` showed stale pre-reset percentages, fixed).
 Sources: https://code.claude.com/docs/en/statusline (2026-10-04); changelog entries v2.1.80 "Added `rate_limits` field to statusline scripts ... (5-hour and 7-day windows with `used_percentage` and `resets_at`)", v2.1.97 `refreshInterval`, v2.1.243, v2.1.251 and v2.1.284 (spend_limit fields).
-Gaps: the statusline only runs in the interactive TUI, so `claude -p` runs and idle periods produce no snapshots (docs do not state how it behaves for headless; unverified).
+Gaps: the statusline only runs in the interactive TUI, so `claude -p` runs produce no snapshots (docs do not state how it behaves for headless; unverified). In an idle TUI the wrapper may still be invoked (timer, window reset), but with cached values: invocation is not freshness. A changed payload, such as a window that expired, is still recorded.
 
 ### 3. OpenTelemetry: nothing
 Metrics: session.count, lines_of_code.count, pull_request.count, commit.count, cost.usage, token.usage, code_edit_tool.decision, active_time.total. Events include user_prompt, assistant_response, api_request, api_error, api_refusal, api_retries_exhausted, tool_result, auth and others. No quota, 5-hour or weekly data. `api_error` may carry rate-limit failures but not usage percentage (not verified in detail). Consistent with earlier finding #94.
@@ -58,7 +58,7 @@ Source: https://code.claude.com/docs/en/costs ; https://code.claude.com/docs/llm
 
 Same semantics as the statusline: only for claude.ai subscribers (or gateway `spend_limit` with `used_usd`/`limit_usd`/`period`), windows independently optional, epoch seconds. Alternatively add the same object to the `Stop` and `SessionEnd` hook inputs.
 
-**Benefits.** Works for headless (`-p`) and SDK runs, subagents, and idle sessions; no statusline takeover; enables per-session/per-skill attribution of plan consumption and accurate history (the value at each message rather than a poll). Cost is a small constant per record and no new network call, since the data comes from the existing response headers.
+**Benefits.** Works for headless (`-p`) and SDK runs and subagents (values at response time; periods without responses still leave gaps); no statusline takeover; enables per-session/per-skill attribution of plan consumption and accurate history (the value at each message rather than a poll). Cost is a small constant per record and no new network call, since the data comes from the existing response headers.
 
 ## Open questions
 - Does the statusline run (and receive `rate_limits`) in `-p`/headless and in IDE/VS Code sessions? Docs silent.
