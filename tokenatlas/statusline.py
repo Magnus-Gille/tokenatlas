@@ -2,10 +2,10 @@
 
 Claude Code runs the command on every status update, so this module stays light (stdlib and tokenatlas.energy only; the history is never
 imported or opened). Day, week and month totals come from statusline.json next to the history database, written by refresh; context and
-quota are live from the payload on stdin. No network, no credentials, and by default nothing is written by the statusline itself.
-With the opt-in `--record-quota` it also appends the 5-hour and weekly quota readings to claude-quota.jsonl next to the history (see
-record_quota), so a turn can later be given a share of the limit; that is the only thing it ever writes, and a failure to write never
-changes the status line.
+quota are live from the payload on stdin. No network, no credentials. By default it also appends the 5-hour and weekly quota readings to
+claude-quota.jsonl next to the history (see record_quota), so a turn can later be given a share of the limit; `--no-record-quota` or
+TOKENATLAS_NO_QUOTA=1 turns that off, and `--record-quota` is accepted as a no-op. That is the only thing it ever writes, and a failure
+to write never changes the status line.
 """
 import argparse
 import contextlib
@@ -273,20 +273,57 @@ def settings_path():
     return (Path(config).expanduser() if config else Path.home() / '.claude') / 'settings.json'
 
 
-def recording_configured():
-    """Does the Claude Code statusline command carry --record-quota? True or False when a readable settings file (settings.json or
-    settings.local.json beside it) has a tokenatlas statusLine command; None (unknown) when none can be read or none names tokenatlas. Read only."""
+NO_QUOTA_ENV = 'TOKENATLAS_NO_QUOTA'
+
+
+TRUTHY = ('1', 'true', 'yes', 'on')
+
+
+def recording_disabled_by_env(value=None):
+    """TOKENATLAS_NO_QUOTA set to 1/true/yes/on turns quota recording off (value: a command-local assignment overriding the process environment)."""
+    return (os.environ.get(NO_QUOTA_ENV, '') if value is None else value).strip().lower() in TRUTHY
+
+
+def _command_state(command):
+    """Classify one statusLine command: 'foreign', 'disabled', 'enabled', or 'unknown' when it is tokenatlas's but too complex to read reliably
+    (shell operators or substitutions). Leading VAR=value assignments are honoured for TOKENATLAS_NO_QUOTA."""
+    if not (isinstance(command, str) and 'tokenatlas' in command and 'statusline' in command):return 'foreign'
+    if re.search(r'[;|&`<>\n]|\$\(', command):return 'unknown'
+    try:tokens = shlex.split(command)
+    except ValueError:return 'unknown'
+    local = None
+    for token in tokens:
+        match = re.match(r'[A-Za-z_][A-Za-z0-9_]*=(.*)$', token, re.S)
+        if not match:break
+        if token.startswith(NO_QUOTA_ENV + '='):local = match.group(1)
+    if '--no-record-quota' in tokens or recording_disabled_by_env(local):return 'disabled'
+    return 'enabled'
+
+
+def recording_state():
+    """'unknown' when no Claude Code settings file can be read (or the effective command is too complex to parse); 'foreign' when the effective
+    statusline is not tokenatlas's (no snapshots can be recorded); 'disabled' when it carries --no-record-quota or TOKENATLAS_NO_QUOTA (in the
+    command or the environment) is set; else 'enabled'. The effective command follows Claude's precedence: settings.local.json beside
+    settings.json overrides it. Read only."""
     base = settings_path()
-    found = False
-    for path in (base, base.with_name('settings.local.json')):
+    readable = False
+    command = None
+    for path in (base, base.with_name('settings.local.json')):  # later overrides earlier
         try:
-            command = (json.loads(path.read_text(encoding='utf-8')).get('statusLine') or {}).get('command')
+            line = json.loads(path.read_text(encoding='utf-8')).get('statusLine') or {}
+            found = line.get('command')
         except (OSError, ValueError, AttributeError):
             continue
-        if isinstance(command, str) and 'tokenatlas' in command and 'statusline' in command:
-            if '--record-quota' in command:return True
-            found = True
-    return False if found else None
+        readable = True
+        if isinstance(found, str):command = found
+    return _command_state(command) if readable else 'unknown'
+
+
+def recording_configured():
+    """True when the Claude Code statusline command is tokenatlas's and recording is not opted out (--no-record-quota or TOKENATLAS_NO_QUOTA);
+    False when it is not tokenatlas's or recording is disabled; None (unknown) when no settings file can be read."""
+    state = recording_state()
+    return None if state == 'unknown' else state == 'enabled'
 
 
 def tokens_text(n):
@@ -366,7 +403,7 @@ def _quote(arg, windows=None):
     return subprocess.list2cmdline([arg])
 
 
-def setup_text(db=None, command=None, windows=None, record_quota=False):
+def setup_text(db=None, command=None, windows=None):
     """The statusLine snippet for Claude Code's settings.json and where that file is; the file itself is never touched."""
     settings = settings_path()
     command = command or executable()
@@ -375,26 +412,28 @@ def setup_text(db=None, command=None, windows=None, record_quota=False):
     unsafe = windows and any(WINDOWS_UNSAFE.search(a) for a in args)
     if ' -m ' not in command:command = _quote(command, windows)
     if db is not None:command += f' --db {_quote(str(Path(db).expanduser().absolute()), windows)}'
-    snippet = json.dumps({'statusLine': {'type': 'command', 'command': f"{command} statusline{' --record-quota' if record_quota else ''}"}}, indent=2)
+    snippet = json.dumps({'statusLine': {'type': 'command', 'command': f"{command} statusline"}}, indent=2)
     warning = ('Warning: a path in this command contains a character that cmd.exe treats specially (&, |, ^, %, ! ...) and that no quoting makes '
                'safe; install TokenAtlas (and the database) under a plain path, or check that the command works before relying on it.\n\n') if unsafe else ''
     return (f'{warning}Add this to {settings} (merge it into the existing JSON; this command never edits the file):\n\n{snippet}\n\n'
             'Totals refresh whenever tokenatlas refresh, open or collect runs; context and quota are live.'
-            + (f' With --record-quota the statusline also appends the quota readings to {QUOTA_NAME} next to the history (account-wide; only while a Claude Code UI session is open).' if record_quota else ''))
+            f' The statusline also records the 5-hour and weekly quota readings Claude Code already shows (timestamp, session id, percentages and reset times) to {QUOTA_NAME} next to the history, '
+            'local only (0600), account-wide, only while a Claude Code UI session is open. To turn that off add --no-record-quota to the command or set TOKENATLAS_NO_QUOTA=1.')
 
 
 def run(argv, db=None, stdin=None, now=None):
-    """Entry point: print one line and return 0, whatever happens. It writes nothing unless --record-quota is given (record_quota)."""
+    """Entry point: print one line and return 0, whatever happens. It records quota readings unless --no-record-quota or TOKENATLAS_NO_QUOTA=1 (record_quota); --record-quota is a no-op."""
     parser = argparse.ArgumentParser(prog='tokenatlas statusline', description='Claude Code statusline: reads its JSON payload on stdin and the cache refresh writes; no network.')
     parser.add_argument('--setup', action='store_true', help="Print the statusLine snippet for Claude Code's settings and its location, without editing it.")
-    parser.add_argument('--record-quota', action='store_true', help=f'Opt in: also append the 5-hour and weekly quota readings to {QUOTA_NAME} next to the history, when they changed.')
+    parser.add_argument('--record-quota', action='store_true', help='Accepted for compatibility; recording is on by default.')
+    parser.add_argument('--no-record-quota', action='store_true', help=f'Do not append the 5-hour and weekly quota readings to {QUOTA_NAME} next to the history (also TOKENATLAS_NO_QUOTA=1).')
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:  # --help exits 0 after printing; a bad option must not break the status bar: fallback line, exit 0
         if exc.code not in (0, None):print('TokenAtlas')
         return 0
     if args.setup:
-        print(setup_text(db, record_quota=args.record_quota))
+        print(setup_text(db))
         return 0
     model = None
     try:
@@ -406,7 +445,7 @@ def run(argv, db=None, stdin=None, now=None):
     except Exception:
         print(model if isinstance(model, str) and model else 'TokenAtlas')
         return 0
-    if args.record_quota:
+    if not args.no_record_quota and not recording_disabled_by_env():
         try:
             sys.stdout.flush()
             record_quota(payload, db if db is not None else default_db(), now)

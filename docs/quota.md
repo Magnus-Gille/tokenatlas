@@ -26,11 +26,14 @@ Sources: support.claude.com articles 11647753 and 11145838; code.claude.com/docs
 the anthropics/claude-code CHANGELOG (v2.1.80 added `rate_limits`); learn.chatgpt.com/docs/pricing;
 openai/codex `codex-rs/protocol` (`RateLimitSnapshot`, `RateLimitWindow`, `RateLimitReachedType`).
 
-## Claude snapshots (opt-in)
+## Claude snapshots (on by default)
 
-Claude Code's payload is only live, so tokenatlas records it when asked: `tokenatlas statusline --record-quota` appends
+Claude Code's payload is only live, so `tokenatlas statusline` records it by default (since 1.14; opt out with
+`--no-record-quota` or `TOKENATLAS_NO_QUOTA=1`; `--record-quota` is accepted and does nothing): it appends
 `{ts, session, five_hour: {used_percent, resets_at}, seven_day: {...}}` to `claude-quota.jsonl` next to the history, when a
-value changed (0600, pruned to the last 60 days above 5 MB; a failure never changes the status line). A reading is the counter
+value changed. Privacy: local only, nothing is sent; the file is 0600 (symlinks refused), holds only values Claude Code already
+shows in its statusline plus the timestamp and session id, and is pruned to the last 60 days above 5 MB; a failure never
+changes the status line. `tokenatlas doctor` reports whether recording is active. A reading is the counter
 after its session's latest request, so the join places it at that request (within 5 minutes; an idle reading belongs to no turn)
 and the shares then follow the same rules as for Codex. Coverage:
 

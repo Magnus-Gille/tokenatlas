@@ -220,7 +220,7 @@ def _events(events):
 
 
 def _claude_quota(db):
-    """The Claude quota snapshot file next to the history database when it exists (opt-in, `statusline --record-quota`), else None."""
+    """The Claude quota snapshot file next to the history database when it exists (recorded by default by `tokenatlas statusline`), else None."""
     path=statusline.quota_path(db)
     return path if path.is_file() else None
 
@@ -231,14 +231,15 @@ def _quota_token(db):
 
 
 def _quota_status(db):
-    """doctor: Claude quota recording. `recording_configured` is whether the Claude Code settings file names `--record-quota` in the statusline command
-    (true/false, or "unknown" when no settings file can be read or none names tokenatlas); `snapshots_file` is present/absent, with the snapshot count,
+    """doctor: Claude quota recording. `recording_configured` is true when the Claude Code statusline command is tokenatlas's and recording is not opted out
+    (--no-record-quota or TOKENATLAS_NO_QUOTA); false when it is not tokenatlas's or recording is disabled; "unknown" when no settings file can be read; `snapshots_file` is present/absent, with the snapshot count,
     unreadable lines, the last snapshot and its age."""
     from tokenatlas import quota_share
     path=statusline.quota_path(db)
-    configured=statusline.recording_configured()
+    state=statusline.recording_state()
+    configured=None if state=='unknown' else state=='enabled'
     problem=statusline.quota_file_problem(path)
-    out=dict(recording_configured='unknown' if configured is None else configured,settings_file=str(statusline.settings_path()),path=str(path),
+    out=dict(recording_configured='unknown' if configured is None else configured,statusline_state=state,settings_file=str(statusline.settings_path()),path=str(path),
              snapshots_file='present' if path.is_file() else 'absent',file_problem=problem,snapshots=0,malformed=0,last_snapshot=None,last_snapshot_age=None,
              note='snapshots exist only while a Claude Code UI session is open; claude -p, SDK runs and claude.ai chat are not recorded')
     if path.is_file():
@@ -247,7 +248,9 @@ def _quota_status(db):
         out.update(snapshots=len(rows),malformed=bad,last_snapshot=None if last is None else last.isoformat(),
                    last_snapshot_age=None if last is None else max(0,int((datetime.now(ZoneInfo('UTC'))-last).total_seconds())))
     if problem:out['hint']=f'recording is skipped: the snapshot file {problem}'
-    elif configured is not True:out['hint']='to record, add --record-quota to the statusline command (tokenatlas statusline --setup --record-quota)'
+    elif state=='foreign':out['warning']='the Claude Code statusline is not tokenatlas\'s, so no quota snapshots can be recorded; see tokenatlas statusline --setup'
+    elif state=='disabled':out['warning']='quota recording is disabled (--no-record-quota or TOKENATLAS_NO_QUOTA); Claude turns get no limit share without snapshots'
+    elif state=='unknown':out['hint']='Claude Code settings could not be read; recording is on by default when the statusline is tokenatlas\'s (tokenatlas statusline --setup)'
     return out
 
 
@@ -357,9 +360,10 @@ def main(argv=None):
     collect.add_argument('--sync-timeout',type=int,default=600,help='Seconds for the whole remote sync before its process group is killed (default 600).')
     collect.add_argument('--no-report',action='store_true',help='Do not build the report.')
     collect.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='Report language.')
-    status=commands.add_parser('statusline',help='Claude Code statusline: one line from the stdin payload and the totals cache refresh writes (no network); --setup prints the settings snippet; --record-quota (opt in) also records the quota readings.')
+    status=commands.add_parser('statusline',help='Claude Code statusline: one line from the stdin payload and the totals cache refresh writes (no network); --setup prints the settings snippet; quota readings are recorded by default (--no-record-quota or TOKENATLAS_NO_QUOTA=1 turns it off).')
     status.add_argument('--setup',action='store_true')
     status.add_argument('--record-quota',action='store_true')
+    status.add_argument('--no-record-quota',action='store_true')
     quota=commands.add_parser('quota',help='Your plan size: a manual budget or calibration readings turn list price into a share of a limit (kept in quota-budget.json next to the history, 0600; nothing leaves the machine).').add_subparsers(dest='quota',required=True)
     cal=quota.add_parser('calibrate',help='Store a reading copied from /usage (Claude Code) or the Codex limits display, with the list price tokenatlas saw in that window.')
     cal.add_argument('--harness',choices=('claude','codex'),required=True)

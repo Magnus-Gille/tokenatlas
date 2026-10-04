@@ -671,7 +671,7 @@ def main(argv=None):
         db, outc = state / 'tokenatlas' / 'history.sqlite3', state / 'tokenatlas' / 'outcomes.jsonl'
         outcomes(outc, ids)
         quota_file = state / 'tokenatlas' / 'claude-quota.jsonl'
-        add_claude_quota(home / '.claude/projects', quota_file)  # the demo user opted in to `statusline --record-quota`
+        add_claude_quota(home / '.claude/projects', quota_file)  # the demo user records quota snapshots (the statusline default)
         # USERPROFILE is what Path.home() reads on Windows; SYSTEMROOT is needed there by Python itself.
         env = {'PATH': os.environ.get('PATH', ''), 'HOME': str(home), 'USERPROFILE': str(home),
                'XDG_STATE_HOME': str(state), 'TZ': 'Europe/Stockholm', 'PYTHONDONTWRITEBYTECODE': '1',
