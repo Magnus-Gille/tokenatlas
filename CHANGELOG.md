@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file. The project fol
 ### Added
 
 - Claude: opt-in quota snapshots give turns a share of the 5-hour and weekly limit (#92). `tokenatlas statusline --record-quota` (also `--setup --record-quota`) appends the quota readings of Claude Code's statusline payload to `claude-quota.jsonl` (0600) next to the history when a value changed, pruned to the last 60 days above 5 MB; the default stays read-only and a write failure never changes the status line. `report`, `open`, `top` and `insights` join the readings to Claude turns like Codex ones (`~6% of 5-hour Claude limit`), and `doctor` reports whether recording is on. Snapshots exist only while a Claude Code UI session is open; `claude -p`, SDK runs and chat are not recorded, and the values are account-wide. The limit windows table is now titled "Limit windows".
+- Report: an "At a glance" ("I korthet") summary above the KPIs (#78). Two to six sentences computed in the page from the same rows as the cards, so they follow the filters: period, turns and requests, cost at list price (`≥` when a request is unpriced or incomplete), the share of the ten costliest turns, the costliest day, limit hits in the selection, interrupted turns, and the costliest turn's share of its weekly or 5-hour limit when known. No advice, no model call; shared reports add no names or text.
 
 ## [1.12.0] - 2026-10-03
 

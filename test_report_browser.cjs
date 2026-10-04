@@ -38,11 +38,28 @@ function withQuota(html) {
     return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
   });
 }
+// Re-encode a report with a weekly Codex quota share on every turn (the costliest card gets one whichever it is).
+function withTopShare(html, label = 'observed', percent = 26) {
+  return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
+    const data = JSON.parse(zlib.gunzipSync(Buffer.from(b64, 'base64')).toString('utf8'));
+    data.quota_shares = Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => [i, {minutes: 10080, label, percent, shared_with: 0}]));
+    return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
+  });
+}
+// Re-encode a report's payload with an arbitrary edit (columns are index-aligned arrays).
+function edited(html, fn) {
+  return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
+    const data = JSON.parse(zlib.gunzipSync(Buffer.from(b64, 'base64')).toString('utf8'));
+    fn(data);
+    return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
+  });
+}
+const stockholm = iso => new Intl.DateTimeFormat('en-CA', {timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit'}).format(Date.parse(iso));
 function withLimitHit(html) {
   return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
     const data = JSON.parse(zlib.gunzipSync(Buffer.from(b64, 'base64')).toString('utf8'));
     const label = {at: '2026-09-03T10:15:00+00:00', harness: 'claude', text: null};
-    data.limit_hits = [{harness: 'claude', at: '2026-09-03T10:15:00+00:00', reached: 'five_hour', window_minutes: 300, resets_at: '2026-09-03T14:00:00+00:00', retries: 2, prompt: 0, label,
+    data.limit_hits = [{harness: 'claude', at: '2026-09-03T10:15:00+00:00', local_date: '2026-09-03', reached: 'five_hour', window_minutes: 300, resets_at: '2026-09-03T14:00:00+00:00', retries: 2, prompt: 0, label,
       window: {start: '2026-09-03T09:00:00+00:00', end: '2026-09-03T10:15:00+00:00', requests: 3, unpriced_requests: 0, cost: 12.5, lower_bound: true,
                top: [{prompt: 0, label, requests: 2, cost: 9, share: 0.72}, {prompt: null, label, requests: 1, cost: 3.5, share: 0.28}]}}];
     return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
@@ -247,6 +264,113 @@ async function ready(page, errors, what = 'report') {
           const qw=await newPage({locale:T.locale},withQuota(fixture));
           assert.equal(await qw.page.locator('#limit-hits').isVisible(),true);assert.equal(await qw.page.locator('#qw-table tr').count(),2);assert.equal(await qw.page.locator('#top-prompts .qs').count(),1);
           assert.ok(/3 ?%/.test(await qw.page.locator('#top-prompts .qs').innerText()));assert.deepEqual(qw.errors,[]);await qw.context.close();
+          {// At a glance (#78): the numbers come from the same rows as the KPIs and follow the filters; limit hits and the quota share join in when the payload has them
+            const g=await newPage({locale:T.locale},fixture),sv=T.lang==='sv',text=()=>g.page.locator('#glance-text').innerText(),
+              truth=()=>g.page.evaluate(([loc])=>{const rows=UsageReport.getSelected().filter(r=>!r.id_synthetic),priced=rows.filter(r=>r.cost!=null),f=x=>x.toLocaleString(loc,{minimumFractionDigits:2,maximumFractionDigits:2});
+                return {n:UsageReport.getSelected().length,days:new Set(rows.map(r=>r.date)).size,note:document.getElementById('total-note').textContent,cost:f(priced.reduce((s,r)=>s+r.cost,0)),lower:rows.some(r=>r.cost==null||!r.complete)}},[T.locale]);
+            const first=await truth(),t1=norm(await text());
+            assert.ok(first.n>1&&first.days>1);assert.ok(t1.includes(norm((first.lower?'≥':'')+'$'+first.cost)),'cost matches the rows: '+t1);assert.ok(norm(first.note).startsWith(t1.match(/\(([\d\s,.]+) (?:requests?|anrop)\)/)[1]+' '),'request count matches the KPI note');
+            assert.ok(t1.includes(sv?'Dagen med högst registrerad, prissatt kostnad var 2026-':'The day with the highest recorded, priced cost was 2026-'),'the fixture has unpriced requests: '+t1);assert.ok(!/(?:gränsträff|limit hit)/.test(t1),'no hits without a payload');
+            assert.equal(await g.page.locator('#glance .eyebrow').textContent(),sv?'I korthet':'At a glance');
+            await g.page.selectOption('#harness',{index:1});const second=await truth(),t2=norm(await text());assert.notEqual(t2,t1);assert.ok(second.n<first.n);assert.ok(t2.includes(norm((second.lower?'≥':'')+'$'+second.cost)));assert.ok(norm(second.note).startsWith(t2.match(/\(([\d\s,.]+) (?:requests?|anrop)\)/)[1]+' '));
+            await g.page.selectOption('#harness',{index:0});assert.equal(norm(await text()),t1);
+            const day=await g.page.evaluate(()=>UsageReport.getSelected()[0].date);await g.page.fill('#from',day);await g.page.fill('#to',day);const one=await text();assert.ok(one.includes(day+':')&&!/dagen var|costliest day/.test(one),'a single day has no costliest-day sentence: '+one);await g.page.click('#reset');
+            await g.page.locator('.advanced summary').click();await g.page.fill('#search','this-match-does-not-exist-19042026');assert.equal((await text()).trim(),sv?'Inga anrop matchar det aktuella urvalet.':'No requests match the current selection.');
+            assert.deepEqual(g.errors,[]);assert.deepEqual(g.requests,[]);await g.context.close();
+            {// #78 review: ambiguous (synthetic-id) rows are not money; a priced one flips the summary exactly as the KPI rule says
+              const priced=d=>d.columns.price.findIndex((x,i)=>x!=null&&!d.columns.id_synthetic[i]),sy=await newPage({locale:T.locale},edited(fixture,d=>{d.columns.id_synthetic[priced(d)]=1}));
+              const tr=await sy.page.evaluate(([loc])=>{const f=x=>x.toLocaleString(loc,{minimumFractionDigits:2,maximumFractionDigits:2}),all=UsageReport.getSelected(),keep=all.filter(r=>!r.id_synthetic);return {kpi:f(keep.reduce((s,r)=>s+(r.cost||0),0)),withAmbiguous:f(all.reduce((s,r)=>s+(r.cost||0),0)),n:all.length-keep.length}},[T.locale]);
+              const st=norm(await sy.page.locator('#glance-text').innerText());assert.ok(tr.n>=1);assert.notEqual(tr.kpi,tr.withAmbiguous);assert.ok(st.includes('$'+tr.kpi)&&!st.includes('$'+tr.withAmbiguous),st);assert.deepEqual(sy.errors,[]);await sy.context.close();
+            }
+            {// hits follow the hit's own time in the report's timezone (Europe/Stockholm), the date range and the zoom
+              const at=iso=>edited(withLimitHit(fixture),d=>{d.limit_hits[0].at=iso;d.limit_hits[0].local_date=stockholm(iso)}),hit=sv?'1 gränsträff':'1 limit hit',run=async(iso,from,to)=>{const q=await newPage({locale:T.locale},at(iso));if(from)await q.page.fill('#from',from);if(to)await q.page.fill('#to',to);const x=await q.page.locator('#glance-text').innerText();assert.deepEqual(q.errors,[]);await q.context.close();return x.includes(hit)};
+              assert.equal(await run('2026-09-02T22:15:00+00:00','2026-09-03','2026-09-03'),true,'UTC 22:15 on the 2nd is the 3rd in Stockholm');assert.equal(await run('2026-09-03T22:15:00+00:00','2026-09-03','2026-09-03'),false,'UTC 22:15 on the 3rd is the 4th in Stockholm');
+              assert.equal(await run('2026-09-03T21:59:00+00:00','2026-09-03','2026-09-03'),true,'23:59 local is still the 3rd');
+              assert.equal(await run('2026-09-03T10:15:00+00:00','2026-09-04','2026-09-04'),false,'a linked hit outside the range is not counted');assert.equal(await run('2026-09-03T10:15:00+00:00','2026-09-03','2026-09-03'),true);
+              const z=await newPage({locale:T.locale},withLimitHit(fixture));await z.page.click('[data-gran="hour"]');const seen=new Set,bars=await z.page.locator('#chart .bar').count();for(let i=0;i<bars;i++){await z.page.locator('#chart .bar').nth(i).click();seen.add((await z.page.locator('#glance-text').innerText()).includes(hit));await z.page.click('#reset');await z.page.click('[data-gran="hour"]')}
+              assert.deepEqual([...seen].sort(),[false,true],'only the zoomed hour that holds the hit counts it');assert.deepEqual(z.errors,[]);await z.context.close();
+            }
+            {// a hit inside the date range or zoom whose turn's usage is on another day still counts, with or without the harness filter
+              const base=await newPage({locale:T.locale},withLimitHit(fixture)),dates=await base.page.evaluate(()=>{const rows=UsageReport.getSelected();return {own:rows.find(r=>r.prompt===0).date,all:[...new Set(rows.map(r=>r.date))]}});await base.context.close();
+              const other=dates.all.find(x=>x!==dates.own),hit=sv?'1 gränsträff':'1 limit hit',html=edited(withLimitHit(fixture),d=>{d.limit_hits[0].at=other+'T10:15:00+00:00';d.limit_hits[0].local_date=other});assert.ok(other);
+              for(const harness of [false,true]){const q=await newPage({locale:T.locale},html);await q.page.fill('#from',other);await q.page.fill('#to',other);if(harness)await q.page.selectOption('#harness',{label:'claude'});
+                assert.ok((await q.page.locator('#glance-text').innerText()).includes(hit),'range, harness='+harness);assert.deepEqual(q.errors,[]);await q.context.close();
+                const z=await newPage({locale:T.locale},html);if(harness)await z.page.selectOption('#harness',{label:'claude'});await z.page.click('[data-gran="hour"]');const seen=new Set,bars=await z.page.locator('#chart .bar').count();
+                for(let i=0;i<bars;i++){await z.page.locator('#chart .bar').nth(i).click();seen.add((await z.page.locator('#glance-text').innerText()).includes(hit));await z.page.locator('#zoomout').isVisible()&&await z.page.click('#zoomout');await z.page.click('[data-gran="hour"]')}
+                assert.ok(seen.has(true),'zoom, harness='+harness);assert.deepEqual(z.errors,[]);await z.context.close()}
+            }
+            {// #78 round 3: no timezone database in the page, the period covers counted hits, estimate and ambiguous wording
+              const tz=await newPage({locale:T.locale},edited(withLimitHit(fixture),d=>{d.timezone='Factory'})),tzt=await tz.page.locator('#glance-text').innerText();assert.ok(tzt.includes(sv?'1 gränsträff':'1 limit hit'),tzt);assert.deepEqual(tz.errors,[]);await tz.context.close();
+              const late=edited(withLimitHit(fixture),d=>{d.limit_hits[0].at='2026-09-10T10:15:00+00:00';d.limit_hits[0].local_date='2026-09-10';d.limit_hits[0].prompt=null}),lp=await newPage({locale:T.locale},late),lt=norm(await lp.page.locator('#glance-text').innerText());
+              assert.ok(lt.includes('– 2026-09-10:')&&lt.includes(sv?'1 gränsträff':'1 limit hit'),'a rejection after the last usage date is inside the printed period: '+lt);
+              await lp.page.selectOption('#harness',{label:'claude'});assert.ok(norm(await lp.page.locator('#glance-text').innerText()).includes('– 2026-09-10:'),'with a harness filter too');
+              await lp.page.fill('#to','2026-09-03');const cut=norm(await lp.page.locator('#glance-text').innerText());assert.ok(!cut.includes('2026-09-10')&&!/gränsträff|limit hit/.test(cut),cut);assert.deepEqual(lp.errors,[]);await lp.context.close();
+              for(const [label,percent,want,not] of [['observed',26,sv?'~26 %':'~26%',sv?'(uppskattning)':'(estimate)'],['estimate',26,sv?'≈ 26 %':'≈ 26%',null],['estimate',0.2,sv?'< 1 %':'< 1%',null],['observed',0.2,sv?'< 1 %':'< 1%',sv?'(uppskattning)':'(estimate)']]){
+                const e=await newPage({locale:T.locale},withTopShare(fixture,label,percent)),et=norm(await e.page.locator('#glance-text').innerText());assert.ok(et.includes(want),et);const mark=sv?'(uppskattning)':'(estimate)';assert.equal(et.includes(mark),label==='estimate',label+' '+percent+': '+et);if(not)assert.ok(!et.includes(not));assert.deepEqual(e.errors,[]);await e.context.close()}
+              const am=await newPage({locale:T.locale},edited(fixture,d=>{d.columns.id_synthetic=d.columns.id_synthetic.map(()=>1)})),at2=norm(await am.page.locator('#glance-text').innerText());
+              assert.ok(at2.includes(sv?'osäker identitet':'ambiguous identity')&&!/listpris för dessa|no list price/.test(at2),at2);assert.deepEqual(am.errors,[]);await am.context.close();
+            }
+            {// #78 round 4: one ambiguous request among complete, priced ones makes the amount a lower bound like the KPI, with a disclosure; rejection-only selections keep their hit sentence
+              const ms=await newPage({locale:T.locale},edited(fixture,d=>{const i=d.columns.price.findIndex((x,k)=>x!=null&&d.columns.complete[k]&&!d.columns.id_synthetic[k]);for(let k=0;k<d.columns.n;k++)if(d.columns.id_synthetic[k]||!d.columns.complete[k]||d.columns.price[k]==null)d.columns.price[k]=d.columns.price[i];d.columns.complete=d.columns.complete.map(()=>1);d.columns.id_synthetic=d.columns.id_synthetic.map((x,k)=>k===i?1:0)}));
+              const mt=norm(await ms.page.locator('#glance-text').innerText()),kpi=norm(await ms.page.locator('#total-label').innerText()),clean=await newPage({locale:T.locale},edited(fixture,d=>{const i=d.columns.price.findIndex((x,k)=>x!=null&&d.columns.complete[k]&&!d.columns.id_synthetic[k]);for(let k=0;k<d.columns.n;k++)if(d.columns.id_synthetic[k]||!d.columns.complete[k]||d.columns.price[k]==null)d.columns.price[k]=d.columns.price[i];d.columns.complete=d.columns.complete.map(()=>1);d.columns.id_synthetic=d.columns.id_synthetic.map(()=>0)}));
+              const cleanText=norm(await clean.page.locator('#glance-text').innerText()),cleanKpi=norm(await clean.page.locator('#total-label').innerText());
+              assert.ok(!cleanText.includes('≥')&&cleanKpi===T.total,'control: complete and priced shows no lower bound: '+cleanText+' / '+cleanKpi);
+              assert.notEqual(kpi,T.total,'the KPI says at least with one ambiguous request');assert.ok(/(?:till listpris|at list price)/.test(mt)&&mt.includes('≥$')&&mt.includes(sv?'osäker identitet':'ambiguous identity'),mt);assert.deepEqual([ms.errors,clean.errors],[[],[]]);await ms.context.close();await clean.context.close();
+              const lonely=edited(withLimitHit(fixture),d=>{d.limit_hits[0].at='2026-09-10T10:15:00+00:00';d.limit_hits[0].local_date='2026-09-10';d.limit_hits[0].prompt=null}),hit=sv?'1 gränsträff':'1 limit hit',empty=sv?'Inga anrop matchar det aktuella urvalet.':'No requests match the current selection.';
+              const ro=await newPage({locale:T.locale},lonely);await ro.page.fill('#from','2026-09-10');await ro.page.fill('#to','2026-09-10');const rt=norm(await ro.page.locator('#glance-text').innerText());assert.ok(rt.startsWith(empty)&&rt.includes(hit),'a rejection-only date: '+rt);assert.deepEqual(ro.errors,[]);await ro.context.close();
+              const none=edited(lonely,d=>{const c=d.columns;for(const k of Object.keys(c)){if(Array.isArray(c[k]))c[k]=[];else if(c[k]&&typeof c[k]==='object')for(const j of Object.keys(c[k]))c[k][j]=[]}c.n=0;c.id_prefix=null;delete d.prompt_texts;delete d.prompt_context;delete d.prompt_resume;delete d.quota_shares;delete d.quota_windows}),rr=await newPage({locale:T.locale},none),rrt=norm(await rr.page.locator('#glance-text').innerText());
+              assert.ok(rrt.startsWith(empty)&&rrt.includes(hit),'a rejection-only report: '+rrt);assert.deepEqual(rr.errors,[]);await rr.context.close();
+            }
+            {// #78 round 5: shares of an incomplete total say "recorded", the costliest day among unpriced days says "highest priced cost"
+              const fix=(d,keep)=>{const i=d.columns.price.findIndex((x,k)=>x!=null&&d.columns.complete[k]&&!d.columns.id_synthetic[k]);for(let k=0;k<d.columns.n;k++)if(d.columns.id_synthetic[k]||!d.columns.complete[k]||d.columns.price[k]==null)d.columns.price[k]=d.columns.price[i];d.columns.complete=d.columns.complete.map(()=>1);d.columns.id_synthetic=d.columns.id_synthetic.map(()=>0);keep&&keep(d)};
+              const rec=sv?'av den registrerade kostnaden':'of the recorded cost',both=sv?'av den registrerade, prissatta kostnaden':'of the recorded, priced cost';
+              const ic=await newPage({locale:T.locale},edited(fixture,d=>fix(d,d=>{const first=d.columns.prompt.find(x=>x!=null);d.columns.prompt.forEach((p,k)=>{if(p===first)d.columns.interrupted[k]=1});d.columns.complete[d.columns.prompt.findIndex(x=>x===first)]=0}))),it=norm(await ic.page.locator('#glance-text').innerText());
+              assert.ok(it.includes(rec)&&!it.includes(sv?'prissatta kostnaden':'priced cost'),'incomplete but priced: '+it);assert.deepEqual(ic.errors,[]);await ic.context.close();
+              const gt=await newPage({locale:T.locale},fixture),facts={requests:50,turns:20,unattributed:0,from:'2026-09-01',to:'2026-09-02',days:2,cost:5,lower:true,unpriced:false,incomplete:true,top:{k:10,share:30},interrupted:{n:2,unknown:false,share:10}};
+              const g1=norm(await gt.page.evaluate(f=>UsageReport.glanceText(f),facts)),g2=norm(await gt.page.evaluate(f=>UsageReport.glanceText(f),{...facts,unpriced:true}));assert.equal(g1.split(rec).length,3,g1);assert.equal(g2.split(both).length,3,g2);await gt.context.close();
+              const twoDays=async(unpriced)=>{const q=await newPage({locale:T.locale},edited(fixture,d=>fix(d,d=>{if(unpriced){const days=[];let ms=0;d.columns.ts.forEach((x,k)=>{ms+=x;days[k]=new Date(ms).toISOString().slice(0,10)});const last=days[days.length-1];days.forEach((x,k)=>{if(x===last)d.columns.price[k]=null})}}))),x=norm(await q.page.locator('#glance-text').innerText());assert.deepEqual(q.errors,[]);await q.context.close();return x};
+              assert.ok((await twoDays(true)).includes(sv?'Dagen med högst prissatt kostnad var':'The day with the highest priced cost was'));assert.ok((await twoDays(false)).includes(sv?'Dyraste dagen var':'The costliest day was'));
+            }
+            {// #78 round 6: a hit matches the project, session and provider filters by its own scope (cross-day, and a rejection-only turn); the day wording follows incomplete days; at most six sentences
+              const base=await newPage({locale:T.locale},withLimitHit(fixture)),own=await base.page.evaluate(()=>{const rows=UsageReport.getSelected(),r=rows.find(x=>x.prompt===0);return {project_id:r.project_id,session:r.session,provider:r.provider,model:r.model,agent:r.agent,date:r.date,other:rows.map(x=>x.date).find(x=>x!==r.date)}});await base.context.close();
+              const hit=sv?'1 gränsträff':'1 limit hit',scoped=(prompt,scope)=>edited(withLimitHit(fixture),d=>{d.limit_hits[0].at=own.other+'T10:15:00+00:00';d.limit_hits[0].local_date=own.other;d.limit_hits[0].prompt=prompt;d.limit_hits[0].scope={project_id:own.project_id,session:own.session,provider:own.provider,model:own.model,effort:null,agent:own.agent}});
+              for(const prompt of [0,null])for(const [key,value] of [['project_id',own.project_id],['session',own.session],['provider',own.provider]]){
+                const q=await newPage({locale:T.locale},scoped(prompt,0));await q.page.locator('.advanced summary').click();await q.page.fill('#from',own.other);await q.page.fill('#to',own.other);await q.page.selectOption('#'+key,value);
+                assert.ok((await q.page.locator('#glance-text').innerText()).includes(hit),'scope filter '+key+' prompt='+prompt);
+                const other=await q.page.locator('#'+key+' option').evaluateAll((os,v)=>os.map(o=>o.value).filter(x=>x&&x!==v),value);if(other.length){await q.page.selectOption('#'+key,other[0]);assert.ok(!(await q.page.locator('#glance-text').innerText()).includes(hit),'a hit of another '+key+' is not counted')}
+                assert.deepEqual(q.errors,[]);await q.context.close()}
+              const dayPage=async(mut)=>{const q=await newPage({locale:T.locale},edited(fixture,d=>{const i=d.columns.price.findIndex((x,k)=>x!=null&&d.columns.complete[k]&&!d.columns.id_synthetic[k]);for(let k=0;k<d.columns.n;k++)if(d.columns.id_synthetic[k]||!d.columns.complete[k]||d.columns.price[k]==null)d.columns.price[k]=d.columns.price[i];d.columns.complete=d.columns.complete.map(()=>1);d.columns.id_synthetic=d.columns.id_synthetic.map(()=>0);mut(d)})),x=norm(await q.page.locator('#glance-text').innerText());assert.deepEqual(q.errors,[]);await q.context.close();return x};
+              assert.ok((await dayPage(d=>{d.columns.complete[d.columns.n-1]=0})).includes(sv?'Dagen med högst registrerad kostnad var':'The day with the highest recorded cost was'),'an incomplete day');
+              assert.ok((await dayPage(d=>{d.columns.complete[d.columns.n-1]=0;d.columns.price[0]=null})).includes(sv?'högst registrerad, prissatt kostnad':'highest recorded, priced cost'),'incomplete and unpriced');
+              assert.ok((await dayPage(()=>{})).includes(sv?'Dyraste dagen var':'The costliest day was'),'control');
+              const full=await newPage({locale:T.locale},fixture),all=norm(await full.page.evaluate(f=>UsageReport.glanceText(f),{requests:50,turns:20,unattributed:3,from:'2026-09-01',to:'2026-09-02',days:2,cost:5,lower:true,unpriced:true,incomplete:true,ambiguous:2,top:{k:10,share:30},day:{day:'2026-09-02',cost:3,lower:true},hits:{n:2,five_hour:1,weekly:1,other:0},interrupted:{n:2,unknown:false,share:10},quota:{percent:26,estimate:true,minutes:10080,harness:'codex'}}));
+              assert.ok((all.match(/\.(?=\s|$)/g)||[]).length<=6&&all.includes(sv?'osäker identitet':'ambiguous identity'),all);await full.context.close();
+            }
+            {// #78 round 7: a hit whose turn is selected counts although the filter matches only a subagent's metadata; the zoomed interval is the period; cost that cannot be determined
+              const base=await newPage({locale:T.locale},withLimitHit(fixture)),sub=await base.page.evaluate(()=>{const rows=UsageReport.getSelected().filter(r=>r.prompt===0),parent=rows.find(r=>r.thread_kind!=='subagent'),child=rows.find(r=>r.thread_kind==='subagent'&&r.model!==parent.model);return child&&{model:child.model,parentModel:parent.model,agent:child.agent,date:parent.date}});await base.context.close();
+              assert.ok(sub,'the fixture has a subagent with other metadata in the hit turn');const hit=sv?'1 gränsträff':'1 limit hit';
+              const sh=await newPage({locale:T.locale},edited(withLimitHit(fixture),d=>{d.limit_hits[0].local_date=sub.date;d.limit_hits[0].scope={project_id:null,session:null,provider:null,model:sub.parentModel,effort:null,agent:null}}));
+              await sh.page.selectOption('#model',sub.model);assert.ok((await sh.page.locator('#glance-text').innerText()).includes(hit),'the subagent model filter keeps the parent turn\'s hit');assert.deepEqual(sh.errors,[]);await sh.context.close();
+              const zp=await newPage({locale:T.locale},fixture);await zp.page.fill('#from','2026-01-01');await zp.page.fill('#to','2026-12-31');await zp.page.click('[data-gran="hour"]');await zp.page.locator('#chart .bar').first().click();
+              const zt=norm(await zp.page.locator('#glance-text').innerText());assert.ok(/^2026-\d\d-\d\d \d\d:\d\d–\d\d:\d\d:/.test(zt)&&!zt.includes('2026-01-01'),'the zoomed interval is the period: '+zt);assert.deepEqual(zp.errors,[]);await zp.context.close();
+              const nc=await newPage({locale:T.locale},edited(fixture,d=>{d.columns.price=d.columns.price.map(()=>null)})),nt=norm(await nc.page.locator('#glance-text').innerText());
+              assert.ok(nt.includes(sv?'kostnaden till listpris kan inte bestämmas':'the list-price cost cannot be determined')&&!/inget listpris|no list price/.test(nt),nt);assert.deepEqual(nc.errors,[]);await nc.context.close();
+            }
+            {// unpriced requests: shares are of the priced cost, an entirely unpriced interrupted set says the cost is unknown, and unattributed requests are named
+              const turnRows=d=>{const first=d.columns.prompt.find(x=>x!=null);return d.columns.prompt.map((p,i)=>p===first?i:-1).filter(i=>i>=0)};
+              const un=await newPage({locale:T.locale},edited(fixture,d=>{for(const i of turnRows(d)){d.columns.interrupted[i]=1;d.columns.price[i]=null}})),ut=norm(await un.page.locator('#glance-text').innerText());
+              assert.ok(ut.includes(sv?'(kostnaden okänd)':'(cost unknown)')&&!/0[.,]0 ?%/.test(ut),ut);assert.deepEqual(un.errors,[]);await un.context.close();
+              const pp=await newPage({locale:T.locale},fixture),pt=norm(await pp.page.evaluate(()=>UsageReport.glanceText({requests:50,turns:20,unattributed:0,from:'2026-09-01',to:'2026-09-02',days:2,cost:5,lower:false,unpriced:true,top:{k:10,share:30},interrupted:{n:2,unknown:false,share:10}})));
+              assert.ok(pt.includes(sv?'av den prissatta kostnaden':'of the priced cost')&&pt.split(sv?'prissatta':'priced').length===3,pt);assert.deepEqual(pp.errors,[]);await pp.context.close();
+              const nq=await newPage({locale:T.locale},edited(withTopShare(fixture),d=>{d.columns.price=d.columns.price.map(()=>null)})),nqt=norm(await nq.page.locator('#glance-text').innerText());
+              assert.ok(!/costliest turn used|dyraste turen använde/.test(nqt),'no quota sentence without a cost ranking: '+nqt);assert.deepEqual(nq.errors,[]);await nq.context.close();
+              assert.ok(pt.includes(sv?'av den prissatta kostnaden':'of the priced cost'),pt);assert.deepEqual(pp.errors,[]);await pp.context.close();
+              const na=await newPage({locale:T.locale},edited(fixture,d=>{d.columns.prompt[d.columns.prompt.findIndex(x=>x!=null)]=null})),nt=norm(await na.page.locator('#glance-text').innerText());
+              assert.ok(nt.includes(sv?'utan tur':'not attributed to a turn')&&nt.includes(sv?'identifierade':'identified'),nt);assert.ok(/(?:identifierade|identified)/.test(t1),'the baseline fixture already has unattributed requests: '+t1);assert.deepEqual(na.errors,[]);await na.context.close();
+            }
+            const h=await newPage({locale:T.locale},withLimitHit(fixture));assert.ok((await h.page.locator('#glance-text').innerText()).includes(sv?'1 gränsträff i perioden: 1 mot 5-timmarsgränsen.':'1 limit hit in the period: 1 five-hour.'));
+            const q=await newPage({locale:T.locale},withTopShare(fixture)),qt=norm(await q.page.locator('#glance-text').innerText());assert.ok(qt.includes(sv?'~26 % av sin veckogräns i':'~26% of its weekly')&&qt.includes('Claude Code'),qt);assert.deepEqual(q.errors,[]);await q.context.close();
+          }
           const none=await newPage({locale:T.locale},fixture);assert.equal(await none.page.locator('#limit-hits').isVisible(),false);assert.deepEqual(none.errors,[]);await none.context.close();
         }
         // The toast is pure DOM: it works inside a sandboxed iframe (no top navigation, no popups).

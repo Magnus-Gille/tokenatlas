@@ -342,6 +342,48 @@ class InterruptedBadge(unittest.TestCase):
         self.assertEqual((texts['sv']['pr_interrupted'], texts['en']['pr_interrupted']), ('Avbruten', 'Interrupted'))
 
 
+class AtAGlance(unittest.TestCase):
+    KEYS = ('glance_e', 'glance_turns', 'glance_turns_one', 'glance_head', 'glance_head_nocost', 'glance_empty', 'glance_top', 'glance_day', 'glance_hits',
+            'glance_hits_one', 'glance_h_5h', 'glance_h_week', 'glance_h_other', 'glance_int', 'glance_int_one', 'glance_int_nopct', 'glance_int_nopct_one',
+            'glance_turns_part', 'glance_turns_part_one', 'glance_top_priced', 'glance_int_priced', 'glance_int_priced_one', 'glance_int_unknown', 'glance_int_unknown_one',
+            'glance_head_ambig', 'glance_top_recorded', 'glance_top_both', 'glance_int_recorded', 'glance_int_recorded_one', 'glance_int_both', 'glance_int_both_one', 'glance_day_priced', 'glance_ambig_tail', 'glance_day_recorded', 'glance_day_both', 'glance_qs_est', 'glance_qs', 'glance_w_5h', 'glance_w_week', 'glance_w_other')
+
+    def test_template_has_the_block_above_the_kpis_and_uses_only_defined_keys(self):
+        root = Path(__file__).parent / 'tokenatlas'
+        template = (root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertLess(template.index('id="glance-text"'), template.index('<div class="kpis"'))
+        self.assertIn('renderPrompts();renderGlance();renderLimitHits();', template)
+        texts = json.loads((root / 'report_i18n.json').read_text(encoding='utf-8'))
+        for key in set(re.findall(r"t\('(glance_\w+)'", template)) | set(self.KEYS):
+            for lang in ('sv', 'en'):
+                self.assertIn(key, texts[lang], (lang, key))
+        for lang in ('sv', 'en'):
+            for key in ('glance_turns', 'glance_hits', 'glance_int', 'glance_int_nopct'):
+                self.assertIn(key + '_one', texts[lang])
+            self.assertIn('≥', template)
+            self.assertIn('{pct}', texts[lang]['glance_top'])
+        self.assertEqual((texts['sv']['glance_e'], texts['en']['glance_e']), ('I korthet', 'At a glance'))
+
+    def test_hit_payload_carries_its_local_date_in_the_report_timezone(self):
+        hit = {'harness': 'claude', 'at': '2026-09-03T22:15:00+00:00', 'reached': 'five_hour', 'window_minutes': 300, 'resets_at': None, 'retries': 1,
+               'turn': None, 'window': None}
+        from tokenatlas.report import _hit_payload
+        for zone, day in (('Europe/Stockholm', '2026-09-04'), ('UTC', '2026-09-03'), ('America/Los_Angeles', '2026-09-03')):
+            payload = _hit_payload(hit, {}, lambda k, v, r=None: v, zone=ZoneInfo(zone))
+            self.assertEqual(payload['local_date'], day, zone)
+
+    def test_a_known_model_with_missing_output_tokens_has_no_price_class(self):
+        record = dict(id='o1', harness='claude', session='s', agent='main', thread_kind='main', parent_session=None, turn_id='t', turn_confidence='derived',
+                      ts='2026-09-03T10:00:00+00:00', model='claude-sonnet-4-5', provider='anthropic', machine='m', project_id='/w', project_label='w', effort=None, origin='cli',
+                      raw_usage={}, tariff=None, tokens=dict(fresh_input=1000, cache_write=0, cache_read=0, output=None, reasoning=0), complete=False,
+                      id_synthetic=False, warnings=[], sources=[])
+        self.assertEqual(build_report([record], {})['columns']['price'], [None])
+
+    def test_the_summary_text_is_not_in_the_data_block(self):
+        html = render_report(build_report([], {}))
+        self.assertNotIn('I korthet', json.dumps(decode_html(html)))
+
+
 if __name__ == '__main__':
     unittest.main()
 
