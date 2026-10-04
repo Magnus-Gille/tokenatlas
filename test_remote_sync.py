@@ -21,9 +21,9 @@ def kill_group(proc):
     proc.wait()
 
 
-def run_group(env, timeout=60):
-    proc = subprocess.Popen(['bash', str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, start_new_session=True)
+def run_group(env, timeout=60, bash_args=()):
+    proc = subprocess.Popen(['bash', *bash_args, str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            encoding='latin-1', start_new_session=True)  # latin-1: bytes map 1:1, so raw control bytes stay visible to assertions
     try:
         out, err = proc.communicate(timeout=timeout)
     finally:
@@ -44,7 +44,7 @@ STUB = '#!/bin/bash\necho "{name} $*" >> "$STUB_LOG"\n{body}\n'
 
 @unittest.skipIf(os.name == 'nt', 'remote_sync.sh targets macOS/Linux hosts')
 class RemoteSyncTest(unittest.TestCase):
-    def run_script(self, hosts, bodies_override=None, mv_fails_first=False, rm_fails=False, extra_env=None, em_in_home_bin=False, remote_only=None):
+    def run_script(self, hosts, bodies_override=None, mv_fails_first=False, rm_fails=False, extra_env=None, em_in_home_bin=False, remote_only=None, bash_args=()):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -74,8 +74,61 @@ class RemoteSyncTest(unittest.TestCase):
             stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
         env = {'PATH': f'{root / "bin"}:/usr/bin:/bin', 'HOME': str(root / 'home'), 'STUB_LOG': str(log),
                'REMOTE_HOSTS_OVERRIDE': hosts, **(extra_env or {})}
-        proc = run_group(env)
+        proc = run_group(env, bash_args=bash_args)
         return proc, log.read_text() if log.exists() else ''
+
+    HOSTILE = (r'\033[2J\033[H\033]52;c;ZXZpbA==\007\033]0;title\007 over\rwritten \205\233\220 \177 \302\205 caf\303\251')
+
+    def assert_terminal_safe(self, text):
+        raw = [c for c in text if (ord(c) < 32 and c not in '\t\n') or 0x7f <= ord(c) <= 0x9f or ord(c) > 0xff]
+        self.assertEqual(raw, [], repr(text))
+        self.assertIn('\\x1b[2J', text)
+        self.assertIn('\\x1b]52;c;ZXZpbA==\\x07', text)
+        self.assertIn('\\x0d', text)
+        self.assertIn('\\x85', text)
+
+    def test_hostile_ssh_snapshot_diagnostic_is_escaped(self):
+        proc, _ = self.run_script('a:h1 b:h2', bodies_override={
+            'ssh': f'case "$*" in *h1*snapshot*) printf "boom {self.HOSTILE}\\n" >&2; exit 3;; esac; exit 0'})
+        self.assertEqual(proc.returncode, 1)
+        self.assert_terminal_safe(proc.stderr)
+        self.assertIn('snapshot failed on a: boom ', proc.stderr)
+        self.assertIn('Syncing history from b (h2)', proc.stdout)
+        self.assertIn('history: OK', proc.stdout)
+
+    def test_hostile_scp_diagnostic_is_escaped(self):
+        proc, _ = self.run_script('a:h1 b:h2', bodies_override={
+            'scp': f'case "$*" in *h1*) printf "{self.HOSTILE}" >&2; exit 1;; esac; touch "${{@: -1}}"'})
+        self.assertEqual(proc.returncode, 1)
+        self.assert_terminal_safe(proc.stderr)
+        self.assertIn('scp failed for a: ', proc.stderr)
+        self.assertIn('history: OK', proc.stdout)
+
+    def test_hostile_import_diagnostic_is_escaped(self):
+        proc, _ = self.run_script('a:h1 b:h2', bodies_override={
+            'tokenatlas': f'case "$*" in *"--label a"*) printf "{self.HOSTILE}" >&2; exit 1;; esac; exit 0'})
+        self.assertEqual(proc.returncode, 1)
+        self.assert_terminal_safe(proc.stderr)
+        self.assertIn('import failed for a: ', proc.stderr)
+        self.assertIn('history: OK', proc.stdout)
+
+    def test_hostile_diagnostics_stay_escaped_when_echo_interprets_escapes(self):
+        for label, kwargs in (('POSIXLY_CORRECT', {'extra_env': {'POSIXLY_CORRECT': '1'}}),
+                              ('xpg_echo', {'bash_args': ('-O', 'xpg_echo')})):
+            for name, body in (('ssh', f'case "$*" in *h1*snapshot*) printf "{self.HOSTILE}" >&2; exit 3;; esac; exit 0'),
+                               ('scp', f'case "$*" in *h1*) printf "{self.HOSTILE}" >&2; exit 1;; esac; touch "${{@: -1}}"'),
+                               ('tokenatlas', f'case "$*" in *"--label a"*) printf "{self.HOSTILE}" >&2; exit 1;; esac; exit 0')):
+                with self.subTest(mode=label, stub=name):
+                    proc, _ = self.run_script('a:h1 b:h2', bodies_override={name: body}, **kwargs)
+                    self.assertEqual(proc.returncode, 1)
+                    self.assert_terminal_safe(proc.stderr)
+                    self.assertIn('history: OK', proc.stdout)
+
+    def test_plain_diagnostic_stays_readable(self):
+        proc, _ = self.run_script('a:h1', bodies_override={
+            'scp': 'printf "Permission denied (publickey).\\n\\tsecond line\\n" >&2; exit 1'})
+        self.assertIn('scp failed for a: Permission denied (publickey).\n\tsecond line\n', proc.stderr)
+        self.assertNotIn('\\x', proc.stderr)
 
     def test_invalid_pairs_rejected(self):
         proc, log = self.run_script('../../x:host pi:-oProxyCommand=x ok:good.host')

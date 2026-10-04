@@ -9,6 +9,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from tokenatlas.terminal import terminal_safe
+
 PACKAGED_SYNC=Path(__file__).with_name('remote_sync.sh')
 GRACE=5  # seconds between TERM and KILL of the sync group; longer than remote_sync.sh's own 2 s
 POLL=0.2  # seconds between checks for a noted signal while the sync runs
@@ -38,7 +40,7 @@ def _step(name,fn):
     try:rc=fn()
     except SystemExit as exc:rc=exc.code if isinstance(exc.code,int) else 1
     except Exception as exc:
-        log(f'{name}: {type(exc).__name__}: {exc}');rc=1
+        log(f'{name}: {type(exc).__name__}: {terminal_safe(exc)}');rc=1
     log(f'{name} exit={rc} ({time.monotonic()-start:.1f}s)')
     return rc
 
@@ -50,7 +52,7 @@ def _quiet(call,*argv):
         try:rc=call(list(argv))
         except SystemExit as exc:rc=exc.code if isinstance(exc.code,int) else 1
     if rc:
-        for line in err.getvalue().splitlines()[-5:]:log(f'  {line}')
+        for line in err.getvalue().splitlines()[-5:]:log(f'  {terminal_safe(line)}')
     return rc
 
 

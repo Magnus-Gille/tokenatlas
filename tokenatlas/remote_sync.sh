@@ -33,7 +33,7 @@ SSH_OPTS_STR="${TOKENATLAS_SSH_OPTS:--o ConnectTimeout=10 -o ServerAliveInterval
 read -ra SSH_OPTS <<< "$SSH_OPTS_STR"
 HOST_TIMEOUT="${TOKENATLAS_HOST_TIMEOUT:-300}"
 if ! [[ "$HOST_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$HOST_TIMEOUT" -eq 0 ]]; then
-    echo "TOKENATLAS_HOST_TIMEOUT must be a positive integer (seconds), got '$HOST_TIMEOUT'" >&2
+    printf "TOKENATLAS_HOST_TIMEOUT must be a positive integer (seconds), got '%s'\n" "$HOST_TIMEOUT" >&2
     exit 2
 fi
 
@@ -53,6 +53,26 @@ fi
 # host that could be read as an option.  (ssh/scp get `--` before the host.)
 valid_pair() {
     [[ "$1" =~ ^[A-Za-z0-9_-]+$ && "$2" =~ ^[A-Za-z0-9._@:-]+$ && "$2" != -* ]]
+}
+
+# Remote diagnostics are untrusted data: a compromised peer could emit terminal control sequences (clear screen, OSC 52
+# clipboard writes, BEL, CR overwrites, C1 controls). terminal_safe shows every control byte as a visible \xNN escape:
+# C0 (except tab; newline is the line separator), DEL, and every byte >= 0x80 (so C1 controls, raw or inside UTF-8, are
+# neutralised; non-ASCII text is therefore shown as \xNN bytes rather than readable, which favours safety).
+# Always print the result as a printf %s argument, never through echo (xpg_echo / POSIXLY_CORRECT would re-interpret \x escapes).
+# Byte-wise sed under LC_ALL=C with a table built once, so it works on macOS (BSD) and Linux alike.
+TERMINAL_SAFE_SED=""
+build_terminal_safe_sed() {
+    local i c
+    for ((i = 1; i < 256; i++)); do
+        if ((i == 9 || i == 10 || (i >= 32 && i < 127))); then continue; fi
+        printf -v c '%b' "\\0$(printf '%03o' "$i")"
+        TERMINAL_SAFE_SED+="$(printf 's/%s/\\\\x%02x/g' "$c" "$i")"$'\n'
+    done
+}
+build_terminal_safe_sed
+terminal_safe() {
+    printf '%s\n' "$1" | LC_ALL=C sed -e "$TERMINAL_SAFE_SED"
 }
 
 # Merge the remote machine's history database (tokenatlas snapshot -> scp -> local import).
@@ -81,19 +101,19 @@ sync_history() {
     { mkdir -p "$remote_dir" && chmod 700 "$remote_dir"; } || { echo "  history: ERROR cannot create $remote_dir" >&2; return 1; }
     local err
     if ! err=$(ssh "${SSH_OPTS[@]}" -- "$host" 'PATH="$HOME/.local/bin:$PATH"; c=$(command -v tokenatlas || command -v energy-monitor) && "$c" snapshot ~/.local/state/tokenatlas/snapshot.sqlite3' 2>&1 >/dev/null); then
-        echo "  history: ERROR snapshot failed on $tag: $err" >&2
+        printf '  history: ERROR snapshot failed on %s: %s\n' "$tag" "$(terminal_safe "$err")" >&2
         return 1
     fi
     if ! err=$(scp -q "${SSH_OPTS[@]}" -- "$host:.local/state/tokenatlas/snapshot.sqlite3" "$remote_dir/$tag.sqlite3.part" 2>&1); then
         rm -f -- "$remote_dir/$tag.sqlite3.part" 2>/dev/null || true
-        echo "  history: ERROR scp failed for $tag: $err" >&2
+        printf '  history: ERROR scp failed for %s: %s\n' "$tag" "$(terminal_safe "$err")" >&2
         return 1
     fi
     # Under set -e an unguarded failure here would abort the whole loop, not just this host.
     if ! err=$(chmod 600 "$remote_dir/$tag.sqlite3.part" 2>&1 &&
                mv -f "$remote_dir/$tag.sqlite3.part" "$remote_dir/$tag.sqlite3" 2>&1); then
         rm -f -- "$remote_dir/$tag.sqlite3.part" 2>/dev/null || true
-        echo "  history: ERROR cannot store snapshot for $tag: $err" >&2
+        printf '  history: ERROR cannot store snapshot for %s: %s\n' "$tag" "$(terminal_safe "$err")" >&2
         return 1
     fi
     local db_args=()
@@ -102,7 +122,7 @@ sync_history() {
     if err=$(tokenatlas "${db_args[@]+"${db_args[@]}"}" import "$remote_dir/$tag.sqlite3" --label "$tag" 2>&1 >/dev/null); then
         echo "  history: OK"
     else
-        echo "  history: ERROR import failed for $tag: $err" >&2
+        printf '  history: ERROR import failed for %s: %s\n' "$tag" "$(terminal_safe "$err")" >&2
         return 1
     fi
 }
@@ -184,7 +204,7 @@ for entry in "${REMOTE_HOSTS[@]}"; do
     tag="${entry%%:*}"
     host="${entry#*:}"
     if [[ "$entry" != *:* ]] || ! valid_pair "$tag" "$host"; then
-        echo "Skipping invalid tag:host entry '$entry'" >&2
+        printf "Skipping invalid tag:host entry '%s'\n" "$entry" >&2
         continue
     fi
 

@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file. The project fol
 ### Security
 
 - Opt-in turn context (#134): the local `git log` for commit subjects no longer starts programs named by a project's repository-local git config. Signature verification (`log.showSignature` with `gpg.program`, `gpg.ssh.program`, `gpg.x509.program`), pager, external diff, alternate-refs command, ssh command, hooks and transports such as `ext::` are neutralised with fixed `-c` overrides, and the git environment is an allowlist with `GIT_ALLOW_PROTOCOL` empty (which repository config cannot override), `GIT_CONFIG_NOSYSTEM`, no lazy fetch and no inherited `GIT_*` variables. Commit subjects and time filtering are unchanged.
+- Remote sync no longer prints SSH, SCP or import diagnostics raw (#135). A compromised configured peer could put terminal control sequences (clear screen, clipboard writes, BEL, carriage-return overwrites, C1 controls) in an error message. `remote_sync.sh` now shows control bytes as visible `\xNN` escapes (tab and newlines are kept; non-ASCII bytes in these remote messages are escaped too, so they appear as `\xNN`), and the Python side applies the same escaping (`terminal_safe`) to import and collect error text, keeping UTF-8 readable. Host validation, timeouts, cleanup and continuing with the other hosts are unchanged.
 
 ## [1.14.1] - 2026-10-04
 
