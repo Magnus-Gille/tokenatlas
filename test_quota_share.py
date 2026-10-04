@@ -986,7 +986,17 @@ class ClaudeCli(unittest.TestCase):
             off = json.loads(out)['claude_quota']
             self.assertEqual((off['snapshots_file'], off['snapshots'], off['last_snapshot'], off['recording_configured']), ('absent', 0, None, 'unknown'))
             (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'type': 'command', 'command': '/bin/tokenatlas statusline'}}))
-            self.assertEqual(json.loads(self.call('doctor')[1])['claude_quota']['recording_configured'], False)
+            on = json.loads(self.call('doctor')[1])['claude_quota']
+            self.assertEqual(on['recording_configured'], True)
+            self.assertNotIn('warning', on)
+            (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'type': 'command', 'command': '/bin/tokenatlas statusline --no-record-quota'}}))
+            off = json.loads(self.call('doctor')[1])['claude_quota']
+            self.assertEqual(off['recording_configured'], False)
+            self.assertIn('disabled', off['warning'])
+            (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'type': 'command', 'command': 'some-other-statusline'}}))
+            foreign = json.loads(self.call('doctor')[1])['claude_quota']
+            self.assertEqual(foreign['recording_configured'], False)
+            self.assertIn("not tokenatlas's", foreign['warning'])
             (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'type': 'command', 'command': '/bin/tokenatlas statusline --record-quota'}}))
             self.assertEqual(json.loads(self.call('doctor')[1])['claude_quota']['recording_configured'], True)
             (cfg / 'settings.json').write_text('{ not json')

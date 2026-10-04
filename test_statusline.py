@@ -268,12 +268,25 @@ class RecordQuotaTests(Base):
         path = self.db.parent / statusline.QUOTA_NAME
         return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
 
-    def test_nothing_is_written_without_the_flag(self):
+    def test_recording_is_on_by_default(self):
         self.run_line(self.payload())
+        self.assertEqual(len(self.lines()), 1)
+
+    def test_the_opt_out_flag_and_env_turn_recording_off(self):
+        self.run_line(self.payload(), '--no-record-quota')
+        with mock.patch.dict(os.environ, {'TOKENATLAS_NO_QUOTA': '1'}):
+            plain = self.run_line(self.payload(five=31))
         self.assertEqual(sorted(p.name for p in self.db.parent.glob('claude-quota*')) if self.db.parent.exists() else [], [])
+        with mock.patch.dict(os.environ, {'TOKENATLAS_NO_QUOTA': '0'}):
+            self.assertEqual(self.run_line(self.payload(five=32)), plain.replace('31', '32'))
+        self.assertEqual(len(self.lines()), 1)
+
+    def test_the_old_flag_still_works_as_a_no_op(self):
+        self.run_line(self.payload(), '--record-quota')
+        self.assertEqual(len(self.lines()), 1)
 
     def test_the_flag_appends_a_snapshot_and_keeps_the_output(self):
-        plain = self.run_line(self.payload())
+        plain = self.run_line(self.payload(), '--no-record-quota')
         recorded = self.run_line(self.payload(), '--record-quota')
         self.assertEqual(plain, recorded)
         got = self.lines()
@@ -310,7 +323,7 @@ class RecordQuotaTests(Base):
             self.assertEqual((self.db.parent / name).stat().st_mode & 0o777, 0o600)
 
     def test_a_write_failure_keeps_the_output_identical(self):
-        plain = self.run_line(self.payload())
+        plain = self.run_line(self.payload(), '--no-record-quota')
         blocked = self.root / 'file'
         blocked.write_text('x')  # the "state directory" is a file: nothing can be created in it
         self.assertEqual(self.run_line(self.payload(), '--record-quota', db=blocked / 'history.sqlite3'), plain)
@@ -343,7 +356,7 @@ class RecordQuotaTests(Base):
     def test_a_held_lock_skips_recording_without_blocking_and_a_free_one_records(self):
         import fcntl
         self.db.parent.mkdir(parents=True)
-        plain = self.run_line(self.payload())
+        plain = self.run_line(self.payload(), '--no-record-quota')
         fd = os.open(self.db.parent / statusline.QUOTA_LOCK, os.O_RDWR | os.O_CREAT, 0o600)  # another process is pruning/appending
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -382,9 +395,38 @@ class RecordQuotaTests(Base):
         with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(cfg)}):
             self.assertIsNone(statusline.recording_configured())
             (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'command': 'tokenatlas statusline'}}))
+            self.assertIs(statusline.recording_configured(), True)  # on by default
+            (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'command': 'tokenatlas statusline --no-record-quota'}}))
             self.assertIs(statusline.recording_configured(), False)
+            with mock.patch.dict(os.environ, {'TOKENATLAS_NO_QUOTA': '1'}):
+                (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'command': 'tokenatlas statusline'}}))
+                self.assertIs(statusline.recording_configured(), False)
+            (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'command': 'my-own-line'}}))
+            self.assertIs(statusline.recording_configured(), False)
+            self.assertEqual(statusline.recording_state(), 'foreign')
             (cfg / 'settings.local.json').write_text(json.dumps({'statusLine': {'command': 'tokenatlas statusline --record-quota'}}))
             self.assertIs(statusline.recording_configured(), True)
+
+    def test_the_effective_command_follows_settings_precedence_and_command_local_env(self):
+        cfg = self.root / 'cfg2'
+        cfg.mkdir()
+
+        def state(base, local=None):
+            (cfg / 'settings.json').write_text(json.dumps({'statusLine': {'command': base}}))
+            (cfg / 'settings.local.json').write_text(json.dumps({'statusLine': {'command': local}} if local else {}))
+            return statusline.recording_state()
+        with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(cfg)}):
+            self.assertEqual(state('tokenatlas statusline'), 'enabled')
+            self.assertEqual(state('tokenatlas statusline', 'tokenatlas statusline --no-record-quota'), 'disabled')
+            self.assertEqual(state('tokenatlas statusline', 'my-own-line'), 'foreign')
+            self.assertEqual(state('tokenatlas statusline --no-record-quota', 'tokenatlas statusline'), 'enabled')
+            self.assertEqual(state('TOKENATLAS_NO_QUOTA=1 tokenatlas statusline'), 'disabled')
+            self.assertEqual(state("FOO=a TOKENATLAS_NO_QUOTA=true '/opt/my bin/tokenatlas' statusline"), 'disabled')
+            self.assertEqual(state('TOKENATLAS_NO_QUOTA=0 tokenatlas statusline'), 'enabled')
+            with mock.patch.dict(os.environ, {'TOKENATLAS_NO_QUOTA': '1'}):
+                self.assertEqual(state('TOKENATLAS_NO_QUOTA=0 tokenatlas statusline'), 'enabled')  # the command's own assignment wins
+            self.assertEqual(state('cd /x && TOKENATLAS_NO_QUOTA=1 tokenatlas statusline'), 'unknown')
+            self.assertEqual(state("tokenatlas statusline 'unbalanced"), 'unknown')
 
     @unittest.skipIf(os.name == 'nt', 'POSIX modes and symlinks')
     def test_a_permissive_or_symlinked_snapshot_file_is_not_written_and_doctor_says_so(self):
@@ -392,7 +434,7 @@ class RecordQuotaTests(Base):
         path.parent.mkdir(parents=True)
         path.write_text('')
         os.chmod(path, 0o644)
-        plain = self.run_line(self.payload())
+        plain = self.run_line(self.payload(), '--no-record-quota')
         self.assertEqual(self.run_line(self.payload(), '--record-quota'), plain)
         self.assertEqual(path.read_text(), '')
         self.assertEqual(statusline.quota_file_problem(path), 'permissions must be 0600')
@@ -427,7 +469,7 @@ class RecordQuotaTests(Base):
     def test_a_fifo_in_place_of_the_snapshot_file_never_blocks_the_statusline(self):
         import threading
         self.db.parent.mkdir(parents=True)
-        plain = self.run_line(self.payload())
+        plain = self.run_line(self.payload(), '--no-record-quota')
         for name in (statusline.QUOTA_NAME, statusline.QUOTA_LAST):
             fifo = self.db.parent / name
             os.mkfifo(fifo)
@@ -462,9 +504,11 @@ class RecordQuotaTests(Base):
         self.assertEqual(open_fds(), before)
 
     def test_setup_with_the_flag_prints_it(self):
-        text = statusline.setup_text(None, '/opt/bin/tokenatlas', record_quota=True)
-        self.assertIn('/opt/bin/tokenatlas statusline --record-quota', text)
-        self.assertNotIn('--record-quota', statusline.setup_text(None, '/opt/bin/tokenatlas'))
+        text = statusline.setup_text(None, '/opt/bin/tokenatlas')
+        self.assertIn('"command": "/opt/bin/tokenatlas statusline"', text)
+        self.assertNotIn('statusline --', text)
+        self.assertIn('--no-record-quota', text)
+        self.assertIn('TOKENATLAS_NO_QUOTA=1', text)
 
 
 class SetupTests(unittest.TestCase):
