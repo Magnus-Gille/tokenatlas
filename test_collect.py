@@ -29,6 +29,25 @@ def alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        # EPERM means the probe was denied, not that the process is gone (macOS CI sandboxes, #113): the assertion cannot be verified here.
+        raise unittest.SkipTest(f'cannot probe pid {pid} (EPERM); process exit is unverifiable on this platform')
+    return True
+
+
+def kill_quietly(pid):
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, signal.SIGKILL)
+
+
+def alive_or_unknown(pid):
+    """For cleanup only: True when the process may still exist (EPERM counts as maybe), so cleanup still tries to kill it."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
     return True
 
 
@@ -240,7 +259,7 @@ class CollectTest(CollectBase):
                            ('rsync', 'exit 0'), ('scp', 'exit 0'), ('tokenatlas', 'exit 0')):
             (bindir / name).write_text(f'#!/bin/bash\n{body}\n')
             (bindir / name).chmod(0o755)
-        self.addCleanup(lambda: [os.kill(int(x), signal.SIGKILL) for x in pids.read_text().split() if alive(int(x))] if pids.exists() else None)
+        self.addCleanup(lambda: [kill_quietly(int(x)) for x in pids.read_text().split() if alive_or_unknown(int(x))] if pids.exists() else None)
         proc = self.collect('--remote', 'a:h1', '--sync-timeout', '3', PATH=f'{bindir}:/usr/bin:/bin', timeout=60)
         self.assertIn('remote sync: timeout after 3s', proc.stdout, proc.stdout + proc.stderr)
         self.assertEqual(proc.returncode, 1)
@@ -362,8 +381,13 @@ class CollectSignalWindowTest(CollectBase):
 
     def group_gone(self, pid):
         self.addCleanup(self.kill_group, pid)  # a regression must not leave the tree holding the test runner's output open
-        with self.assertRaises(ProcessLookupError):
+        try:
             os.killpg(pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:  # EPERM: the probe was denied, which proves nothing about the group (#113)
+            self.skipTest(f'cannot probe process group {pid} (EPERM); group exit is unverifiable on this platform')
+        self.fail(f'process group {pid} still exists')
 
     @staticmethod
     def kill_group(pid):
@@ -410,6 +434,14 @@ class CollectSignalWindowTest(CollectBase):
         self.assertLess(time.monotonic() - start, 15)
         self.group_gone(int((self.tmp / 'sync.pid').read_text()))
         self.assertFalse(alive(int(self.child_pid.read_text())))
+
+    def test_stop_group_treats_permission_error_like_a_vanished_group(self):
+        # The group leader has exited and the OS answers EPERM (seen on macOS CI): _stop_group must finish, not raise (#113).
+        proc = self.mock.Mock(pid=424242)
+        with self.mock.patch.object(self.c.os, 'killpg', side_effect=PermissionError(1, 'Operation not permitted')) as kp:
+            self.c._stop_group(proc, grace=1)
+        self.assertEqual([c.args[1] for c in kp.call_args_list], [signal.SIGTERM, 0, signal.SIGKILL])
+        proc.wait.assert_called_once()
 
 
 if __name__ == '__main__':

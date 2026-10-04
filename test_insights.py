@@ -257,6 +257,16 @@ class F4ContextSize(unittest.TestCase):
                                           {'harness': 'codex', 'requests': 3, 'median': 20.0, 'p90': 30}])
         self.assertEqual(v['excluded_requests'], 1)
 
+    def test_an_imported_harness_name_is_pooled_as_other_in_values_and_text(self):  # #108, same allowlist as limit_hits
+        rows = [ob('a', harness='private-harness-xyz', model='mystery', fresh=10), ob('b', harness='another-secret', model='mystery', fresh=30),
+                ob('c', harness='opencode', model='mystery', fresh=20)]
+        result = cost_facts(rows, TABLE)
+        v = by_id(result)['context_size']['values']['harnesses']
+        self.assertEqual([(h['harness'], h['requests'], h['median']) for h in v], [('opencode', 1, 20.0), ('other', 2, 20.0)])
+        shown = json.dumps(result) + insights.render_text(result)
+        for name in ('private-harness-xyz', 'another-secret'):
+            self.assertNotIn(name, shown)
+
     def test_p90_nearest_rank_over_ten(self):
         rows = [ob(f'r{i}', model='mystery', fresh=i) for i in range(1, 11)]
         v = by_id(cost_facts(rows, TABLE))['context_size']['values']['harnesses'][0]
