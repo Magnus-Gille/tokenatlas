@@ -29,6 +29,8 @@ def alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        return False  # macOS sandboxes (CI) report EPERM for a pid that is gone or a zombie, same as ESRCH
     return True
 
 
@@ -362,7 +364,8 @@ class CollectSignalWindowTest(CollectBase):
 
     def group_gone(self, pid):
         self.addCleanup(self.kill_group, pid)  # a regression must not leave the tree holding the test runner's output open
-        with self.assertRaises(ProcessLookupError):
+        # macOS CI sometimes answers EPERM instead of ESRCH for a group whose leader has exited (#113): both mean "gone".
+        with self.assertRaises((ProcessLookupError, PermissionError)):
             os.killpg(pid, 0)
 
     @staticmethod
@@ -410,6 +413,14 @@ class CollectSignalWindowTest(CollectBase):
         self.assertLess(time.monotonic() - start, 15)
         self.group_gone(int((self.tmp / 'sync.pid').read_text()))
         self.assertFalse(alive(int(self.child_pid.read_text())))
+
+    def test_stop_group_treats_permission_error_like_a_vanished_group(self):
+        # The group leader has exited and the OS answers EPERM (seen on macOS CI): _stop_group must finish, not raise (#113).
+        proc = self.mock.Mock(pid=424242)
+        with self.mock.patch.object(self.c.os, 'killpg', side_effect=PermissionError(1, 'Operation not permitted')) as kp:
+            self.c._stop_group(proc, grace=1)
+        self.assertEqual([c.args[1] for c in kp.call_args_list], [signal.SIGTERM, 0, signal.SIGKILL])
+        proc.wait.assert_called_once()
 
 
 if __name__ == '__main__':

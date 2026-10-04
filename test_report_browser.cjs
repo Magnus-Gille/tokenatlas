@@ -33,16 +33,16 @@ function withLang(html, lang) {
 function withQuota(html) {
   return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
     const data = JSON.parse(zlib.gunzipSync(Buffer.from(b64, 'base64')).toString('utf8'));
-    data.quota_shares = {0: {minutes: 10080, label: 'observed', percent: 3, shared_with: 0}};
+    data.quota_shares = {0: {harness: 'codex', minutes: 10080, label: 'observed', percent: 3, shared_with: 0}};
     data.quota_windows = [{harness: 'codex', account: null, minutes: 10080, resets_at: '2026-09-08T00:00:00+00:00', start: '2026-09-01T00:00:00+00:00', peak_percent: 70, peak_at: '2026-09-07T12:41:00+00:00', hit: false, snapshots: 5, cost: 1.5, unpriced_requests: 0}];
     return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
   });
 }
 // Re-encode a report with a weekly Codex quota share on every turn (the costliest card gets one whichever it is).
-function withTopShare(html, label = 'observed', percent = 26) {
+function withTopShare(html, label = 'observed', percent = 26, harness = 'codex') {
   return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
     const data = JSON.parse(zlib.gunzipSync(Buffer.from(b64, 'base64')).toString('utf8'));
-    data.quota_shares = Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => [i, {minutes: 10080, label, percent, shared_with: 0}]));
+    data.quota_shares = Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => [i, {harness, minutes: 10080, label, percent, shared_with: 0}]));
     return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
   });
 }
@@ -232,6 +232,16 @@ async function ready(page, errors, what = 'report') {
           assert.equal((await b2.locator('.rs-note').innerText()).trim(),RS.selected);assert.equal(await r2.page.evaluate(()=>String(getSelection())),'cd /w/app && claude --resume s1');
           assert.deepEqual(dialogs,[]);assert.deepEqual(r2.errors,[]);await r2.context.close();
         }
+        // Limit windows at 390 px: each window is a small card inside the Limits card, with no sideways scrolling; reset, peak, hit and list price are visible.
+        {const qn=await newPage({locale:T.locale,viewport:{width:390,height:900}},withQuota(fixture));await qn.page.locator('#quota-windows').scrollIntoViewIfNeeded();
+          const m=await qn.page.evaluate(()=>{const box=document.getElementById('quota-windows'),w=box.querySelector('.table-wrap'),W=window.innerWidth,B=box.getBoundingClientRect();
+            const cells=[...box.querySelectorAll('#qw-table td')].filter(c=>c.offsetParent!==null);return {wrap:w.scrollWidth<=w.clientWidth+1,box:box.scrollWidth<=box.clientWidth+1,doc:document.documentElement.scrollWidth<=W+1,
+              inside:cells.every(c=>{const r=c.getBoundingClientRect();return r.left>=B.left-1&&r.right<=B.right+1&&r.width>0}),head:[...box.querySelectorAll('#qw-table th')].every(h=>h.offsetParent===null),
+              labels:cells.map(c=>c.dataset.label+': '+c.innerText.trim())}});
+          assert.ok(m.wrap&&m.box&&m.doc&&m.inside&&m.head,'#qw 390 px: no horizontal overflow, cells inside the card: '+JSON.stringify(m));
+          const joined=m.labels.join(' | ');assert.ok(/\d{4}-\d\d-\d\d \d\d:\d\d UTC/.test(joined)&&joined.split(':').length>6&&m.labels.some(l=>l.startsWith(T.lang==='sv'?'Återställs':'Resets'))&&m.labels.some(l=>l.startsWith(T.lang==='sv'?'Högsta (när)':'Peak (when)'))&&m.labels.some(l=>l.startsWith(T.lang==='sv'?'Gräns nådd':'Limit hit')),'#qw labels visible: '+joined);
+          fs.mkdirSync(path.join(screenshotDir,'qw-shots'),{recursive:true});await qn.page.locator('#quota-windows').screenshot({path:path.join(screenshotDir,'qw-shots','qw-390-'+T.lang+'.png')});
+          assert.deepEqual(qn.errors,[]);await qn.context.close()}
         // Screenshots: the private context with its resume row, desktop and 390 px.
         const dir=path.join(screenshotDir,'resume-shots');fs.mkdirSync(dir,{recursive:true});
         for(const [name,vp] of [['desktop',{width:1440,height:1080}],['390',{width:390,height:900}]]){
@@ -263,7 +273,7 @@ async function ready(page, errors, what = 'report') {
           assert.deepEqual(lh.errors,[]);await lh.context.close();
           const qw=await newPage({locale:T.locale},withQuota(fixture));
           assert.equal(await qw.page.locator('#limit-hits').isVisible(),true);assert.equal(await qw.page.locator('#qw-table tr').count(),2);assert.equal(await qw.page.locator('#top-prompts .qs').count(),1);
-          assert.ok(/3 ?%/.test(await qw.page.locator('#top-prompts .qs').innerText()));assert.deepEqual(qw.errors,[]);await qw.context.close();
+          {const qt=await qw.page.locator('#top-prompts .qs').innerText();assert.ok(/3 ?%/.test(qt)&&qt.includes(T.lang==='sv'?'veckogränsen för Codex':'the weekly Codex limit'),'#115: the card names the agent: '+qt)}assert.deepEqual(qw.errors,[]);await qw.context.close();
           {// At a glance (#78): the numbers come from the same rows as the KPIs and follow the filters; limit hits and the quota share join in when the payload has them
             const g=await newPage({locale:T.locale},fixture),sv=T.lang==='sv',text=()=>g.page.locator('#glance-text').innerText(),
               truth=()=>g.page.evaluate(([loc])=>{const rows=UsageReport.getSelected().filter(r=>!r.id_synthetic),priced=rows.filter(r=>r.cost!=null),f=x=>x.toLocaleString(loc,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -369,7 +379,8 @@ async function ready(page, errors, what = 'report') {
               assert.ok(nt.includes(sv?'utan tur':'not attributed to a turn')&&nt.includes(sv?'identifierade':'identified'),nt);assert.ok(/(?:identifierade|identified)/.test(t1),'the baseline fixture already has unattributed requests: '+t1);assert.deepEqual(na.errors,[]);await na.context.close();
             }
             const h=await newPage({locale:T.locale},withLimitHit(fixture));assert.ok((await h.page.locator('#glance-text').innerText()).includes(sv?'1 gränsträff i perioden: 1 mot 5-timmarsgränsen.':'1 limit hit in the period: 1 five-hour.'));
-            const q=await newPage({locale:T.locale},withTopShare(fixture)),qt=norm(await q.page.locator('#glance-text').innerText());assert.ok(qt.includes(sv?'~26 % av sin veckogräns i':'~26% of its weekly')&&qt.includes('Claude Code'),qt);assert.deepEqual(q.errors,[]);await q.context.close();
+            const q=await newPage({locale:T.locale},withTopShare(fixture)),qt=norm(await q.page.locator('#glance-text').innerText());assert.ok(qt.includes(sv?'~26 % av veckogränsen för Codex':'~26% of the weekly Codex limit'),qt);assert.deepEqual(q.errors,[]);await q.context.close();
+            const qc=await newPage({locale:T.locale},withTopShare(fixture,'estimate',8,'claude')),qct=norm(await qc.page.locator('#glance-text').innerText()),cardt=norm(await qc.page.locator('#top-prompts .qs').first().innerText()),claudeLimit=sv?'veckogränsen för Claude':'the weekly Claude limit';assert.ok(qct.includes(claudeLimit)&&cardt.includes(claudeLimit)&&!/Claude Code/.test(qct+cardt),'#115: summary and card name the same Claude limit: '+qct+' | '+cardt);assert.deepEqual(qc.errors,[]);await qc.context.close();
           }
           const none=await newPage({locale:T.locale},fixture);assert.equal(await none.page.locator('#limit-hits').isVisible(),false);assert.deepEqual(none.errors,[]);await none.context.close();
         }

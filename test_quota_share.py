@@ -617,10 +617,26 @@ class Surfaces(unittest.TestCase):
         i18n = json.loads(gzip.decompress(base64.b64decode(re.search(r'id="report-i18n"[^>]*>([^<]+)<', page).group(1))).decode())
         self.assertEqual(i18n['sv']['qs_est'], '≈ {n} % av {w} (uppskattning)')
         self.assertEqual(i18n['sv']['qs_obs'], '~{n} % av {w}')
-        self.assertEqual(i18n['sv']['qs_w_week'], 'veckogränsen')
+        self.assertEqual(i18n['sv']['qs_w_week'], 'veckogränsen för {agent}')
         self.assertEqual(i18n['en']['qs_est'], '≈ {n}% of {w} (estimate)')
         self.assertEqual(i18n['en']['qw_title'], 'Limit windows')
         self.assertIn('id="quota-windows" class="hidden"', page)
+
+    def test_every_quota_share_string_names_the_agent_the_same_way(self):  # #115
+        import re
+        texts = json.loads((Path(__file__).parent / 'tokenatlas' / 'report_i18n.json').read_text(encoding='utf-8'))
+        for lang, (five, week, other) in {'en': ('the 5-hour {agent} limit', 'the weekly {agent} limit', 'the {n}-minute {agent} limit'),
+                                          'sv': ('5-timmarsgränsen för {agent}', 'veckogränsen för {agent}', '{n}-minutersgränsen för {agent}')}.items():
+            t = texts[lang]
+            self.assertEqual((t['qs_w_5h'], t['qs_w_week'], t['qs_w_other']), (five, week, other))
+            self.assertFalse([k for k in t if re.match(r'qs_w_\w+_(claude|codex)$|glance_w_', k)], lang)  # no agent-specific or unnamed variants
+            quota_keys = [k for k in t if k.startswith('qs_') and '{w}' in t[k] or k.startswith('glance_qs')]
+            self.assertTrue(quota_keys)
+            for k in quota_keys:  # a share is of a named window ({w} = "the weekly Claude limit"), never of a bare "limit"
+                self.assertIn('{w}', t[k], (lang, k))
+                self.assertNotIn('{agent}', t[k], (lang, k))
+                self.assertNotRegex(t[k], r'(weekly|5-hour|veckogräns|5-timmarsgräns)', (lang, k))
+                self.assertNotIn('Claude Code', t[k], (lang, k))
 
     def test_shared_report_has_no_ids_or_text(self):
         import json
@@ -688,7 +704,7 @@ class Surfaces(unittest.TestCase):
         self.assertEqual(([x['percent'] for x in fact['values']['turns']], fact['values']['observed_turns'], fact['provenance']), ([9.0, 2.0], 2, 'computed'))
         self.assertNotIn('total_percent', fact['values'])
         result = insights.cost_facts(recs, TABLE, quota=got)
-        self.assertIn('your 2 costliest turns used ~9% and ~2% of their weekly limit windows', insights.render_text(result))
+        self.assertIn('your 2 costliest turns used ~9% of the weekly Codex limit and ~2% of the weekly Codex limit (each of its own window)', insights.render_text(result))
         self.assertFalse(any(f['id'] == 'quota_share' for f in insights.cost_facts(recs, TABLE)['facts']))
         self.assertFalse(any(f['id'] == 'quota_share' for f in insights.cost_facts(recs, TABLE, quota={})['facts']))
 

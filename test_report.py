@@ -77,6 +77,15 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report['privacy'], 'redacted')
         self.assertEqual(expand(report)[0]['tokens']['reasoning'], 3)
 
+    def test_imported_harness_name_is_in_no_shared_insight_fact(self):  # #108
+        rows = [observation(harness='private-harness-xyz'), observation('two', harness='claude', turn_id='t2')]
+        report = build_report(rows, {})
+        html = render_report(report)
+        facts = json.dumps(report['insights'])
+        self.assertIn('"other"', facts)
+        self.assertNotIn('private-harness-xyz', json.dumps(decode_html(html)))
+        self.assertNotIn('private-harness-xyz', page_text(html))
+
     def test_project_collisions_are_distinct_and_private_labels_unique(self):
         rows = [observation(), observation('two', project_id='/other/client/app')]
         result = expand(build_report(rows, {}, redact=False))
@@ -346,7 +355,7 @@ class AtAGlance(unittest.TestCase):
     KEYS = ('glance_e', 'glance_turns', 'glance_turns_one', 'glance_head', 'glance_head_nocost', 'glance_empty', 'glance_top', 'glance_day', 'glance_hits',
             'glance_hits_one', 'glance_h_5h', 'glance_h_week', 'glance_h_other', 'glance_int', 'glance_int_one', 'glance_int_nopct', 'glance_int_nopct_one',
             'glance_turns_part', 'glance_turns_part_one', 'glance_top_priced', 'glance_int_priced', 'glance_int_priced_one', 'glance_int_unknown', 'glance_int_unknown_one',
-            'glance_head_ambig', 'glance_top_recorded', 'glance_top_both', 'glance_int_recorded', 'glance_int_recorded_one', 'glance_int_both', 'glance_int_both_one', 'glance_day_priced', 'glance_ambig_tail', 'glance_day_recorded', 'glance_day_both', 'glance_qs_est', 'glance_qs', 'glance_w_5h', 'glance_w_week', 'glance_w_other')
+            'glance_head_ambig', 'glance_top_recorded', 'glance_top_both', 'glance_int_recorded', 'glance_int_recorded_one', 'glance_int_both', 'glance_int_both_one', 'glance_day_priced', 'glance_ambig_tail', 'glance_day_recorded', 'glance_day_both', 'glance_qs_est', 'glance_qs')
 
     def test_template_has_the_block_above_the_kpis_and_uses_only_defined_keys(self):
         root = Path(__file__).parent / 'tokenatlas'

@@ -8,6 +8,13 @@ All notable changes to this project are documented in this file. The project fol
 
 - Claude: `tokenatlas statusline` now records quota snapshots by default (#117, #92). If your Claude Code statusline runs `tokenatlas statusline`, recording starts with its next run after you upgrade. Each snapshot is a timestamp, the session id and the 5-hour and weekly percentages and reset times that Claude Code already shows in its statusline, appended to `claude-quota.jsonl` (0600) next to the history database; it stays local and nothing is sent. Turn it off with `--no-record-quota` on the statusline command or `TOKENATLAS_NO_QUOTA=1`; to remove what was recorded, turn recording off first, then delete `claude-quota.jsonl` and `claude-quota.last` (and `claude-quota.lock` if present) next to the history database. `--record-quota` is still accepted and does nothing; `statusline --setup` prints the command without a flag and documents the opt-out. `doctor` now reports recording as active when the statusline is tokenatlas's and not opted out, and warns when the statusline is not tokenatlas's (no snapshots possible) or recording is disabled. The #92 guarantees are unchanged: 0600, no symlinks, a non-blocking lock, and a failure never affects the status line.
 
+### Fixed
+
+- Shared reports: the `context_size` insight fact no longer names an imported harness verbatim; it uses the `limit_hits` allowlist (claude, codex, pi, opencode, else "other") in values and text (#108).
+- Report: quota shares name the limit the same way everywhere (cards, `top`, insights, "At a glance"): "weekly Codex limit", "5-hour Claude limit" (sv "veckogränsen för Codex", "5-timmarsgränsen för Claude") (#115).
+- Tests: `CollectSignalWindowTest` no longer flakes on macOS CI when signalling a process group whose leader has exited (`PermissionError`); `_stop_group` already treated it like `ProcessLookupError`, now covered by a unit test (#113).
+- Report: limit windows on phones: the "Limit windows" table becomes one small card per window at 640 px and below instead of clipping the Resets column.
+
 ## [1.13.0] - 2026-10-04
 
 ### Added
