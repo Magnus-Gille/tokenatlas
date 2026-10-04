@@ -27,12 +27,21 @@ PUBLIC_NAMES = dict(
     turn_confidence=frozenset('observed derived absent'.split()),
 )
 CONSERVATIVE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._: -]{0,120}')
-PUBLIC_MODEL = re.compile(
-    r'(?:(?:openai|anthropic|google|qwen|z-ai|zai-org|mistralai|meta-llama|deepseek|moonshotai|x-ai)/)?'
-    r'(?:claude|gpt|o[0-9]|codex|gemini|gemma|mistral|codestral|ministral|magistral|pixtral|devstral|qwen|llama|deepseek|glm|kimi|grok)'
-    r'[A-Za-z0-9._-]{0,100}(?::free)?', re.IGNORECASE)
 
 
+def public_model_checker(*tables):
+    """(provider, model) -> True only for an exact, known public identifier: the model (or one of its aliases) is an entry of the given rate
+    tables (packaged prices.json, credits.json) for that provider, after each table's own provider_aliases. A family prefix proves nothing:
+    a private suffix such as `claude-sonnet-4-6-acme-internal` is not a public identifier."""
+    known = [({(e['provider'], name) for e in t.get('models', ()) for name in (e['model'], *(e.get('aliases') or ()))}, t.get('provider_aliases') or {})
+             for t in tables]
+    return lambda provider, model: isinstance(provider, str) and isinstance(model, str) and any((aliases.get(provider, provider), model) in names for names, aliases in known)
+
+
+# Part of every report's identity (report_state), so a cached report built under an older redaction policy is never reused or throttled
+# (`open`, `report --if-changed`, `--max-age`). Bump it with ANY change to what a shared report reveals or how it pseudonymizes.
+# 1: model names are shown only when exact packaged public identifiers (#133).
+REDACTION_REVISION = 1
 INSIGHT_DAYS = 30
 MAX_QUOTA_WINDOWS = 12
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -93,7 +102,7 @@ def report_state(revision, machine, spec, coverage, token=None, texts_hash=None,
     dump = lambda body: json.dumps(body, sort_keys=True, separators=(',', ':'))
     template = hashlib.sha256(Path(__file__).with_name('report_template.html').read_bytes()
                               + Path(__file__).with_name('report_i18n.json').read_bytes()).hexdigest()
-    identity = dump({'format': 2, 'version': __version__, 'spec': spec, 'machine': machine,
+    identity = dump({'format': 2, 'redaction': REDACTION_REVISION, 'version': __version__, 'spec': spec, 'machine': machine,
                      **({'prompt_texts': texts_hash} if texts_hash else {})})
     data = dump({'token': token, 'revision': int(revision), 'coverage': coverage, **({'insights_day': day} if day else {}), **({'quota': quota} if quota else {})})
     return tuple(hashlib.sha256(text.encode()).hexdigest()[:32] for text in (identity + template, data))
@@ -115,6 +124,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     credit_table = credit_table or credit_rates.packaged()
     zone = ZoneInfo(timezone_name)
     records = sorted(records, key=lambda r: (r['ts'], r['harness'], r['id']))
+    is_public_model = public_model_checker(pricing.load_prices(), credit_rates.packaged()) if redact else None  # the packaged tables, never a caller-supplied one: they decide what is public
     aliases = {}
     def alias(kind, value):
         if value in (None, '', 'unknown'):
@@ -136,7 +146,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         if value is None or not redact:
             return value
         if kind == 'model':
-            public = record.get('provider') in PUBLIC_NAMES['provider'] and PUBLIC_MODEL.fullmatch(str(value))
+            public = record.get('provider') in PUBLIC_NAMES['provider'] and is_public_model(record.get('provider'), value)
         elif record is None:
             public = CONSERVATIVE_NAME.fullmatch(str(value))
         else:

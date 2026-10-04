@@ -322,6 +322,28 @@ class ConditionalReport(Base):
         self.assertNotIn('skipped', json.loads(out))
         self.assertEqual(payload(self.html.read_text(encoding='utf-8'))['privacy'], 'redacted')
 
+    def test_pre_fix_redaction_revision_is_not_current(self):  # #133: a report built under an older redaction policy is rebuilt
+        for flags in (('--if-changed',), ('--max-age', '1h'), ('--if-changed', '--max-age', '1h')):
+            with self.subTest(flags=flags):
+                with patch.object(report_mod, 'REDACTION_REVISION', report_mod.REDACTION_REVISION - 1):
+                    self.report(*flags)
+                old = report_mod.read_report_state(self.html)
+                self.age(7200)
+                self.assertNotIn('skipped', self.report(*flags))
+                self.assertNotEqual(report_mod.read_report_state(self.html)[0], old[0])
+                self.assertSkipped(self.report('--if-changed'), 'unchanged')
+
+    def test_open_shared_rebuilds_a_pre_fix_report(self):
+        target = Path(self.tmp.name) / 'x/r.html'
+        with patch.object(cli, '_open_in_browser'):
+            with patch.object(report_mod, 'REDACTION_REVISION', report_mod.REDACTION_REVISION - 1):
+                self.run_cli('open', '--shared', '--html', str(target))
+            old = report_mod.read_report_state(target)
+            code, out, err = self.run_cli('open', '--shared', '--html', str(target))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('skipped', json.loads(out))
+        self.assertNotEqual(report_mod.read_report_state(target)[0], old[0])
+
     def test_options_change_is_never_throttled_by_max_age(self):
         self.report('--if-changed')
         code, out, err = self.run_cli('report', '--html', str(self.html), '--if-changed', '--max-age', '1h')
