@@ -333,6 +333,30 @@ PROMPT_CARD_COLUMNS = ('prompt', 'price', 'price_classes', 'cw1h', 'credit', 'cr
 SIZE_LIMIT_20K = 700_000  # measured ~311 KB (was ~9 MB as v1 JSON); margin for dictionary growth
 
 
+class WholeTurnSize(unittest.TestCase):
+    def test_payload_gives_each_card_turn_its_whole_request_count_even_when_the_report_holds_part_of_it(self):
+        a, b, c = (observation(i, ts=f'2026-10-25T00:3{n}:00+00:00') for n, i in enumerate('abc'))
+        d = observation('d', ts='2026-10-25T00:35:00+00:00', turn_id='other-turn')
+        for redact in (False, True):
+            full = build_report([a, b, c, d], {}, redact=redact)
+            self.assertEqual(sorted(full['prompt_requests'].values()), [1, 3])
+            cut = build_report([a, d], {}, redact=redact, universe=[a, b, c, d])  # a filtered report: one request of three
+            self.assertEqual(sorted(cut['prompt_requests'].values()), [1, 3])
+            if redact:
+                self.assertNotIn('private-turn', json.dumps(cut))
+
+    def test_template_labels_partial_selections_in_both_languages(self):
+        root = Path(__file__).parent / 'tokenatlas'
+        template = (root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn('partialTurn(p.id,p.requests)', template)
+        texts = json.loads((root / 'report_i18n.json').read_text(encoding='utf-8'))
+        self.assertEqual((texts['sv']['qs_whole'], texts['en']['qs_whole']), ('(hela turen)', '(whole turn)'))
+        self.assertEqual((template.count('data-t="lh_scope"'), template.count('data-t="qw_scope"')), (1, 1))
+        self.assertEqual(texts['en']['lh_scope'], 'Hits included when this report was built; not affected by the filters above.')
+        self.assertEqual(texts['sv']['qw_scope'], 'De senaste fönstren för varje gräns; påverkas inte av filtren ovan.')
+        self.assertNotIn('All imported history', json.dumps(texts['en']['lh_scope'] + texts['en']['qw_scope']))
+
+
 class InterruptedBadge(unittest.TestCase):
     def test_column_marks_flagged_rows_and_shared_reports_keep_no_ids(self):
         rows = [observation('a'), observation('b', flags=['interrupted'], ts='2026-10-25T00:31:00+00:00')]
