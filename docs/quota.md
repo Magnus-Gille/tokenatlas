@@ -80,7 +80,12 @@ see (other machines, cloud tasks) and unpriced models (13% of events) account fo
    percentage has risen by at least 5 points the cost since the anchor over Δ/100 is one point (then the anchor moves; lower readings
    from a stale session never move it). Windows with less than $0.50 of cost, with an unpriced request, with an ambiguous (synthetic id)
    request left in, or on another provider are skipped and counted, never guessed. So are a hit under another limit id (a per-model limit such as `codex_bengalfox`: `other_limit`) and a Claude window instance with more than one account's counter (`ambiguous`, as in the shares' counter split); a turn that ran under another limit id gets no budget of the default limit. The budget per harness and window is the median of
-   the points in the last 8 windows, with count and spread. Manual readings and `quota set` always win, and are never mixed with an
+   the points in the last 8 windows, with count and spread. It is **used for shares only with enough consistent evidence**: at least
+   `AUTO_MIN_POINTS = 3` points from at least `AUTO_MIN_WINDOWS = 2` distinct windows, and the largest point at most `AUTO_MAX_SPREAD = 4`
+   times the smallest. Otherwise `quota show` lists it as not used ("not enough evidence yet (1 of 3 points)", "points disagree too much
+   (spread ×5.0)") and turns get no automatic share. An automatic share above 100% of one window is never shown as a number ("share
+   unknown: the automatic estimate does not fit this turn"); `quota show` counts such turns. Manual calibration is unchanged. The share
+   text names the evidence: "(estimated from 5 limit hits)", "12 statusline readings" or both. Manual readings and `quota set` always win, and are never mixed with an
    automatic budget of the same harness. A turn with no observed, estimated or manually calibrated share then gets an
    **auto-calibrated** share: "≈ 4% of the weekly Claude limit (estimated from your limit hits)" (or "... statusline readings"), whole
    percent, "≥" when a request is unpriced, incomplete or ambiguous, and never "< 1%" for a floor. Codex uses only its `window_full`

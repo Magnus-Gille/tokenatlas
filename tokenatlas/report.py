@@ -280,7 +280,7 @@ def _calibration_payload(budgets, whole, assigned, cost_of, found, shown, table)
         item = budget.share(derived, key[0], *costs[key]) if key in costs else None
         if item:
             shares[ordinal] = dict(harness=key[0], minutes=item['window_minutes'], label=item['label'], percent=item['exact_percent'], shared_with=None,
-                                   date=item['calibration']['date'], lower_bound=item['lower_bound'], **({'source': item['calibration']['source']} if item['label'] == 'auto-calibrated' else {}))
+                                   date=item['calibration']['date'], lower_bound=item['lower_bound'], **({'source': item['calibration']['source'], 'hits': (item['calibration'].get('by_source') or {}).get('limit_hit', 0), 'readings': (item['calibration'].get('by_source') or {}).get('statusline', 0), 'unfit': bool(item.get('unfit'))} if item['label'] == 'auto-calibrated' else {}))
     if shares:
         out['quota_shares'] = shares
     out['quota_calibration'] = [dict(harness=b['harness'], minutes=b['minutes'], plan=b.get('plan'), source=b['source'], budget_usd=round(b['budget_usd'], 2), readings=b['readings'],
