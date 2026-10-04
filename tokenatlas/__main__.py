@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tokenatlas import __version__
 from tokenatlas import statusline
+from tokenatlas.terminal import terminal_safe
 from tokenatlas.resume import resume_command,shell_command as _shell_command
 # The heavy modules (history, report, insights, pricing, why, ...) are imported where they are used, so `tokenatlas statusline`, which Claude Code
 # runs on every status update, starts without them.
@@ -404,7 +405,7 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if args.command=='show':  # before default_db(): show never touches the history, not even its one-time directory move
         try:return _show(Path(args.html or (args.db.expanduser().parent if args.db else _state_base()/'tokenatlas')/'report.html').expanduser())
-        except (OSError,ValueError) as exc:parser.exit(2,f'usage: {exc}\n')
+        except (OSError,ValueError) as exc:parser.exit(2,f'usage: {terminal_safe(exc)}\n')
     if args.db is None:args.db=default_db()
     try:
         start=end=None
@@ -561,7 +562,7 @@ def main(argv=None):
                 result=history.snapshot(args.out)
             elif args.command=='import':
                 result=history.import_snapshot(args.snapshot,args.label)
-                if result.get('warning'):print(f"usage: warning: {result['warning']}",file=sys.stderr)
+                if result.get('warning'):print(f"usage: warning: {terminal_safe(result['warning'])}",file=sys.stderr)
             elif args.command=='doctor':
                 history.connection.execute('BEGIN')
                 result=history.doctor()
@@ -612,7 +613,7 @@ def main(argv=None):
         print(json.dumps(result,indent=2,sort_keys=True))
         return 0 if args.command!='refresh' or result['status']=='ok' else 2
     except (OSError,ValueError,sqlite3.Error,ZoneInfoNotFoundError) as exc:
-        parser.exit(2,f'usage: {exc}\n')
+        parser.exit(2,f'usage: {terminal_safe(exc)}\n')
 
 
 if __name__=='__main__':raise SystemExit(main())
