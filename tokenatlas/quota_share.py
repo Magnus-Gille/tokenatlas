@@ -8,6 +8,7 @@ a fixed dollars-per-percent rate. Usage tokenatlas does not see (other machines,
 The counter is whole-percent: a share is shown without decimals, and '< 1%' when it did not move."""
 import functools
 import gc
+import math
 import json
 import os
 from collections import OrderedDict
@@ -23,6 +24,7 @@ WEEK, FIVE_HOURS = 10080, 300
 # lower reading is a stale one, not a reset, unless it falls by more than RESET_DROP points to under RESET_RATIO of the highest value seen.
 RESET_DROP, RESET_RATIO = 5, 0.5
 COUNTER_GAP = 10
+NARROW = 5  # a range of at most this many points also shows a point estimate
 CONFLICT_EACH = 2
 STRAGGLE, STRAGGLE_POINTS = timedelta(minutes=2), 2
 CONFLICT_WINDOW = timedelta(minutes=10)
@@ -543,22 +545,23 @@ def _weight(record):
 @_nogc
 def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
     """{turn: {window minutes: share}} with turn = (harness, session, turn_id) and share = {window_key, observed: {before, after, delta,
-    shared_with} or None, estimate: float or None, label: 'observed' | 'estimate' | 'unknown'}, for every window length the turn has snapshots in.
+    shared_with} or None, estimate: float or None, lower, upper, label: 'observed' | 'estimate' | 'range' | 'unknown'}, for every window length
+    the turn has snapshots in.
 
-    The movement of a window is allocated once. Walk the window instance's snapshots in time order; each step (the snapshots at one time, after
-    the previous time) moved the account-wide counter by pct - previous pct. Everyone who may have moved it takes part: turns, usage that no turn
-    owns (a pseudo-turn per session, never returned), and requests without any snapshot. A participant is active in a step when the span from
-    its first to its last request (with a snapshot or not) meets the step's interval. A step with one active participant gives it all of it; with
-    several, it is spread over them by list-price cost rate (cost over the span, times the overlap with the step; a request that is alone or only
-    touches the step's end counts its cost in the step; unpriced cost counts 0, but still makes the step shared; no priced cost at all: unknown).
-    A share is the sum of what the turn received, so the shares of a window add up to its movement. It is 'observed' only if the turn was the
-    only active participant in every step that moved the counter and its first and last requests both carry a snapshot of the window; otherwise
-    an 'estimate'. It is unknown without a valid `before` (no reading before the first request) or when the turn crossed into a new instance of
-    the same window (a reset). `shared_with` counts the other participants whose spans overlap its own, symmetrically. A lower reading is a stale
-    one (see RESET_DROP) and moves nothing. `cost_of` (record -> USD or None; default prompts._cost with `table`) lets a caller reuse costs;
-    ambiguous (id_synthetic) requests weigh 0. A request without a price is not free: in a shared step it weighs its tokens at the instance's
-    average list price per token of its priced requests (so the share is an estimate); with no priced request in the instance the step is
-    unknown. `only` (a set of turn keys) skips the allocation work for steps in which none of them is active."""
+    A window's movement is walked once. Each step (the snapshots at one time, after the previous time) moved the account-wide counter by
+    pct - previous pct. Everyone who may have moved it takes part: turns, usage that no turn owns (a pseudo-turn per session, never returned),
+    and requests without any snapshot. A participant is active in a step when the span from its first to its last request (with a snapshot or
+    not) meets the step's interval. A turn's share is a RANGE that needs no prices: `lower` is the movement in the steps where it was the only
+    active participant, `upper` all the movement in the steps where it was active at all, so whatever split of a shared step is true lies
+    between them (the lowers add up to at most the movement, the uppers to at least the movement). It is 'observed' when lower == upper (alone
+    in every step that moved) and its first and last requests both carry a snapshot of the window. Otherwise it is a 'range'; when the range
+    is at most NARROW points wide it also has a point, `estimate`: the shared steps split by what each participant's own requests in the step
+    cost (an unpriced request weighs its tokens at the instance's average list price per token; with no priced request in the instance, or no
+    cost in a step at all, there is no point). A turn is unknown only without a valid `before` (no reading before its first request) or when it
+    crossed into a new instance of the same window (a reset). `shared_with` counts the other participants whose spans overlap its own,
+    symmetrically. A lower reading is a stale one (see RESET_DROP) and moves nothing. `cost_of` (record -> USD or None; default prompts._cost
+    with `table`) lets a caller reuse costs; ambiguous (id_synthetic) requests weigh 0. `only` (a set of turn keys) skips the work for steps
+    in which none of them is active."""
     price = cost_of or (lambda r: prompts._cost(r, table))
     costs = {}
 
@@ -598,9 +601,6 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
                 tokens.append(tokens[-1] + (_weight(records[i]) if c is None else 0.0))
             ledger[who] = ([t for t, _ in items], money, missing, tokens)
         return ledger[who]
-
-    def spend(who):  # (list-price cost of all the participant's priced requests, token weight of its unpriced ones)
-        return books(who)[1][-1], books(who)[3][-1]
 
     def in_step(who, tp, tc):  # (priced cost, unpriced requests, their token weight) of the participant's requests in (tp, tc]
         times, money, missing, tokens = books(who)
@@ -645,7 +645,7 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
                 priced_cost += cost(i)
                 priced_tokens += _weight(records[i])
         rate = priced_cost / priced_tokens if priced_cost > 0 and priced_tokens > 0 else None
-        alloc, estimated, unpriced = {}, set(), set()
+        lower, upper, point, estimated, nopoint = {}, {}, {}, set(), set()  # per participant: sole-step movement, all active-step movement, cost-split movement
         for g in range(1, len(groups)):
             move = pcts[g] - pcts[g - 1]
             if not move:
@@ -654,30 +654,29 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
             active = [w for w, (lo, hi) in spans.items() if lo <= tc and hi > tp]
             if not active:
                 continue
-            if len(active) == 1:
-                alloc[active[0]] = alloc.get(active[0], 0.0) + move
-                continue
             if only is not None and not (only & set(active)):
                 continue
+            for w in active:
+                upper[w] = upper.get(w, 0.0) + move  # the most any participant active in the step can have had of it: all of it
+            if len(active) == 1:
+                w = active[0]
+                lower[w] = lower.get(w, 0.0) + move  # the least: what moved while it was the only one active
+                point[w] = point.get(w, 0.0) + move
+                continue
+            # A shared step: the bounds need no prices. The point (a split by what each participant's own requests in the step cost) is only
+            # as good as the prices: an unpriced request is weighed by its tokens at the instance's average price, or not at all.
             weights, missing = {}, False
             for w in active:
-                lo, hi = spans[w]
                 money, lost, lost_tokens = in_step(w, tp, tc)
-                missing = missing or (lost > 0 and rate is None)  # unpriced in the step and nothing to price it by: nobody can be weighed
-                overlap = max(0.0, min(hi, tc) - max(lo, tp))
-                # a lone request, or one that only touches the step's end, weighs its cost in the step; otherwise the cost rate over its span
-                if hi == lo or not overlap:
-                    weights[w] = money + (rate or 0.0) * lost_tokens
-                else:
-                    priced_total, unpriced_tokens = spend(w)
-                    weights[w] = (priced_total + (rate or 0.0) * unpriced_tokens) / (hi - lo) * overlap
+                missing = missing or (lost > 0 and rate is None)
+                weights[w] = money + (rate or 0.0) * lost_tokens
             total = sum(weights.values())
             for w, weight in weights.items():
                 estimated.add(w)
                 if missing or total <= 0:
-                    unpriced.add(w)  # the allocation of this step is unknown for everyone in it
+                    nopoint.add(w)
                 else:
-                    alloc[w] = alloc.get(w, 0.0) + move * weight / total
+                    point[w] = point.get(w, 0.0) + move * weight / total
         starts = sorted(lo for lo, _ in spans.values())
         ends = sorted(hi for _, hi in spans.values())
         for turn, rs in mine.items():
@@ -687,16 +686,28 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
             gi = bisect_left(times, lo)
             a, b = spans[turn]
             shared = bisect_right(starts, b) - bisect_left(ends, a) - 1
-            share = dict(window_key=key, observed=None, estimate=None, label='unknown')
-            if gi > 0 and turn not in unpriced:
-                v = alloc.get(turn, 0.0)
-                share['observed'] = dict(before=pcts[gi - 1], after=pcts[bisect_right(times, max(hi, rs[-1]['t'])) - 1], delta=v, shared_with=shared)
+            share = dict(window_key=key, observed=None, estimate=None, label='unknown', lower=None, upper=None)
+            if gi > 0:
+                low, high = lower.get(turn, 0.0), upper.get(turn, 0.0)
+                share['observed'] = dict(before=pcts[gi - 1], after=pcts[bisect_right(times, max(hi, rs[-1]['t'])) - 1], delta=low, shared_with=shared)
+                share.update(lower=low, upper=high)
                 # both the first and the last request carry a snapshot of the window (a Claude reading follows its request: `at` is that request's time)
-                ends_ok = rs[0].get('at', rs[0]['t']) == lo and rs[-1].get('at', rs[-1]['t']) == hi
-                if turn in estimated or not ends_ok:
-                    share.update(estimate=v, label='estimate')
+                first_ok, last_ok = rs[0].get('at', rs[0]['t']) == lo, rs[-1].get('at', rs[-1]['t']) == hi
+                if not last_ok:
+                    # a request after the last reading may have moved the counter further, so no upper bound is known: only "at least the lower"
+                    if floor_pct(low) < 1:
+                        share.update(observed=None, lower=None, upper=None)  # and a lower bound that floors to nothing is no information: unknown
+                    else:
+                        share.update(label='range', upper=None)
+                elif turn not in estimated:
+                    if first_ok:
+                        share['label'] = 'observed'
+                    else:
+                        share.update(estimate=low, label='estimate')  # alone in every step, but a request without a reading may hide movement
+                elif turn not in nopoint and high - low <= NARROW:
+                    share.update(estimate=point.get(turn, 0.0), label='estimate')
                 else:
-                    share['label'] = 'observed'
+                    share['label'] = 'range'
             per_turn.setdefault(turn, {}).setdefault(_series(key), {})[key] = share
     result = {}
     for turn, series in per_turn.items():
@@ -704,7 +715,7 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
             # a turn that ended in a later instance of the window than it started in crossed a reset: unknown
             share = max(group.values(), key=lambda x: x['window_key'][6])
             if len(group) > 1:
-                share = dict(window_key=share['window_key'], observed=None, estimate=None, label='unknown')
+                share = dict(window_key=share['window_key'], observed=None, estimate=None, label='unknown', lower=None, upper=None)
             slot = result.setdefault(turn, {})
             minutes = share['window_key'][2]
             if minutes not in slot or _rank(share) > _rank(slot[minutes]):
@@ -713,15 +724,17 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
 
 
 def _rank(share):
-    v = value(share)
-    return -1 if v is None else v
+    """What ranks a share: its upper bound (an observed share's value; a one-sided share's lower bound), -1 when unknown."""
+    if share['label'] == 'unknown' or share.get('lower') is None:
+        return -1
+    return share['lower'] if share.get('upper') is None else share['upper']
 
 
 def largest(shares):
-    """{turn: share} from turn_shares: the window where the turn moved the counter most (the weekly one on a tie). A turn whose best known share
+    """{turn: share} from turn_shares: the window where the turn can have moved the counter most (upper bound), then where it surely moved it most (lower), then the weekly one. A turn whose best known share
     is 0 while another of its windows is unknown shows the unknown one: 0 of one limit says nothing about the other."""
     def pick(by):
-        best = max(by.values(), key=lambda x: (_rank(x), x['window_key'][2]))
+        best = max(by.values(), key=lambda x: (_rank(x), x.get('lower') or 0, x['window_key'][2]))  # the most it can have used, then the most it surely did, then the weekly one
         if _rank(best) == 0:
             unknown = [x for x in by.values() if x['label'] == 'unknown']
             if unknown:
@@ -736,10 +749,15 @@ def window_name(minutes):
 
 
 def value(share):
-    """The percentage a share stands for: the observed delta, or the estimate; None when unknown."""
+    """The single percentage a share stands for: the observed delta, or the narrow estimate; None for a range and for unknown."""
     if share['label'] == 'observed':
         return share['observed']['delta']
     return share['estimate'] if share['label'] == 'estimate' else None
+
+
+def bounds(share):
+    """(lower, upper) in points, or None when unknown; upper is None for a one-sided share ("at least the lower": a request after the last reading)."""
+    return None if share['label'] == 'unknown' or share.get('lower') is None else (share['lower'], share['upper'])
 
 
 def auto_evidence(calibration):
@@ -747,6 +765,37 @@ def auto_evidence(calibration):
     by = calibration.get('by_source') or {}
     parts = [f"{n} {word}{'s' * (n != 1)}" for key, word in (('limit_hit', 'limit hit'), ('statusline', 'statusline reading')) if (n := by.get(key))]
     return ' and '.join(parts) or 'your history'
+
+
+EPS = 1e-6  # float noise: 3.0000000001 is 3, not "more than 3"
+
+
+def floor_pct(x):
+    """The lower end of a range as displayed: rounded DOWN, so the display never claims more than the evidence."""
+    return int(math.floor(x + EPS))
+
+
+def ceil_pct(x):
+    """The upper end of a range as displayed: rounded UP, for the same reason."""
+    return int(math.ceil(x - EPS))
+
+
+def range_text(lower, upper):
+    """'2–28%', '< 1%–28%', '< 1%' or '3%': whole points, never decimals. The lower end is floored and the upper end ceiled, so the range
+    always contains what the readings allow (a point estimate or an observed share rounds normally)."""
+    if upper < 1 - EPS:
+        return '< 1%'
+    lo, up = floor_pct(lower), ceil_pct(upper)
+    return f'{up}%' if lo == up else f'< 1%–{up}%' if lo < 1 else f'{lo}–{up}%'
+
+
+def wide(lower, upper):
+    """The one rule for 'is it a range': the displayed endpoints (floored lower, ceiled upper) differ (the page compares them the same way)."""
+    return ceil_pct(upper) - floor_pct(lower) >= 1
+
+
+def _shared_note(n):
+    return f" (shared with {n} turn{'s' * (n != 1)})" if n else ''
 
 
 def _percent(label, v):
@@ -761,12 +810,34 @@ def percent_text(share):
     return _percent(share['label'], value(share))
 
 
+def bare(label, point, lower, upper):
+    """A bounded share without its limit: '2–28%', '< 1%–28%', '≥ 4%' (no upper bound), or '≈9% (7–11%)' (a narrow range with its point; the
+    point is left out when it rounds to under 1%). The page applies the same rules."""
+    if upper is None:
+        return f'≥{floor_pct(lower)}%'
+    if label == 'estimate' and point is not None and int(point + 0.5) >= 1 and wide(lower, upper):
+        return f"{_percent('estimate', point)} ({range_text(lower, upper)})"
+    return range_text(lower, upper)
+
+
+def _bounded(item, name):
+    """A shared turn (#131): the least and the most it can have used, never a cost-weighted point; a narrow range also gives its point, unless
+    that rounds to under 1% (then the range alone). One-sided ("at least"): a request after the last reading may have moved the counter further."""
+    lo, up = item['lower_percent'], item['upper_percent']
+    if up is None and floor_pct(lo) < 1:
+        return f'share of {name}: n/a'
+    return f"{bare(item['label'], item.get('delta_percent'), lo, up)} of {name}{_shared_note(item.get('shared_with'))}"
+
+
 def line(item, harness):
     """For `top`, from the `quota_share` JSON of a turn (as_json): '~3% of weekly Codex limit', '≈2% of weekly Codex limit (estimate)',
     '< 1% of ...', or 'share of ...: n/a'."""
     name = f"{window_name(item['window_minutes'])} {harness.capitalize()} limit"
     if item['label'] == 'auto-calibrated' and item.get('unfit'):
         return 'share unknown: the automatic estimate does not fit this turn'
+    if item['label'] == 'range' or (item['label'] == 'estimate' and item.get('lower_percent') is not None and item.get('upper_percent') is not None
+                                    and wide(item['lower_percent'], item['upper_percent'])):
+        return _bounded(item, name)
     if item['label'] not in ('observed', 'estimate', 'calibrated', 'auto-calibrated') or item['delta_percent'] is None:
         return f'share of {name}: n/a'
     if item['label'] == 'auto-calibrated':  # from budgets tokenatlas derived itself (budget.py, #116), never an observation
@@ -792,10 +863,20 @@ def text(share):
     return line(as_json(share), share['window_key'][0])
 
 
+def _down(x):
+    """Two decimals, rounded down: a bound is never made to claim more than it is (3.999 stays 3.99)."""
+    return math.floor(x * 100 + EPS) / 100
+
+
+def _up(x):
+    return math.ceil(x * 100 - EPS) / 100
+
+
 def as_json(share):
     obs = share['observed']
-    v = value(share)
+    v, b = value(share), bounds(share)
     return dict(window_minutes=share['window_key'][2], delta_percent=None if v is None else round(v, 2) if share['label'] == 'estimate' else v,
+                lower_percent=b and _down(b[0]), upper_percent=_up(b[1]) if b and b[1] is not None else None,
                 label=share['label'], before=obs and obs['before'], after=obs and obs['after'], shared_with=obs and obs['shared_with'])
 
 

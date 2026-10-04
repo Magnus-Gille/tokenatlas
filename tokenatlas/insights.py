@@ -98,11 +98,11 @@ def _quota_share(records, inside, memo, shares):
         if found and cost is not None and tuple(found[:3]) in shares:
             costs[tuple(found[:3])] = costs.get(tuple(found[:3]), 0.0) + cost
     top = sorted(((c, k) for k, c in costs.items() if c > 0), key=lambda x: (-x[0], x[1]))[:3]
-    known = [(c, shares[k][quota_share.WEEK], k[0]) for c, k in top if quota_share.WEEK in shares[k] and shares[k][quota_share.WEEK]['label'] in ('observed', 'estimate')]
+    known = [(c, shares[k][quota_share.WEEK], k[0]) for c, k in top if quota_share.WEEK in shares[k] and shares[k][quota_share.WEEK]['label'] in ('observed', 'estimate', 'range')]
     if not known:
         return []
-    estimated = sum(1 for _, x, _h in known if x['label'] == 'estimate')
-    values = dict(window_minutes=quota_share.WEEK, considered=len(top), turns=[dict(cost=c, percent=quota_share.value(x), label=x['label'], harness=h if h in PUBLIC_HARNESS else 'other') for c, x, h in known],
+    estimated = sum(1 for _, x, _h in known if x['label'] != 'observed')
+    values = dict(window_minutes=quota_share.WEEK, considered=len(top), turns=[dict(cost=c, percent=quota_share.value(x), lower=x['lower'], upper=x['upper'], label=x['label'], harness=h if h in PUBLIC_HARNESS else 'other') for c, x, h in known],
                   observed_turns=len(known) - estimated, estimated_turns=estimated)
     return [_fact('quota_share', values, 'ins_quota_share_c', ('ins_a_quota_account', 'ins_a_quota_whole'), 'estimate' if estimated else 'computed')]
 
@@ -477,9 +477,12 @@ def _rq(n):
     return f"{n:,} request" + ('' if n == 1 else 's')
 
 
-def _quota_pct(percent, label):
-    whole = int(percent + 0.5)
-    return '< 1%' if whole < 1 else f"{'≈' if label == 'estimate' else '~'}{whole}%"
+def _quota_pct(x):
+    """One turn's share as the fact lists it: '~3%' (observed), '2–28%' (a range), '≈9% (7–11%)' (a narrow range with its point)."""
+    if x['label'] == 'range' or (x['label'] == 'estimate' and quota_share.wide(x['lower'], x['upper'])):
+        return quota_share.bare(x['label'], x['percent'], x['lower'], x['upper'])
+    whole = int(x['percent'] + 0.5)
+    return '< 1%' if whole < 1 else f"{'≈' if x['label'] == 'estimate' else '~'}{whole}%"
 
 
 _AGENT_NAMES = {'claude': 'Claude', 'codex': 'Codex', 'pi': 'Pi', 'opencode': 'OpenCode'}  # how a limit names its agent (not the Claude Code product name)
@@ -522,7 +525,7 @@ def _lines(f):
             out.append(f"with some unpriced requests (cost is a lower bound): {v['partly_priced_turns']:,}")
         return out
     if i == 'quota_share':
-        each = [f"{_quota_pct(x['percent'], x['label'])} of the weekly {_AGENT_NAMES[x['harness']]} limit" if x['harness'] in _AGENT_NAMES else f"{_quota_pct(x['percent'], x['label'])} of the weekly limit (other agent)" for x in v['turns']]
+        each = [f"{_quota_pct(x)} of the weekly {_AGENT_NAMES[x['harness']]} limit" if x['harness'] in _AGENT_NAMES else f"{_quota_pct(x)} of the weekly limit (other agent)" for x in v['turns']]
         listed = ', '.join(each[:-1]) + (' and ' if len(each) > 1 else '') + each[-1]
         return [f"your {len(v['turns'])} costliest turns used {listed} (each of its own window)",
                 f"turns with a known weekly share: {len(v['turns'])} of {v['considered']} costliest"]

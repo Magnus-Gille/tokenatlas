@@ -263,8 +263,9 @@ def _quota_payload(shares, windows, shown, metadata, account):
     for turn, share in quota_share.largest(shares).items():
         if tuple(turn) in shown:
             obs = share['observed']
+            low, up = quota_share.bounds(share) or (None, None)
             found[shown[tuple(turn)]] = dict(harness=metadata('harness', share['window_key'][0], {'harness': share['window_key'][0]}), minutes=share['window_key'][2], label=share['label'], percent=quota_share.value(share),
-                                             shared_with=obs and obs['shared_with'])
+                                             lower=low, upper=up, shared_with=obs and obs['shared_with'])
     out = {}
     if found:
         out['quota_shares'] = found
@@ -285,7 +286,7 @@ def _calibration_payload(budgets, whole, assigned, cost_of, found, shown, table)
     out = {}
     shares = dict(found)
     for key, ordinal in shown.items():
-        if ordinal in shares and shares[ordinal]['label'] in ('observed', 'estimate'):
+        if ordinal in shares and shares[ordinal]['label'] in ('observed', 'estimate', 'range'):
             continue
         item = budget.share(derived, key[0], *costs[key]) if key in costs else None
         if item:

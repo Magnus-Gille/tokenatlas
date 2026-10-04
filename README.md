@@ -308,7 +308,10 @@ Energy appears in two places, always as an order-of-magnitude proxy and never as
 On a subscription, list price is not what you pay; the vendor's usage limit is. For Codex (from its rollouts) and, unless you opt out, for Claude Code (from the statusline, see [Claude quota snapshots](#claude-quota-snapshots-on-by-default-opt-out)), `tokenatlas top` (and its `--json`
 as `quota_share`), the report's costliest turns and `insights` show a turn's share of the weekly or 5-hour limit: the
 account-wide percentage at the turn's last request minus the percentage before its first. When turns ran concurrently in the
-same window the movement is spread over them by list price and labeled an estimate. The report also lists the recent limit
+same window a turn shows a range instead of one number: the least it can have used (the movement while it was alone) up to the most
+(all the movement while it was active), for example "2–28% of the weekly Codex limit (shared with 4 turns)". These bound how the
+observed account movement is split among the turns tokenatlas logged; usage it cannot see (other devices, chat) can make a turn's
+real usage lower than its lower bound. The report also lists the recent limit
 windows with their peak. Shares are shown as whole percent (Codex reports whole percent, Claude Code may report fractions; a turn that did not move the counter shows `< 1%`), covers the whole
 account (other devices and chat are not in the logs), and is not a conversion of dollars to percent. What the vendors expose,
 how well list price predicts the percentage, and the wording rules are in [docs/quota.md](docs/quota.md).
