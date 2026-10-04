@@ -2,13 +2,14 @@
 """Tests for turn context extraction; synthetic fixtures only."""
 
 import json
+import os
 import sqlite3
 import subprocess
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timezone
 
-from tokenatlas import why
+from tokenatlas import turn_context as tc, why
 from tokenatlas.turn_context import git_commits, turn_context
 from test_prompt_text import (
     END, START, TS, TmpCase, codex_ctx, codex_meta, codex_tokens, codex_user, write_jsonl,
@@ -346,6 +347,62 @@ class GitTests(TmpCase):
             from tokenatlas import turn_context as tc
             tc._finish({**tc._raw(), "cwd": str(self.repo)}, 400, "S", "E")
             self.assertEqual(gc.call_args.args[1:], ("S", "E"))
+
+    @unittest.skipIf(os.name == "nt", "marker program is a POSIX shell script; Git for Windows runs programs differently")
+    def test_repository_config_cannot_run_programs(self):
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        self.git("init", "-q")
+        marker = self.tmp / "marker"
+        script = self.tmp / "evil.sh"
+        script.write_text(f"#!/bin/sh\necho \"$0 $@\" >> '{marker}'\nexit 1\n")
+        script.chmod(0o755)
+        for key, value in (("log.showSignature", "true"), ("gpg.program", script), ("gpg.ssh.program", script),
+                           ("gpg.x509.program", script), ("core.pager", script), ("pager.log", str(script)),
+                           ("diff.external", script), ("core.alternateRefsCommand", script)):
+            self.git("config", key, str(value))
+        # commit object carrying a (fake) signature header, so `git log --show-signature` would call gpg
+        tree = subprocess.run(["git", "-C", str(self.repo), "hash-object", "-t", "tree", "-w", "--stdin"], input=b"",
+                              capture_output=True, check=True).stdout.decode().strip()
+        body = (f"tree {tree}\nauthor t <t@x> 1788424200 +0000\ncommitter t <t@x> 1788424200 +0000\n"
+                "gpgsig -----BEGIN PGP SIGNATURE-----\n \n abcd\n -----END PGP SIGNATURE-----\n\nsigned subject\n")
+        sha = subprocess.run(["git", "-C", str(self.repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+                             input=body.encode(), capture_output=True, check=True).stdout.decode().strip()
+        self.git("update-ref", "refs/heads/master", sha)  # 2026-09-03T08:30:00Z
+        window = ("2026-09-03T08:00:00Z", "2026-09-03T09:00:00Z")
+        # positive control: the same query without our protections (repository log.showSignature applies) runs gpg.program
+        subprocess.run(["git", "-C", str(self.repo), "log", "--all", f"--since={window[0]}",
+                        f"--until={window[1]}", "--format=%s", "-n", "5"], capture_output=True,
+                       env={"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "HOME": str(self.tmp)})
+        self.assertTrue(marker.exists(), "test premise: unprotected git runs gpg.program")
+        marker.unlink()
+        self.assertEqual(git_commits(self.repo, *window), ["signed subject"])
+        self.assertFalse(marker.exists(), "repository-configured program ran")
+        self.assertEqual(git_commits(self.repo, "2026-09-03T09:00:00Z", "2026-09-03T10:00:00Z"), [])
+        self.assertFalse(marker.exists())
+
+    @unittest.skipIf(os.name == "nt", "marker program is a POSIX shell script")
+    def test_repository_config_cannot_enable_ext_transport(self):
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        self.git("init", "-q")
+        marker = self.tmp / "marker"
+        script = self.tmp / "evil.sh"
+        script.write_text(f"#!/bin/sh\necho run >> '{marker}'\nexit 1\n")
+        script.chmod(0o755)
+        self.git("config", "protocol.ext.allow", "always")
+        url = f"ext::{script}"
+        base = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "HOME": str(self.tmp)}
+        run = lambda cfg, env: subprocess.run(["git", *cfg, "-C", str(self.repo), "ls-remote", url],
+                                              capture_output=True, env=env, timeout=10)
+        run([], base)  # control: repository config alone lets git run the program
+        self.assertTrue(marker.exists(), "test premise: protocol.ext.allow=always runs the program")
+        marker.unlink()
+        env = tc._git_env()
+        self.assertEqual(env.get("GIT_ALLOW_PROTOCOL"), "")
+        done = run(tc._GIT_SAFE_CONFIG, {**base, **env})
+        self.assertFalse(marker.exists(), "ext:: program ran")
+        self.assertNotEqual(done.returncode, 0)
 
     def test_git_env_disables_lazy_fetch(self):
         with patch("tokenatlas.turn_context.subprocess.run") as run:

@@ -421,17 +421,48 @@ def _pi(sources: object, session: str, turn_id: str) -> dict | None:
     return None
 
 
+# The project directory is untrusted: its .git/config is repository-local and can name programs. `git log
+# --format=%s` can reach these callbacks, each neutralised below (an empty/`false`/`/dev/null` value makes git fail
+# closed or do nothing; it never runs a program from the repository):
+#   log.showSignature -> gpg.program / gpg.openpgp.program / gpg.ssh.program / gpg.x509.program (signature verify)
+#   core.pager / pager.log / GIT_PAGER (pager, normally off without a tty)
+#   diff.external / diff.<driver>.command / diff.<driver>.textconv (only with patch output; --format never shows it)
+#   core.fsmonitor (hook or daemon run on index refresh)
+#   core.alternateRefsCommand (external-object alternates: `--all` reads alternate refs)
+#   lazy fetch of promisor objects -> core.sshCommand, core.gitProxy, credential.helper, remote.<n>.uploadpack,
+#     url.<base>.insteadOf transports, GIT_ASKPASS (blocked by protocol.allow=never and GIT_NO_LAZY_FETCH)
+#   core.hooksPath (git log runs no hooks; defence in depth)
+# Not reachable by log: gpg.ssh.defaultKeyCommand (signing only), filter.<driver>.* (checkout), core.editor.
+_GIT_SAFE_CONFIG = [
+    arg for pair in (
+        "core.fsmonitor=false", "log.showSignature=false", "gpg.program=false", "gpg.openpgp.program=false",
+        "gpg.ssh.program=false", "gpg.x509.program=false", "core.pager=cat", "pager.log=false", "diff.external=",
+        "core.sshCommand=false", "protocol.allow=never", "core.hooksPath=/dev/null", "core.alternateRefsCommand=",
+        "core.alternateRefsPrefixes=", "core.askPass=false", "core.gitProxy=false", "credential.helper=",
+        "protocol.ext.allow=never", "protocol.file.allow=never", "protocol.http.allow=never",
+        "protocol.https.allow=never", "protocol.git.allow=never", "protocol.ssh.allow=never",
+    ) for arg in ("-c", pair)]
+
+
+def _git_env() -> dict:
+    """Allowlisted environment. GIT_ALLOW_PROTOCOL is an environment allowlist that repository config
+    (`protocol.<name>.allow=always`) cannot override; empty means no transport, so no `ext::` program."""
+    env = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1", GIT_CONFIG_NOSYSTEM="1",
+               GIT_PAGER="cat", GIT_ASKPASS="false", GIT_SSH_COMMAND="false", GIT_ALLOW_PROTOCOL="")
+    return env  # GIT_EXTERNAL_DIFF and other GIT_* variables are not inherited
+
+
 def git_commits(cwd: object, start: object, end: object) -> list[str]:
     """Up to 5 commit subjects between start and end (datetime or ISO text) from local git; [] on any error."""
     try:
         since, until = (v.isoformat() if isinstance(v, datetime) else v for v in (start, end))
         if not (isinstance(cwd, (str, Path)) and Path(cwd).is_dir() and isinstance(since, str) and isinstance(until, str)):
             return []
-        env = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
-        env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1")
         done = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-C", str(cwd), "log", "--all", f"--since={since}", f"--until={until}",
-             "--format=%s", "-n", "5"], capture_output=True, text=True, timeout=5, env=env, stdin=subprocess.DEVNULL)
+            ["git", *_GIT_SAFE_CONFIG, "--no-pager", "-C", str(cwd), "log", "--all", "--no-show-signature", "--no-ext-diff",
+             "--no-textconv", f"--since={since}", f"--until={until}", "--format=%s", "-n", "5"],
+            capture_output=True, text=True, timeout=5, env=_git_env(), stdin=subprocess.DEVNULL)
         if done.returncode != 0:
             return []
         return [s for s in (sanitize(line, 100) for line in done.stdout.splitlines()) if s][:5]
