@@ -274,6 +274,29 @@ async function ready(page, errors, what = 'report') {
           const qw=await newPage({locale:T.locale},withQuota(fixture));
           assert.equal(await qw.page.locator('#limit-hits').isVisible(),true);assert.equal(await qw.page.locator('#qw-table tr').count(),2);assert.equal(await qw.page.locator('#top-prompts .qs').count(),1);
           {const qt=await qw.page.locator('#top-prompts .qs').innerText();assert.ok(/3 ?%/.test(qt)&&qt.includes(T.lang==='sv'?'veckogränsen för Codex':'the weekly Codex limit'),'#115: the card names the agent: '+qt)}assert.deepEqual(qw.errors,[]);await qw.context.close();
+          {// #125: a share belongs to the whole turn; when the selection holds only part of it the card and the summary say so
+            const sv=T.lang==='sv',whole=sv?'(hela turen)':'(whole turn)',card=pg=>pg.locator('#turn-0 .qs').first().innerText().then(norm),glance=pg=>pg.locator('#glance-text').innerText().then(norm);
+            const wp=await newPage({locale:T.locale},withTopShare(fixture)),info=await wp.page.evaluate(()=>{const rows=UsageReport.getSelected().filter(r=>r.prompt===0),child=rows.find(r=>r.thread_kind==='subagent'),parent=rows.find(r=>r.thread_kind!=='subagent');return {n:rows.length,total:UsageReport.data.prompt_requests[0],model:child.model,parentModel:parent.model,agentLabel:child.agent,minute:parent.minute,date:parent.date}});
+            assert.ok(info.n>1&&info.n===info.total&&info.model!==info.parentModel,'the fixture turn 0 has a subagent with another model');
+            {const c=await card(wp.page);assert.ok(c.includes(sv?'~26 % av veckogränsen för Codex':'~26% of the weekly Codex limit')&&!c.includes(whole),'whole turn selected, no label: '+c);assert.ok(!(await glance(wp.page)).includes(whole),'the summary has no label either')}
+            await wp.page.selectOption('#model',info.model);{const c=await card(wp.page);assert.ok(c.includes(sv?'~26 % av veckogränsen för Codex '+whole:'~26% of the weekly Codex limit '+whole),'model filter cuts the turn: '+c)}
+            await wp.page.click('#reset');await wp.page.locator('.advanced summary').click();await wp.page.selectOption('#agent',{index:await wp.page.evaluate(a=>[...document.querySelectorAll('#agent option')].findIndex(o=>o.value&&o.textContent.includes(a)),info.agentLabel)});
+            {const c=await card(wp.page);assert.ok(c.includes(whole),'subagent filter cuts the turn: '+c)}
+            await wp.page.click('#reset');await wp.page.selectOption('#model',info.parentModel);{const c=await card(wp.page);assert.ok(c.includes(whole),'the parent model alone is a part too: '+c)}
+            await wp.page.click('#reset');await wp.page.fill('#from','2026-01-01');await wp.page.fill('#to','2026-12-31');await wp.page.click('[data-gran="minute"]');
+            const bars=await wp.page.locator('#chart .bar').count();let zoomed=null;
+            for(let i=0;i<bars&&!zoomed;i++){await wp.page.locator('#chart .bar').nth(i).click();if(await wp.page.locator('#turn-0').count()&&(await wp.page.evaluate(()=>UsageReport.getSelected().filter(r=>r.prompt===0).length))<info.total)zoomed=true;else if(await wp.page.locator('#zoomout').isVisible())await wp.page.click('#zoomout')}
+            assert.ok(zoomed,'a minute zoom that holds only part of turn 0');
+            {const c=await card(wp.page),g=await glance(wp.page);assert.ok(c.includes(whole),'minute zoom: '+c);assert.ok(g.includes(sv?'~26 % av veckogränsen för Codex '+whole:'~26% of the weekly Codex limit '+whole),'the summary labels it too: '+g)}
+            if(process.env.SHOT)await wp.page.locator('#top-prompts').screenshot({path:process.env.SHOT+'-'+T.lang+'.png'});
+            assert.deepEqual(wp.errors,[]);await wp.context.close();
+            {// a fully selected turn with a synthetic-id request is not partial: the summary counts the same requests as the card
+              const mp=await newPage({locale:T.locale},edited(withTopShare(fixture),d=>{const i=d.columns.prompt.findIndex((x,k)=>x===0&&d.columns.price[k]==null);d.columns.id_synthetic[i]=1;for(const f of Object.keys(d.columns.tokens))d.columns.tokens[f]=d.columns.tokens[f].map((x,k)=>d.columns.prompt[k]===1?0:x)}));
+              const c=await card(mp.page),g=await glance(mp.page);assert.ok(c.includes(sv?'~26 %':'~26%')&&!c.includes(whole),'mixed identities, whole selection, card: '+c);assert.ok(g.includes(sv?'~26 % av veckogränsen':'~26% of the weekly')&&!g.includes(whole),'summary: '+g);assert.deepEqual(mp.errors,[]);await mp.context.close()}
+            const ls=sv?'Träffar som togs med när rapporten byggdes; påverkas inte av filtren ovan.':'Hits included when this report was built; not affected by the filters above.',ws=sv?'De senaste fönstren för varje gräns; påverkas inte av filtren ovan.':'Recent windows of each limit; not affected by the filters above.',lq=await newPage({locale:T.locale},withQuota(fixture));
+            assert.deepEqual(await lq.page.evaluate(()=>[...document.querySelectorAll('#limit-hits [data-t="lh_scope"],#limit-hits [data-t="qw_scope"]')].map(e=>e.textContent)),[ls,ws],'#125: both limit sections disclose that they ignore the filters, without claiming to be all history');
+            assert.equal(await lq.page.locator('#quota-windows [data-t="qw_scope"]').count(),1);assert.deepEqual(lq.errors,[]);await lq.context.close();
+          }
           {// At a glance (#78): the numbers come from the same rows as the KPIs and follow the filters; limit hits and the quota share join in when the payload has them
             const g=await newPage({locale:T.locale},fixture),sv=T.lang==='sv',text=()=>g.page.locator('#glance-text').innerText(),
               truth=()=>g.page.evaluate(([loc])=>{const rows=UsageReport.getSelected().filter(r=>!r.id_synthetic),priced=rows.filter(r=>r.cost!=null),f=x=>x.toLocaleString(loc,{minimumFractionDigits:2,maximumFractionDigits:2});

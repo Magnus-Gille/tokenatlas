@@ -10,6 +10,7 @@ All notable changes to this project are documented in this file. The project fol
 
 ### Fixed
 
+- Report: a turn's share of the weekly or 5-hour limit belongs to the whole turn, so when a filter or zoom selects only part of its requests the card and the "At a glance" sentence now say "(whole turn)" / "(hela turen)" instead of presenting it as the selection's share; the payload gains `prompt_requests` (each card turn's total request count). The Limit hits and Limit windows sections now state that they ignore the filters (the hits included when the report was built; the most recent windows of each limit) (#125).
 - Shared reports: the `context_size` insight fact no longer names an imported harness verbatim; it uses the `limit_hits` allowlist (claude, codex, pi, opencode, else "other") in values and text (#108).
 - Report: quota shares name the limit the same way everywhere (cards, `top`, insights, "At a glance"): "weekly Codex limit", "5-hour Claude limit" (sv "veckogränsen för Codex", "5-timmarsgränsen för Claude") (#115).
 - Tests: `CollectSignalWindowTest` no longer flakes on macOS CI when signalling a process group whose leader has exited (`PermissionError`); `_stop_group` already treated it like `ProcessLookupError`, now covered by a unit test (#113).

@@ -234,6 +234,12 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
             report.update(_calibration_payload(budget.public(merged), whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
     if demo:
         report['demo'] = True
+    if shown:  # every request of a card's turn, in the whole history: the page labels a share as a whole-turn figure when the selection holds fewer
+        sizes = {}
+        for found in whole_assigned:
+            if found and tuple(found[:3]) in shown:
+                sizes[shown[tuple(found[:3])]] = sizes.get(shown[tuple(found[:3])], 0) + 1
+        report['prompt_requests'] = sizes
     if prompt_inputs is not None:
         report['prompt_inputs'] = {shown[tuple(k)]: n for k, n in prompt_inputs.items() if isinstance(n, int) and tuple(k) in shown}
     return report
