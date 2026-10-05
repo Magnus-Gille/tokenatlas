@@ -276,3 +276,29 @@ class RemoteSyncScriptTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DistinctFiles(unittest.TestCase):  # #151
+    def test_nested_roots_count_a_file_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_claude(root / 'logs/proj/a.jsonl', 'r1')
+            (root / 'logs/proj/b.jsonl').write_text('{"type":"assistant",broken\n')  # one malformed line
+            with History(root / 'h.sqlite3') as h:
+                h.refresh('claude', root / 'logs'); h.refresh('claude', root / 'logs/proj')
+                status = h.doctor()
+            per_root = sum(i['files_seen'] for i in status['imports'] if i['harness'] == 'claude')
+            self.assertEqual(per_root, 4)  # the per-root entries overlap
+            self.assertEqual(status['files_by_harness']['claude']['files'], 2)
+            self.assertEqual(status['files_by_harness']['claude']['malformed_lines'], 1)
+            self.assertNotIn(str(root), json.dumps(status['files_by_harness']))  # counts only
+
+    def test_missing_and_imported_files_are_not_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_claude(root / 'logs/a.jsonl', 'r1'); write_claude(root / 'logs/b.jsonl', 'r2')
+            with History(root / 'h.sqlite3') as h:
+                h.refresh('claude', root / 'logs')
+                (root / 'logs/b.jsonl').unlink()
+                status = h.doctor()
+            self.assertEqual((status['files_by_harness']['claude']['files'], status['missing_source_files']), (1, 1))
