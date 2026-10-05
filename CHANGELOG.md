@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-10-05
+
 ### Added
 
 - Progress on stderr for slow commands (#142): `open`, `refresh`, `report`, `top`, `insights`, `quota show`, `session`, `rate`, `overhead --refresh`, `import`, `snapshot` and `collect` show a live line (spinner, step, file count, elapsed seconds) in a terminal and keep a `✓ step (time)` line per finished step. Not a terminal: silent; `TOKENATLAS_PROGRESS=1` gives plain lines, `=0` turns it off. stdout is never written, so results are unchanged; `collect`'s log lines are as before.
