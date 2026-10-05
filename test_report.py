@@ -553,6 +553,13 @@ class ReportClarity(unittest.TestCase):  # #145
         self.assertIn('kan vara lägre än det lägsta värdet', texts['sv']['gl_d_qs'])
         self.assertIn('can be lower than the lowest value', texts['en']['gl_d_qs'])
 
+    def test_swedish_turn_pattern_covers_its_inflections(self):
+        import re
+        pattern = self.texts()['sv']['gl_re_turn'].replace('\\p{L}', 'a-zåäöA-ZÅÄÖ')
+        for word in ('tur', 'turer', 'turerna', 'turen', 'turens'):
+            self.assertRegex(f' {word} ', pattern, word)
+        self.assertNotRegex(' turist ', pattern)
+
     def test_glossary_definitions_match_what_is_computed(self):
         texts = self.texts()
         self.assertIn('inte kan koppla till någon tur', texts['sv']['gl_d_nocall'])  # orphans and missing turn metadata too, not only work you did not start

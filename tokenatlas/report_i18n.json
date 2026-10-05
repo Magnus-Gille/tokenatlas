@@ -435,7 +435,7 @@
 "gl_d_int": "En tur där agenten markerade ett anrop som avbrutet, oftast för att du stoppade den. En tur som bara saknar slutsvar räknas inte.",
 "gl_t_qs": "andel av gränsen (intervall)",
 "gl_d_qs": "Codex och Claude anger bara en avrundad procentsats för hela kontot. Rapporten fördelar mätarens rörelse på de turer som loggarna ser: det lägsta är rörelsen medan turen pågick ensam, det högsta all rörelse medan den pågick. Mätaren räknar även användning som loggarna inte ser (chatt i webbläsaren, andra enheter, molnuppgifter), så turens verkliga andel kan vara lägre än det lägsta värdet.",
-"gl_re_turn": "(?<![\\p{L}])(?:turer(?:na)?|tur)(?![\\p{L}])",
+"gl_re_turn": "(?<![\\p{L}])(?:turer(?:na)?|turens?|tur)(?![\\p{L}])",
 "gl_re_call": "(?<![\\p{L}])anrop(?![\\p{L}])",
 "gl_re_nocall": "(?<![\\p{L}])utan tur(?![\\p{L}])",
 "gl_re_list": "(?<![\\p{L}])listpris(?:et)?(?![\\p{L}])",
