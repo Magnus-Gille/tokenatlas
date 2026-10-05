@@ -464,6 +464,78 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class ReportClarity(unittest.TestCase):  # #145
+    root = Path(__file__).parent / 'tokenatlas'
+
+    def texts(self):
+        return json.loads((self.root / 'report_i18n.json').read_text(encoding='utf-8'))
+
+    def test_glance_is_a_list_with_a_plain_text_form_and_a_collapsed_glossary(self):
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn('<ul id="glance-text"', template)
+        self.assertIn('function glanceItems(f)', template)
+        self.assertIn("const glanceText=f=>glanceItems(f).map(i=>i.text).join(' ')", template)
+        self.assertIn("el('strong')", template)  # key numbers via DOM nodes, never innerHTML
+        self.assertNotIn('glance-text\').innerHTML', template)
+        self.assertRegex(template, r'<details class="glossary" id="glossary">(?!.* open)')
+
+    def test_glossary_terms_exist_in_both_languages_with_one_sentence_each(self):
+        texts = self.texts()
+        for lang in ('sv', 'en'):
+            t = texts[lang]
+            for term in ('turn', 'call', 'nocall', 'list', 'int'):
+                self.assertTrue(t['gl_t_' + term] and t['gl_d_' + term].endswith('.'), (lang, term))
+                self.assertTrue(t['gl_re_' + term], (lang, term))
+            self.assertTrue(t['gl_d_qs'])
+            self.assertIn('{d}', t['gl_d_list'])
+            self.assertIn('{date}', t['gl_list_date'])
+        self.assertEqual((texts['sv']['gl_title'], texts['en']['gl_title']), ('Ordlista', 'Glossary'))
+        self.assertIn('pristabell', texts['sv']['gl_d_list'])
+        self.assertIn('price table', texts['en']['gl_d_list'])
+        base = lambda lang: {k for k in texts[lang] if not k.endswith('_one')}
+        self.assertEqual(base('sv'), base('en'))
+
+    def test_payload_carries_the_price_table_date(self):
+        report = build_report([observation()], {})
+        self.assertRegex(report['prices_retrieved'], r'^\d{4}-\d{2}-\d{2}$')
+
+    def test_private_and_shared_notes_under_the_prompts(self):
+        texts = self.texts()
+        self.assertNotIn('aldrig', texts['sv']['p4_p'])
+        self.assertNotIn('never', texts['en']['p4_p'])
+        self.assertEqual(texts['sv']['p4_priv_shared'], 'Text och kontext ingår aldrig i delade rapporter, bara antalet inmatningar.')
+        self.assertIn('privat', texts['sv']['p4_priv_local'])
+        self.assertIn('because this report is private', texts['en']['p4_priv_local'])
+        for lang in ('sv', 'en'):
+            self.assertIn('--shared', texts[lang]['p4_priv_local'])
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn("DATA.privacy==='redacted'?'p4_priv_shared'", template)
+
+    def test_token_unit_on_the_cards(self):
+        texts = self.texts()
+        self.assertEqual((texts['sv']['tok_unit'], texts['en']['tok_unit']), ('tokens', 'tokens'))
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn("unit($('total'))", template)
+        self.assertIn('if(!unk(k))unit($(id))', template)
+
+    def test_limit_share_range_wording_is_plain(self):
+        texts = self.texts()
+        sv, en = texts['sv'], texts['en']
+        self.assertEqual(sv['qs_pl_range'].format(lo=8, up=38), 'minst 8 %, högst 38 %')
+        self.assertEqual(en['qs_pl_range'].format(lo=8, up=38), 'at least 8%, at most 38%')
+        self.assertEqual(sv['qs_pl_atleast'].format(n=4), 'minst 4 %')  # the one-sided case
+        self.assertEqual(en['qs_pl_atleast'].format(n=4), 'at least 4%')
+        self.assertEqual((sv['qs_with_one'], en['qs_with_one']), (' (1 annan tur samtidigt)', ' (1 other turn at the same time)'))
+        for lang in ('sv', 'en'):
+            t = texts[lang]
+            for k in ('qs_with', 'qs_with_one', 'qs_shared', 'qs_shared_one', 'glance_qs_range', 'glance_qs_range_one', 'glance_qs_range_alone', 'qs_alone'):
+                self.assertNotRegex(t[k], r'delad med|shared with', (lang, k))
+        self.assertIn('rounded percentage for the whole account', en['glance_qs_range'])
+        self.assertIn('avrundad procentsats för hela kontot', sv['glance_qs_range'])
+        self.assertEqual(sv['glance_qs_range'].format(pct='minst 8 %, högst 38 %', w='veckogränsen för Codex', n=603, who='Codex'),
+                         'Den dyraste turen använde minst 8 %, högst 38 % av veckogränsen för Codex – 603 andra turer pågick samtidigt och Codex rapporterar bara en avrundad procentsats för hela kontot.')
+
+
 class TopTurnsCardSize(unittest.TestCase):
     def test_card_shows_ten_turns(self):
         template = (Path(__file__).parent / 'tokenatlas' / 'report_template.html').read_text(encoding='utf-8')
