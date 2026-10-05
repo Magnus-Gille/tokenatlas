@@ -256,7 +256,7 @@
 "q_inc": "{n} anrop saknar vissa tokenuppgifter; totalen är ett minimivärde.",
 "q_amb": "{n} anrop har osäker identitet och räknas inte i totalen ({tok} tokens).",
 "src_calls": "{n} anrop i rapporten",
-"import": "Import: {status} · {files} filer · {diag} källdiagnoser",
+"import": "Import: {status} · {files} · {diag}",
 "no_src": "Inga källobservationer i denna rapport.",
 "missing_src": "{n} tidigare importerade källfiler saknas nu. Sparad historik finns kvar.",
 "priv_shared": "Delningsläge: projekt, sessioner, turer och agenter har pseudonymer. Exakta tidpunkter och modeller finns kvar; rapporten är inte garanterat anonym.",
@@ -452,7 +452,19 @@
 "qs_shared_one": "1 annan tur pågick samtidigt som den här, och {who} anger bara en avrundad procentsats för hela kontot, så förändringen kan inte fördelas exakt.",
 "qs_alone": "{who} anger bara en avrundad procentsats för hela kontot, så turens andel är ett intervall.",
 "glance_qs_range_one": "Den dyraste turen använde {pct} av {w} – 1 annan tur pågick samtidigt och {who} rapporterar bara en avrundad procentsats för hela kontot.",
-"glance_qs_range_alone": "Den dyraste turen använde {pct} av {w} – {who} rapporterar bara en avrundad procentsats för hela kontot."
+"glance_qs_range_alone": "Den dyraste turen använde {pct} av {w} – {who} rapporterar bara en avrundad procentsats för hela kontot.",
+"n_files": "{n} filer",
+"n_files_one": "1 fil",
+"n_diag": "{n} källdiagnoser",
+"n_diag_one": "1 källdiagnos",
+"n_roots": "{n} källmappar",
+"n_roots_one": "1 källmapp",
+"import_sum": "{roots} · {files} · {status} · {diag}",
+"imp_all_ok": "alla ok",
+"imp_bad": "{n} inte ok",
+"imp_problem": "Källmappar med fel eller källdiagnoser:",
+"imp_all": "Visa alla {n}",
+"diag_note": "Källdiagnoser är filer eller rader i loggarna som inte gick att läsa eller tolka."
 },
 "en": {
 "title": "TokenAtlas · Local token usage",
@@ -711,7 +723,7 @@
 "q_inc": "{n} requests lack some token data; the total is a lower bound.",
 "q_amb": "{n} requests have an uncertain identity and are not counted in the total ({tok} tokens).",
 "src_calls": "{n} requests in the report",
-"import": "Import: {status} · {files} files · {diag} source diagnostics",
+"import": "Import: {status} · {files} · {diag}",
 "no_src": "No source observations in this report.",
 "missing_src": "{n} previously imported source files are now missing. Saved history remains.",
 "priv_shared": "Sharing mode: projects, sessions, turns and agents are pseudonymized. Exact times and models remain; the report is not guaranteed to be anonymous.",
@@ -915,6 +927,18 @@
 "qs_shared_one": "1 other turn ran at the same time as this one, and {who} reports only a rounded percentage for the whole account, so the movement cannot be split exactly.",
 "qs_alone": "{who} reports only a rounded percentage for the whole account, so the turn's share is a range.",
 "glance_qs_range_one": "The costliest turn used {pct} of {w} – 1 other turn ran at the same time and {who} reports only a rounded percentage for the whole account.",
-"glance_qs_range_alone": "The costliest turn used {pct} of {w} – {who} reports only a rounded percentage for the whole account."
+"glance_qs_range_alone": "The costliest turn used {pct} of {w} – {who} reports only a rounded percentage for the whole account.",
+"n_files": "{n} files",
+"n_files_one": "1 file",
+"n_diag": "{n} source diagnostics",
+"n_diag_one": "1 source diagnostic",
+"n_roots": "{n} source folders",
+"n_roots_one": "1 source folder",
+"import_sum": "{roots} · {files} · {status} · {diag}",
+"imp_all_ok": "all ok",
+"imp_bad": "{n} not ok",
+"imp_problem": "Source folders with errors or source diagnostics:",
+"imp_all": "Show all {n}",
+"diag_note": "Source diagnostics are files or lines in the logs that could not be read or parsed."
 }
 }

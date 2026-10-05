@@ -536,6 +536,20 @@ class ReportClarity(unittest.TestCase):  # #145
                          'Den dyraste turen använde minst 8 %, högst 38 % av veckogränsen för Codex – 603 andra turer pågick samtidigt och Codex rapporterar bara en avrundad procentsats för hela kontot.')
 
 
+class CoverageSummary(unittest.TestCase):  # #147
+    def test_strings_have_singular_forms_and_an_explanation_in_both_languages(self):
+        texts = json.loads((Path(__file__).parent / 'tokenatlas' / 'report_i18n.json').read_text(encoding='utf-8'))
+        self.assertEqual((texts['sv']['n_files_one'], texts['sv']['n_diag_one'], texts['sv']['n_roots_one']), ('1 fil', '1 källdiagnos', '1 källmapp'))
+        self.assertEqual((texts['en']['n_files_one'], texts['en']['n_diag_one'], texts['en']['n_roots_one']), ('1 file', '1 source diagnostic', '1 source folder'))
+        self.assertIn('inte gick att läsa eller tolka', texts['sv']['diag_note'])
+        self.assertIn('could not be read or parsed', texts['en']['diag_note'])
+        for lang in ('sv', 'en'):
+            self.assertNotIn('filer ·', texts[lang]['import'])  # units come with the counts now
+            self.assertIn('{n}', texts[lang]['imp_all'])
+        template = (Path(__file__).parent / 'tokenatlas' / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn('function appendImports(', template)
+
+
 class TopTurnsCardSize(unittest.TestCase):
     def test_card_shows_ten_turns(self):
         template = (Path(__file__).parent / 'tokenatlas' / 'report_template.html').read_text(encoding='utf-8')
