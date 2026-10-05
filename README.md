@@ -363,6 +363,14 @@ history (0600); nothing leaves the machine. Caveats: list price is a proxy and a
 between weeks, so treat the figure as rough and take a few readings; a calibration made on one model mix drifts when the mix
 changes; and usage tokenatlas does not see (claude.ai chat, other machines, cloud tasks) is in the percentage you read but not in the cost seen, so the budget comes out too small and turn shares too large. A turn with unpriced, incomplete or ambiguous requests shows a floor ("≥ 3%"), or "unknown" when the floor is under 1%. Shared reports carry no calibrated shares (with the turn costs they would reveal the budget).
 
+## Progress on slow commands
+
+`open`, `refresh`, `report`, `top`, `insights`, `quota show`, `session`, `rate`, `overhead --refresh`, `import`, `snapshot` and `collect` can take a minute on a long history. In a terminal they show one live line on **stderr** (spinner, current step, a file count where there is one, elapsed seconds) and keep a `✓ Read history (12.3 s)` line per finished step. Nothing is printed when stderr is not a terminal (cron, pipes, agents), and stdout is never touched, so `--json` output is unchanged.
+
+- `TOKENATLAS_PROGRESS=1`: plain lines (one when a step starts, one when it ends with its time; no animation), also when stderr is not a terminal.
+- `TOKENATLAS_PROGRESS=0`: no progress anywhere.
+- A stderr that cannot encode the spinner and check characters gets ASCII (`|/-\`, `ok`).
+
 ## Fixed context overhead
 
 `tokenatlas overhead --refresh` reports the floor tokens of a session's first request, the sizes of

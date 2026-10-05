@@ -12,7 +12,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from tokenatlas import __version__
+from tokenatlas import __version__, progress
 from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
@@ -158,35 +158,36 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         whole, whole_assigned = universe, prompts.assign_prompts(universe)
         full = {prompts.ident(r): a for r, a in zip(universe, whole_assigned)}
         assigned = [full.get(prompts.ident(r), a) for r, a in zip(records, assigned)]
-    shown = {}  # prompt key -> ordinal, numbered by first appearance in row order
-    rows = []
-    for index, record in enumerate(records):
-        dt = datetime.fromisoformat(record['ts']).astimezone(zone)
-        row = {key: metadata(key, record.get(key), record) for key in
-               ('harness', 'provider', 'model', 'effort', 'thread_kind', 'origin', 'turn_confidence')}
-        oid = alias('Observation', record.get('id')) if redact else record.get('id')
-        row['id'] = None if oid is None else int(oid.rsplit(' ', 1)[1]) if redact else oid
-        for key, kind in (('session', 'Session'),
-                           ('parent_session', 'Session'), ('turn_id', 'Tur'), ('agent', 'Agent')):
-            value = record.get(key)
-            if key in ('session', 'parent_session') and value not in (None, '', 'unknown'):
-                value = f"{record['harness']}:{value}"
-            row[key] = alias(kind, value) if redact else value
-        unit, cw1h = pricing.price_vector(record, table)
-        found = assigned[index]
-        key = found and tuple(found[:3])  # a tuple, never joined: ids may contain ':' and must not collide
-        if key and key not in shown:
-            shown[key] = len(shown)
-        row.update(prompt=key and shown[key], unit_prices=unit, credit_rates=credit_rates.credit_vector(record, credit_table), cw1h=cw1h, ts=record['ts'], ms=(dt - EPOCH) // timedelta(milliseconds=1),
-                   off=int(dt.utcoffset().total_seconds() // 60),
-                   project_id=alias('Projekt', record.get('project_id')),
-                   project_label=(alias('Projekt', record.get('project_id')) if redact else
-                                  labels.get(record.get('project_id'), UNKNOWN_PROJECT)),
-                   tokens={key: record['tokens'].get(key) for key in ALL_FIELDS},
-                   complete=bool(record['complete']), id_synthetic=bool(record['id_synthetic']),
-                   interrupted='interrupted' in (record.get('flags') or ()),
-                   warnings=[metadata('Varning', x) for x in record.get('warnings', [])])
-        rows.append(row)
+    with progress.step('Build report rows'):
+        shown = {}  # prompt key -> ordinal, numbered by first appearance in row order
+        rows = []
+        for index, record in enumerate(records):
+            dt = datetime.fromisoformat(record['ts']).astimezone(zone)
+            row = {key: metadata(key, record.get(key), record) for key in
+                   ('harness', 'provider', 'model', 'effort', 'thread_kind', 'origin', 'turn_confidence')}
+            oid = alias('Observation', record.get('id')) if redact else record.get('id')
+            row['id'] = None if oid is None else int(oid.rsplit(' ', 1)[1]) if redact else oid
+            for key, kind in (('session', 'Session'),
+                               ('parent_session', 'Session'), ('turn_id', 'Tur'), ('agent', 'Agent')):
+                value = record.get(key)
+                if key in ('session', 'parent_session') and value not in (None, '', 'unknown'):
+                    value = f"{record['harness']}:{value}"
+                row[key] = alias(kind, value) if redact else value
+            unit, cw1h = pricing.price_vector(record, table)
+            found = assigned[index]
+            key = found and tuple(found[:3])  # a tuple, never joined: ids may contain ':' and must not collide
+            if key and key not in shown:
+                shown[key] = len(shown)
+            row.update(prompt=key and shown[key], unit_prices=unit, credit_rates=credit_rates.credit_vector(record, credit_table), cw1h=cw1h, ts=record['ts'], ms=(dt - EPOCH) // timedelta(milliseconds=1),
+                       off=int(dt.utcoffset().total_seconds() // 60),
+                       project_id=alias('Projekt', record.get('project_id')),
+                       project_label=(alias('Projekt', record.get('project_id')) if redact else
+                                      labels.get(record.get('project_id'), UNKNOWN_PROJECT)),
+                       tokens={key: record['tokens'].get(key) for key in ALL_FIELDS},
+                       complete=bool(record['complete']), id_synthetic=bool(record['id_synthetic']),
+                       interrupted='interrupted' in (record.get('flags') or ()),
+                       warnings=[metadata('Varning', x) for x in record.get('warnings', [])])
+            rows.append(row)
     coverage = {key: source_status.get(key) for key in COVERAGE_FIELDS}
     coverage.update(coverage_complete=False, billing_verified=False)
     coverage['imports'] = [{key: imp.get(key) for key in IMPORT_FIELDS} for imp in source_status.get('imports', [])]
@@ -200,10 +201,11 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     memo = {}
     cost_of = insights.memo_cost(table, memo)
     # one captured `now` is the exclusive end of the 30-day window: later-dated observations are not 'the last 30 days'
-    snapshots = quota_share.snapshots_from_records(whole, whole_assigned, quota_events or (), claude=claude_quota) if quota else []  # one per window per request that carries a quota
-    shares = quota_share.turn_shares(whole, snapshots, table, cost_of) if snapshots else None
-    windows = [dict(id=wid, **insights.public(insights.cost_facts(records, table, start, end, name=display, memo=memo, credit_table=credit_table, hits=limit_hits, universe=universe, quota=shares)))
-               for wid, start, end in (('30d', now - timedelta(days=INSIGHT_DAYS), now), ('all', None, None))]
+    with progress.step('Quota shares and cost insights'):
+        snapshots = quota_share.snapshots_from_records(whole, whole_assigned, quota_events or (), claude=claude_quota) if quota else []  # one per window per request that carries a quota
+        shares = quota_share.turn_shares(whole, snapshots, table, cost_of) if snapshots else None
+        windows = [dict(id=wid, **insights.public(insights.cost_facts(records, table, start, end, name=display, memo=memo, credit_table=credit_table, hits=limit_hits, universe=universe, quota=shares)))
+                   for wid, start, end in (('30d', now - timedelta(days=INSIGHT_DAYS), now), ('all', None, None))]
     # the page's energy card (filter-following) sums tokens x per-class constant x a multiplier per (provider, model); only Claude tiers have one
     # (the rest is unweighted, multiplier 1), keyed by the provider and model names as the rows carry them (after redaction)
     weights = {}
@@ -235,13 +237,15 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                     provider=scope.get('provider'), model=scope.get('model'), effort=scope.get('effort'), agent=scope.get('agent'))
     if limit_hits:
         report['limit_hits'] = [_hit_payload(h, shown, metadata, prompt_texts, redact, zone, None if redact else hit_scope) for h in limit_hits]
-    if snapshots or getattr(snapshots, 'events', ()):
-        report.update(_quota_payload(shares or {}, quota_share.windows(snapshots, last=4, records=whole, cost_of=cost_of, hits=limit_hits if all_hits is None else all_hits), shown, metadata, lambda name: alias('limit', name) if redact else name))  # a limit id is pseudonymized whatever it looks like
-    if not redact:  # a shared report has no calibrated share, manual or automatic: with the turn costs it would give the budget (the plan size) away
-        auto, _ = budget.auto_budgets(whole, all_hits if all_hits is not None else limit_hits, snapshots, table)  # computed here from the history, never stored (#116)
-        merged = budget.combine({(b['harness'], b['minutes'], b.get('plan')): b for b in budgets or ()}, auto)
-        if merged:
-            report.update(_calibration_payload(budget.public(merged), whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
+    with progress.step('Limit hits and quota windows'):
+        if snapshots or getattr(snapshots, 'events', ()):
+            report.update(_quota_payload(shares or {}, quota_share.windows(snapshots, last=4, records=whole, cost_of=cost_of, hits=limit_hits if all_hits is None else all_hits), shown, metadata, lambda name: alias('limit', name) if redact else name))  # a limit id is pseudonymized whatever it looks like
+    with progress.step('Automatic budgets and calibration'):
+        if not redact:  # a shared report has no calibrated share, manual or automatic: with the turn costs it would give the budget (the plan size) away
+            auto, _ = budget.auto_budgets(whole, all_hits if all_hits is not None else limit_hits, snapshots, table)  # computed here from the history, never stored (#116)
+            merged = budget.combine({(b['harness'], b['minutes'], b.get('plan')): b for b in budgets or ()}, auto)
+            if merged:
+                report.update(_calibration_payload(budget.public(merged), whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
     if demo:
         report['demo'] = True
     if shown:  # every request of a card's turn, in the whole history: the page labels a share as a whole-turn figure when the selection holds fewer
