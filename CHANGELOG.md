@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-10-05
+
 ### Fixed
 
 - Coverage summary (#151): file and line-diagnostic totals per harness come from the history's distinct locally collected files (`doctor` adds `files_by_harness`, counts only), so roots refreshed both as a folder and as one of its subfolders no longer count a file twice. Read errors still add up per scan.
