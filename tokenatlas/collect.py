@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from tokenatlas import progress
 from tokenatlas.terminal import terminal_safe
 
 PACKAGED_SYNC=Path(__file__).with_name('remote_sync.sh')
@@ -17,7 +18,7 @@ POLL=0.2  # seconds between checks for a noted signal while the sync runs
 
 
 def log(msg):
-    print(f"{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} collect: {msg}",flush=True)
+    with progress.suspend():print(f"{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} collect: {msg}",flush=True)  # stdout stays as the cron logs have it; a live line steps aside
 
 
 def _lock(fd):
@@ -37,10 +38,12 @@ def _lock(fd):
 def _step(name,fn):
     """Run fn() -> exit code (an exception is a failure); log one line with exit status and timing; return the code."""
     start=time.monotonic()
-    try:rc=fn()
-    except SystemExit as exc:rc=exc.code if isinstance(exc.code,int) else 1
-    except Exception as exc:
-        log(f'{name}: {type(exc).__name__}: {terminal_safe(exc)}');rc=1
+    with progress.step(name[:1].upper()+name[1:]) as shown:  # a terminal shows the step live; the log line below is unchanged
+        try:rc=fn()
+        except SystemExit as exc:rc=exc.code if isinstance(exc.code,int) else 1
+        except Exception as exc:
+            log(f'{name}: {type(exc).__name__}: {terminal_safe(exc)}');rc=1
+        shown.failed=bool(rc)
     log(f'{name} exit={rc} ({time.monotonic()-start:.1f}s)')
     return rc
 

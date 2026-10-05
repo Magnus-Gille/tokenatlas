@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from tokenatlas import why
+from tokenatlas import progress, why
 from tokenatlas.provenance import REMOTE_PATH, is_machine_id
 
 OBSERVATION_VERSION = 1  # the 'v' field inside observation dicts
@@ -628,7 +628,8 @@ class History:
             result['files_seen'] = len(paths)
             collect = {'claude':why.collect_claude, 'codex':why.collect_codex,
                        'pi':why.collect_pi, 'opencode':why.collect_opencode}[harness]
-            for path in paths:
+            for number, path in enumerate(paths, 1):
+                progress.count(number - 1, len(paths))
                 try:
                     before = self.fingerprint(path, harness == 'opencode', harness)
                     previous = c.execute('SELECT fingerprint,diagnostics FROM files WHERE harness=? AND path=?',

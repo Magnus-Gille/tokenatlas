@@ -14,6 +14,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tokenatlas import progress
+
 CHARS_PER_TOKEN = 4
 HARNESSES = ('claude', 'codex', 'pi', 'opencode')
 RESIDUAL_LABEL = 'other: tools, first prompt, unlogged'
@@ -671,10 +673,13 @@ def run(args):
         if args.refresh:
             for h in (args.harness,) if args.harness else HARNESSES:
                 if Path(roots[h]).exists():
-                    db.execute('BEGIN')
-                    save(db, h, scan(h, roots[h]))
+                    with progress.step(f'Scan {h}'):
+                        db.execute('BEGIN')
+                        save(db, h, scan(h, roots[h]))
         db.execute('BEGIN')
-        result = summarize(db, since=args.since, harness=args.harness, records=history.records())
+        with progress.step('Summarize overhead'):
+            result = summarize(db, since=args.since, harness=args.harness, records=history.records())
         db.rollback()
+    progress.finish()
     print(json.dumps(result, indent=2, sort_keys=True) if args.json else render(result))
     return 0
