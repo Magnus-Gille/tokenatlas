@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tokenatlas import prompt_text, prompts, turn_context
+from tokenatlas import prompt_text, prompts, provenance, turn_context
 
 FILE = 'top-prompts.json'
 
@@ -167,9 +167,11 @@ def _write(path,data):
         if os.path.exists(tmp):os.unlink(tmp)
 
 
-def update(path,records,table,machine,k=5,by='cost',extract=prompt_text.extract_prompt,context=turn_context.turn_context):
+def update(path,records,table,machine,k=5,by='cost',extract=prompt_text.extract_prompt,context=turn_context.turn_context,local=None):
     """Keep text and turn context for the global top k prompts only: keep known entries, add local new ones, retry unreadable or
-    blank ones (also upgrading version 1 entries), evict the rest. Remote prompts get neither."""
+    blank ones (also upgrading version 1 entries), evict the rest. Remote prompts get neither. `local` is the set of
+    source paths the history recorded as collected locally (History.local_source_paths()); without it nothing is readable."""
+    local=frozenset(local or ())
     _clean_temps(Path(path).parent)
     top=prompts.top_prompts(records,table,k,by)['prompts']
     old_raw,bad=_read(path)  # an unsafe file is not trusted: start over and replace it
@@ -186,7 +188,7 @@ def update(path,records,table,machine,k=5,by='cost',extract=prompt_text.extract_
         need_ctx=known is None or _blank(known.get('context'))
         if known and not need_text and not need_ctx or known and p.get('machine')!=machine:entries.append(known);kept+=1;continue
         if p.get('machine')!=machine:continue  # only this machine's own logs can be read
-        sources=sorted(set(own.get(key,())))
+        sources=sorted(s for s in set(provenance.local_sources(own.get(key,()))) if s in local)
         text=None
         for source in sources if need_text else ():
             text=extract(p['harness'],source,p['session'],p['turn_id'])

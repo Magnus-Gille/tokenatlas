@@ -528,7 +528,7 @@ def main(argv=None):
                     print(json.dumps({'forgotten':str(store)}));return 0
                 table=pricing.load_prices(args.prices)
                 everything=history.records()  # rank over the whole history; the filters only choose which rows contribute
-                kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by) if args.keep_text else None
+                kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths()) if args.keep_text else None
                 filtered=any(x is not None for x in (start,end,args.harness,args.project))
                 keep={prompts.ident(r) for r in history.records(start,end,args.harness,args.project)} if filtered else None
                 result=prompts.top_prompts(everything,table,args.limit,args.by,keep)

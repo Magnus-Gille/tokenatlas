@@ -10,6 +10,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from .provenance import local_file
+
 from .why import (
     _CODEX_TURN_END, _codex_event_turn_id, _codex_user_event_identity, _explicit_turn_id,
     _first_text, _is_genuine_user_row, _mapping, _meta_text,
@@ -232,8 +234,8 @@ def extract_prompt(harness: str, source: object, session: object, turn_id: objec
     try:
         if not isinstance(turn_id, str) or not turn_id or not isinstance(source, (str, Path)):
             return None
-        path = Path(source)
-        if not path.is_file():
+        path = local_file(source)
+        if path is None:
             return None
         if harness == "claude":
             return _claude(path, turn_id, limit)

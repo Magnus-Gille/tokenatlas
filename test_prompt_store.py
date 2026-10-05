@@ -18,6 +18,13 @@ from test_top_prompts import claude_row, jl, ob, user
 SECRET = 'secret u'  # the synthetic prompt text in test_top_prompts.user() is 'secret <uuid>'
 
 
+LOGS = os.path.abspath(os.sep + 'logs')  # absolute on every OS
+
+
+def log(name):
+    return os.path.join(LOGS, name)
+
+
 EXTRA = dict(machine='m1', sources=[], complete=True, id_synthetic=False, warnings=[], effort=None, origin=None)
 
 
@@ -26,7 +33,7 @@ def rows(*specs, machine='m1'):
     out = []
     for i, fresh in specs:
         r = ob(f'o{i}', f'{i:02d}', turn=f't{i}', fresh=fresh)
-        r.update(machine=machine, sources=[f'/logs/{i}.jsonl'], complete=True, id_synthetic=False, warnings=[], effort=None, origin=None)
+        r.update(machine=machine, sources=[log(f'{i}.jsonl')], complete=True, id_synthetic=False, warnings=[], effort=None, origin=None)
         out.append(r)
     return out
 
@@ -62,9 +69,11 @@ class StoreUnit(unittest.TestCase):
         self.calls = []
         self.ctx_calls = []
 
-    def update(self, records, k=2, machine='m1', extract=None, context=None):
+    def update(self, records, k=2, machine='m1', extract=None, context=None, local=None):
+        if local is None:  # the history's evidence: by default every named source was collected locally
+            local = {s for r in records for s in r.get('sources') or ()}
         return prompt_store.update(self.path, records, TABLE, machine, k=k, extract=extract or fake(self.calls),
-                                   context=context or fakectx(self.ctx_calls))
+                                   context=context or fakectx(self.ctx_calls), local=local)
 
     def test_store_path(self):
         self.assertEqual(prompt_store.store_path(Path('/x/y/history.sqlite3')), Path('/x/y/top-prompts.json'))
@@ -99,7 +108,7 @@ class StoreUnit(unittest.TestCase):
         self.update(rows((1, 1000000), (2, 3000000)), k=1)
         self.assertEqual(prompt_store.load_context(self.path), {('claude', 's', 't2'): ctx_for('t2')})
         (turn, sources, start, end), = self.ctx_calls
-        self.assertEqual((turn, sources, start, end), ('t2', ['/logs/2.jsonl'], '2026-09-03T10:02:00+00:00', '2026-09-03T10:02:00+00:00'))
+        self.assertEqual((turn, sources, start, end), ('t2', [log('2.jsonl')], '2026-09-03T10:02:00+00:00', '2026-09-03T10:02:00+00:00'))
 
     def test_v1_file_is_read_and_upgraded_with_context(self):
         self.update(rows((1, 1000000), (2, 3000000)))
@@ -155,6 +164,20 @@ class StoreUnit(unittest.TestCase):
         self.assertEqual(prompt_store.texts_hash({}, c1), prompt_store.texts_hash({}, c1))
         self.assertIsNone(prompt_store.texts_hash({}, {}))
 
+    def test_source_without_local_collection_evidence_is_never_read(self):
+        self.update(rows((1, 1000000), (2, 3000000)), local=set())
+        self.assertEqual((self.calls, self.ctx_calls), ([], []))
+        self.update(rows((1, 1000000), (2, 3000000)), local={log('1.jsonl')})
+        self.assertEqual(self.calls, ['t1'])
+
+    def test_imported_and_relative_sources_never_reach_readers_even_with_a_local_machine_id(self):
+        r = rows((1, 1000000), (2, 3000000))
+        r[0]['sources'] = ['m-'+'0'*32+':/logs/1.jsonl', 'logs/1.jsonl', log('1.jsonl')]
+        r[1]['sources'] = ['m-'+'0'*32+':/logs/2.jsonl', 'rel/2.jsonl']
+        self.update(r)
+        self.assertEqual(self.calls, ['t1'])  # only the absolute local source of t1
+        self.assertEqual([c[:2] for c in self.ctx_calls], [('t1', [log('1.jsonl')])])
+
     def test_remote_machine_gets_no_text(self):
         self.update(rows((1, 1000000), (2, 3000000), machine='m2'))
         self.assertEqual(self.calls, [])
@@ -175,10 +198,10 @@ class StoreUnit(unittest.TestCase):
     def test_only_the_prompts_own_sources_are_tried(self):
         recs = rows((1, 3000000))
         sub = ob('sub', '05', kind='subagent', parent='s', agent='x', fresh=1)
-        sub.update(machine='m1', sources=['/logs/sub.jsonl'])
+        sub.update(machine='m1', sources=[log('sub.jsonl')])
         seen = []
         self.update(recs + [sub], extract=lambda h, src, s, t, limit=200: seen.append(str(src)))
-        self.assertEqual(seen, ['/logs/1.jsonl'])
+        self.assertEqual(seen, [log('1.jsonl')])
 
     def test_written_only_on_change(self):
         recs = rows((1, 1000000), (2, 3000000))
