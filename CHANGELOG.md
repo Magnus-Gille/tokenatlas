@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-10-05
+
 ### Security
 
 - Opt-in turn context (#134): the local `git log` for commit subjects no longer starts programs named by a project's repository-local git config. Signature verification (`log.showSignature` with `gpg.program`, `gpg.ssh.program`, `gpg.x509.program`), pager, external diff, alternate-refs command, ssh command, hooks and transports such as `ext::` are neutralised with fixed `-c` overrides, and the git environment is an allowlist with `GIT_ALLOW_PROTOCOL` empty (which repository config cannot override), `GIT_CONFIG_NOSYSTEM`, no lazy fetch and no inherited `GIT_*` variables. Commit subjects and time filtering are unchanged.

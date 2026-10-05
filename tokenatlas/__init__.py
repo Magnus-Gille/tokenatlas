@@ -1,3 +1,3 @@
 """Local observed-usage history. No inference or network clients."""
 
-__version__ = "1.14.1"
+__version__ = "1.15.0"
