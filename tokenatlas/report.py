@@ -215,6 +215,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
             weights.setdefault(row['provider'], {})[row['model']] = mult
     report = dict(version=2, generated_at=now.isoformat(),
                   timezone=timezone_name, lang=lang, privacy='redacted' if redact else 'local',
+                  prices_retrieved=table.get('retrieved_on'),
                   columns=encode_columns(rows), coverage=coverage,
                   energy=dict(per_1k=energy.PER_1K, uncertainty=energy.UNCERTAINTY, tier_multipliers=energy.TIERS, multipliers=weights), insights=dict(days=INSIGHT_DAYS, big_turn=insights.BIG_TURN, windows=windows))
     if prompt_texts is not None:

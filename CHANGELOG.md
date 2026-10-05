@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Changed
+
+- Report clarity (#145): "At a glance" is a bulleted list with the key numbers in bold. A collapsed glossary ("Ordlista"/"Glossary") explains turn, request, request without a turn, list price (with the price table's date), interrupted turn and the limit-share range, and the terms in the glance list carry the same text as tooltips. Limit-share ranges read "The costliest turn is credited with at least 8%, at most 38% of the weekly Codex limit – 603 other turns ran at the same time …" instead of "8–38% (shared with 603 turns)", and the glossary, tooltips and summary say that the account meter also counts usage the logs do not see, so a real share can be below the lower bound; a range with no upper bound is explained by the missing final reading. The token cards show the unit, and the prompts section says the text is shown because the report is private (a shared report never carries it).
+- Section 6 (coverage) shows one line per harness, e.g. "204 source folders · 907 files · all ok · 0 source diagnostics", lists individually only roots that are not ok or have diagnostics, keeps the full list collapsed, and explains "source diagnostics" (#147).
+
+### Added
+
+- A "Back to top" button in the report (#148).
+
 ## [1.16.0] - 2026-10-05
 
 ### Added

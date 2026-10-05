@@ -464,6 +464,136 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class ReportClarity(unittest.TestCase):  # #145
+    root = Path(__file__).parent / 'tokenatlas'
+
+    def texts(self):
+        return json.loads((self.root / 'report_i18n.json').read_text(encoding='utf-8'))
+
+    def test_glance_is_a_list_with_a_plain_text_form_and_a_collapsed_glossary(self):
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn('<ul id="glance-text"', template)
+        self.assertIn('function glanceItems(f)', template)
+        self.assertIn("const glanceText=f=>glanceItems(f).map(i=>i.text).join(' ')", template)
+        self.assertIn("el('strong')", template)  # key numbers via DOM nodes, never innerHTML
+        self.assertNotIn('glance-text\').innerHTML', template)
+        self.assertRegex(template, r'<details class="glossary" id="glossary">(?!.* open)')
+
+    def test_glossary_terms_exist_in_both_languages_with_one_sentence_each(self):
+        texts = self.texts()
+        for lang in ('sv', 'en'):
+            t = texts[lang]
+            for term in ('turn', 'call', 'nocall', 'list', 'int'):
+                self.assertTrue(t['gl_t_' + term] and t['gl_d_' + term].endswith('.'), (lang, term))
+                self.assertTrue(t['gl_re_' + term], (lang, term))
+            self.assertTrue(t['gl_d_qs'])
+            self.assertIn('{d}', t['gl_d_list'])
+            self.assertIn('{date}', t['gl_list_date'])
+        self.assertEqual((texts['sv']['gl_title'], texts['en']['gl_title']), ('Ordlista', 'Glossary'))
+        self.assertIn('pristabell', texts['sv']['gl_d_list'])
+        self.assertIn('price table', texts['en']['gl_d_list'])
+        base = lambda lang: {k for k in texts[lang] if not k.endswith('_one')}
+        self.assertEqual(base('sv'), base('en'))
+
+    def test_payload_carries_the_price_table_date(self):
+        report = build_report([observation()], {})
+        self.assertRegex(report['prices_retrieved'], r'^\d{4}-\d{2}-\d{2}$')
+
+    def test_private_and_shared_notes_under_the_prompts(self):
+        texts = self.texts()
+        self.assertNotIn('aldrig', texts['sv']['p4_p'])
+        self.assertNotIn('never', texts['en']['p4_p'])
+        self.assertEqual(texts['sv']['p4_priv_shared'], 'Text och kontext ingår aldrig i delade rapporter, bara antalet inmatningar.')
+        self.assertIn('privat', texts['sv']['p4_priv_local'])
+        self.assertIn('because this report is private', texts['en']['p4_priv_local'])
+        for lang in ('sv', 'en'):
+            self.assertIn('--shared', texts[lang]['p4_priv_local'])
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn("DATA.privacy==='redacted'?'p4_priv_shared'", template)
+
+    def test_token_unit_on_the_cards(self):
+        texts = self.texts()
+        self.assertEqual((texts['sv']['tok_unit'], texts['en']['tok_unit']), ('tokens', 'tokens'))
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn("unit($('total'))", template)
+        self.assertIn('if(!unk(k))unit($(id))', template)
+
+    def test_limit_share_range_wording_is_plain(self):
+        texts = self.texts()
+        sv, en = texts['sv'], texts['en']
+        self.assertEqual(sv['qs_pl_range'].format(lo=8, up=38), 'minst 8 %, högst 38 %')
+        self.assertEqual(en['qs_pl_range'].format(lo=8, up=38), 'at least 8%, at most 38%')
+        self.assertEqual(sv['qs_pl_atleast'].format(n=4), 'minst 4 %')  # the one-sided case
+        self.assertEqual(en['qs_pl_atleast'].format(n=4), 'at least 4%')
+        self.assertEqual((sv['qs_with_one'], en['qs_with_one']), (' (1 annan tur samtidigt)', ' (1 other turn at the same time)'))
+        for lang in ('sv', 'en'):
+            t = texts[lang]
+            for k in ('qs_with', 'qs_with_one', 'qs_shared', 'qs_shared_one', 'glance_qs_range', 'glance_qs_range_one', 'glance_qs_range_alone', 'qs_alone'):
+                self.assertNotRegex(t[k], r'delad med|shared with', (lang, k))
+        self.assertIn('rounded percentage for the whole account', en['glance_qs_range'])
+        self.assertIn('avrundad procentsats för hela kontot', sv['glance_qs_range'])
+        self.assertEqual(sv['glance_qs_range'].format(pct='minst 8 %, högst 38 %', w='veckogränsen för Codex', n=603, who='Codex'),
+                         'Den dyraste turen tillskrivs minst 8 %, högst 38 % av veckogränsen för Codex – 603 andra turer pågick samtidigt, och Codex visar bara en avrundad procentsats för hela kontot, där även användning som loggarna inte ser ingår.')
+
+
+    def test_a_one_sided_range_is_explained_by_the_missing_reading(self):
+        texts = self.texts()
+        self.assertIn('bara den nedre gränsen är känd', texts['sv']['qs_open'])
+        self.assertIn('only the lower bound is known', texts['en']['qs_open'])
+        self.assertIn('only the lower bound is known', texts['en']['glance_qs_range_open'])
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn("sp.title=q.upper==null?t('qs_open')", template)
+        self.assertIn("t(q.upper==null?'glance_qs_range_open'", template)
+
+    def test_limit_share_bounds_name_unseen_usage(self):
+        texts = self.texts()  # the bounds attribute observed account movement; usage the logs do not see is in the meter too (docs/quota.md)
+        for lang, phrase in (('sv', 'loggarna inte ser'), ('en', 'the logs do not see')):
+            for k in ('gl_d_qs', 'qs_shared', 'qs_shared_one', 'qs_alone', 'qs_open', 'glance_qs_range', 'glance_qs_range_one', 'glance_qs_range_alone', 'glance_qs_range_open'):
+                self.assertIn(phrase, texts[lang][k], (lang, k))
+        self.assertIn('kan vara lägre än det lägsta värdet', texts['sv']['gl_d_qs'])
+        self.assertIn('can be lower than the lowest value', texts['en']['gl_d_qs'])
+
+    def test_swedish_turn_pattern_covers_its_inflections(self):
+        import re
+        pattern = self.texts()['sv']['gl_re_turn'].replace('\\p{L}', 'a-zåäöA-ZÅÄÖ')
+        for word in ('tur', 'turer', 'turerna', 'turen', 'turens'):
+            self.assertRegex(f' {word} ', pattern, word)
+        self.assertNotRegex(' turist ', pattern)
+
+    def test_glossary_definitions_match_what_is_computed(self):
+        texts = self.texts()
+        self.assertIn('inte kan koppla till någon tur', texts['sv']['gl_d_nocall'])  # orphans and missing turn metadata too, not only work you did not start
+        self.assertIn('cannot link to any turn', texts['en']['gl_d_nocall'])
+        self.assertIn('markerade ett anrop som avbrutet', texts['sv']['gl_d_int'])  # explicit interruption flags only
+        self.assertIn('marked a request as interrupted', texts['en']['gl_d_int'])
+
+class CoverageSummary(unittest.TestCase):  # #147
+    def test_strings_have_singular_forms_and_an_explanation_in_both_languages(self):
+        texts = json.loads((Path(__file__).parent / 'tokenatlas' / 'report_i18n.json').read_text(encoding='utf-8'))
+        self.assertEqual((texts['sv']['n_files_one'], texts['sv']['n_diag_one'], texts['sv']['n_roots_one']), ('1 fil', '1 källdiagnos', '1 källmapp'))
+        self.assertEqual((texts['en']['n_files_one'], texts['en']['n_diag_one'], texts['en']['n_roots_one']), ('1 file', '1 source diagnostic', '1 source folder'))
+        self.assertIn('inte gick att läsa eller tolka', texts['sv']['diag_note'])
+        self.assertIn('could not be read or parsed', texts['en']['diag_note'])
+        for lang in ('sv', 'en'):
+            self.assertNotIn('filer ·', texts[lang]['import'])  # units come with the counts now
+            self.assertIn('{n}', texts[lang]['imp_all'])
+        template = (Path(__file__).parent / 'tokenatlas' / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn('function appendImports(', template)
+
+
+class BackToTop(unittest.TestCase):  # #148
+    def test_button_is_accessible_offline_and_hidden_in_print(self):
+        root = Path(__file__).parent / 'tokenatlas'
+        template = (root / 'report_template.html').read_text(encoding='utf-8')
+        texts = json.loads((root / 'report_i18n.json').read_text(encoding='utf-8'))
+        self.assertEqual((texts['sv']['to_top'], texts['en']['to_top']), ('Till toppen', 'Back to top'))
+        self.assertRegex(template, r'<button type="button" id="to-top" class="to-top hidden" data-t-aria-label="to_top"><svg ')
+        self.assertIn('@media print{.to-top{display:none!important}}', template)
+        self.assertIn('prefers-reduced-motion: reduce', template)
+        self.assertIn('env(safe-area-inset-bottom)', template)
+        self.assertNotRegex(template[template.index('id="to-top"'):][:600], r'https?://(?!www\.w3\.org)')
+
+
 class TopTurnsCardSize(unittest.TestCase):
     def test_card_shows_ten_turns(self):
         template = (Path(__file__).parent / 'tokenatlas' / 'report_template.html').read_text(encoding='utf-8')

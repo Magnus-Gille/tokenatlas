@@ -754,8 +754,8 @@ class Surfaces(unittest.TestCase):
         self.assertEqual((en['qs_range'], sv['qs_range']), ('{r} of {w}{sh}', '{r} av {w}{sh}'))
         self.assertEqual((en['qs_atleast'], sv['qs_atleast']), ('≥ {n}%', '≥ {n} %'))
         self.assertEqual((en['qs_pt_short'], sv['qs_pt_short']), ('≈ {n}% ({r})', '≈ {n} % ({r})'))
-        self.assertEqual((en['qs_with'], en['qs_with_one']), (' (shared with {n} turns)', ' (shared with 1 turn)'))
-        self.assertEqual((sv['qs_with'], sv['qs_with_one']), (' (delad med {n} turer)', ' (delad med 1 tur)'))
+        self.assertEqual((en['qs_with'], en['qs_with_one']), (' ({n} other turns at the same time)', ' (1 other turn at the same time)'))
+        self.assertEqual((sv['qs_with'], sv['qs_with_one']), (' ({n} andra turer samtidigt)', ' (1 annan tur samtidigt)'))
         self.assertEqual(en['qs_w_week'].format(agent='Codex'), 'the weekly Codex limit')
         self.assertEqual(sv['qs_w_week'].format(agent='Codex'), 'veckogränsen för Codex')
 
