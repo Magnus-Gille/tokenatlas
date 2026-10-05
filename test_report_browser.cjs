@@ -46,6 +46,14 @@ function withTopShare(html, label = 'observed', percent = 26, harness = 'codex')
     return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
   });
 }
+// A weekly Codex share that is a range (#131): lower-upper, with a point when the range is narrow.
+function withTopRange(html, share) {
+  return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
+    const data = JSON.parse(zlib.gunzipSync(Buffer.from(b64, 'base64')).toString('utf8'));
+    data.quota_shares = Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => [i, {harness: 'codex', minutes: 10080, percent: null, shared_with: 4, ...share}]));
+    return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
+  });
+}
 // Re-encode a report's payload with an arbitrary edit (columns are index-aligned arrays).
 function edited(html, fn) {
   return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
@@ -340,6 +348,24 @@ async function ready(page, errors, what = 'report') {
               await lp.page.fill('#to','2026-09-03');const cut=norm(await lp.page.locator('#glance-text').innerText());assert.ok(!cut.includes('2026-09-10')&&!/gränsträff|limit hit/.test(cut),cut);assert.deepEqual(lp.errors,[]);await lp.context.close();
               for(const [label,percent,want,not] of [['observed',26,sv?'~26 %':'~26%',sv?'(uppskattning)':'(estimate)'],['estimate',26,sv?'≈ 26 %':'≈ 26%',null],['estimate',0.2,sv?'< 1 %':'< 1%',null],['observed',0.2,sv?'< 1 %':'< 1%',sv?'(uppskattning)':'(estimate)']]){
                 const e=await newPage({locale:T.locale},withTopShare(fixture,label,percent)),et=norm(await e.page.locator('#glance-text').innerText());assert.ok(et.includes(want),et);const mark=sv?'(uppskattning)':'(estimate)';assert.equal(et.includes(mark),label==='estimate',label+' '+percent+': '+et);if(not)assert.ok(!et.includes(not));assert.deepEqual(e.errors,[]);await e.context.close()}
+              {// #131: a shared turn shows a range, on the card, the phone card and the summary; a narrow range also shows its point
+                const win=sv?'veckogränsen för Codex':'the weekly Codex limit',shw=sv?'(delad med 4 turer)':'(shared with 4 turns)';
+                for(const [share,want,point] of [[{label:'range',lower:2,upper:28},sv?'2–28 %':'2–28%',false],[{label:'range',lower:0.2,upper:28},sv?'< 1 %–28 %':'< 1%–28%',false],[{label:'estimate',percent:9,lower:7,upper:11},sv?'≈ 9 % (7–11 %)':'≈ 9% (7–11%)',true],[{label:'estimate',percent:0.3,lower:0,upper:2},sv?'< 1 %–2 %':'< 1%–2%',false],[{label:'range',lower:2,upper:2.5},sv?'2–3 %':'2–3%',false],[{label:'range',lower:4,upper:null},sv?'≥ 4 %':'≥ 4%',false],[{label:'range',lower:3.6,upper:null},sv?'≥ 3 %':'≥ 3%',false],[{label:'range',lower:3.6,upper:9.2},sv?'3–10 %':'3–10%',false]]){
+                  const rp=await newPage({locale:T.locale},withTopRange(fixture,share)),ct=norm(await rp.page.locator('#turn-0 .qs').first().innerText()),gt2=norm(await rp.page.locator('#glance-text').innerText());
+                  assert.ok(ct.includes(want)&&ct.includes(win)&&ct.includes(shw),'desktop card: '+ct);if(share.percent===0.3)assert.ok(!ct.includes('≈'),'a point that rounds to 0 is left out: '+ct);assert.ok(gt2.includes(want)&&gt2.includes(shw),'summary: '+gt2);assert.ok(!ct.includes(sv?'uppskattning':'(estimate)'),'no estimate label: '+ct);assert.deepEqual(rp.errors,[]);await rp.context.close();
+                  const ph=await newPage({locale:T.locale,viewport:{width:390,height:900}},withTopRange(fixture,share)),pt=norm(await ph.page.locator('#turn-0 .qs').first().innerText());
+                  assert.ok(pt.includes(want)&&pt.includes(shw),'phone card: '+pt);assert.ok(await ph.page.locator('#turn-0 .qs').first().isVisible(),'the phone card shows the range');assert.ok(await ph.page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'no horizontal scroll at 390 px');assert.deepEqual(ph.errors,[]);await ph.context.close()}
+              }
+              {// #131: the insights fact lists a range per turn
+                const fact=turns=>({id:'quota_share',title_key:'ins_quota_share',values:{window_minutes:10080,considered:turns.length,turns,observed_turns:0,estimated_turns:turns.length,lower_bound:false,lower_bound_requests:0,ambiguous_requests:0,incomplete_requests:0},params:{retrieved:'',ambiguous:0,incomplete:0,lower:0},provenance:'estimate',computation_key:'ins_quota_share_c',assumption_keys:['ins_a_quota_account','ins_a_quota_whole'],price_assumptions:[]});
+                const ins=await newPage({locale:T.locale},edited(fixture,d=>{for(const w of d.insights.windows)w.facts.push(fact([{cost:9,percent:null,lower:2,upper:28,label:'range',harness:'codex'},{cost:5,percent:9,lower:7,upper:11,label:'estimate',harness:'codex'},{cost:3,percent:0.3,lower:0,upper:2,label:'estimate',harness:'codex'},{cost:2,percent:null,lower:4,upper:null,label:'range',harness:'codex'}]))}));
+                const row=norm(await ins.page.locator('[data-fact="quota_share"] .ins-row').first().innerText());
+                for(const want of sv?['2–28 %','≈ 9 % (7–11 %)','< 1 %–2 %','≥ 4 %']:['2–28%','≈ 9% (7–11%)','< 1%–2%','≥ 4%'])assert.ok(row.includes(want),'insights row: '+row);
+                assert.ok(!row.includes('≈ 0'),row);assert.deepEqual(ins.errors,[]);await ins.context.close()}
+              {// a turn shared with exactly one other turn says "1 turn", on the card and in the summary
+                const one=sv?'(delad med 1 tur)':'(shared with 1 turn)',bad=sv?'1 turer':'1 turns';
+                const o1=await newPage({locale:T.locale},withTopRange(fixture,{label:'range',lower:2,upper:28,shared_with:1})),c1=norm(await o1.page.locator('#turn-0 .qs').first().innerText()),g1=norm(await o1.page.locator('#glance-text').innerText());
+                assert.ok(c1.includes(one)&&g1.includes(one)&&!c1.includes(bad)&&!g1.includes(bad),'singular: '+c1+' | '+g1);assert.deepEqual(o1.errors,[]);await o1.context.close()}
               const am=await newPage({locale:T.locale},edited(fixture,d=>{d.columns.id_synthetic=d.columns.id_synthetic.map(()=>1)})),at2=norm(await am.page.locator('#glance-text').innerText());
               assert.ok(at2.includes(sv?'osäker identitet':'ambiguous identity')&&!/listpris för dessa|no list price/.test(at2),at2);assert.deepEqual(am.errors,[]);await am.context.close();
             }

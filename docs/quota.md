@@ -41,7 +41,7 @@ and the shares then follow the same rules as for Codex. Coverage:
   claude.ai chat are not recorded.
 - The values are account-wide: use on claude.ai, Desktop, Cowork or another machine moves them, and is not in the logs.
 - A window can be absent from the payload, and a value can be stale after a reset while the session is idle.
-- A turn with no reading after its last request is an estimate, not observed.
+- A turn with a request after its last reading has no upper bound (that request may have moved the counter further): it shows a lower bound, "≥ 4%", or is unknown when the lower bound floors to 0. It is never observed.
 
 ## How well does list price predict the percentage?
 
@@ -62,13 +62,24 @@ see (other machines, cloud tasks) and unpriced models (13% of events) account fo
 
 1. A turn's share is primarily **observed**: the percentage before the turn compared with the percentage at its last
    request, in the same window.
-2. When concurrent turns share a step, tokenatlas spreads the movement it **observed in that window** over those turns
-   by list-price cost. It never multiplies a turn's cost by a fixed dollars-per-percent rate. This is an
-   **estimate**, labeled as one.
+2. When turns overlap, there is no single number for a turn, because list price predicts the movement so poorly (R² 0.09).
+   tokenatlas gives a **range** that needs no prices (#131): the **lower** bound is the counter movement in the steps
+   where the turn was the only active participant, the **upper** bound all the movement in the steps where it was active
+   at all, alone or shared. Whatever way the shared steps were really split lies between them; across a window the lower
+   bounds add up to at most its movement and the upper bounds to at least it. These are bounds on how the **observed account
+   movement** is attributed among the turns tokenatlas logged, and they hold only if every participant is in the logs: usage on
+   other devices, in chat or in cloud tasks moves the same counter, so a turn's real usage can be lower than its lower bound.
+   A turn with a request after its last reading has no upper bound (that request may have moved the counter further): it shows
+   "≥ 4%" (sv "≥ 4 %"), or is unknown when even the lower bound is 0. A turn that was alone in every step that
+   moved the counter has lower = upper and is **observed** (`~3%`). Unpriced participants do not matter for the bounds.
+   Only a turn that crosses a reset or a real counter drop, or has no reading before its first request, stays unknown.
+   When the range is at most 5 points wide it also shows a point estimate, the shared steps split by what each
+   participant's own requests in the step cost (an unpriced request weighed by its tokens at the window's average price),
+   as "≈ 9% (7–11%)". It never multiplies a turn's cost by a fixed dollars-per-percent rate.
 3. A user calibration (#93, `tokenatlas quota`) is shown with its spread, and is valid only for the plan and model mix it was
    made on. A reading is the used percentage the user copied from `/usage` or the Codex limits display, with the list price
    tokenatlas saw in that window; budget = cost seen / used, and several readings give the median and the min-max range. A
-   turn without an observed or estimated share is then labeled **calibrated**: "≈ 4% of your weekly Claude limit (your
+   turn without an observed share or a range is then labeled **calibrated**: "≈ 4% of your weekly Claude limit (your
    calibration, 2026-10-03)", a turn's list price over the derived budget, in whole percent. It never replaces an observed or
    estimated share. Usage outside the logs (chat, other machines, cloud tasks) is in the percentage read but not in the cost seen, so the budget comes
    out too small and shares too large; a change of model mix drifts it. A turn with unpriced, incomplete or ambiguous requests shows a
@@ -95,8 +106,12 @@ see (other machines, cloud tasks) and unpriced models (13% of events) account fo
 
 ## Wording rules
 
-- Say "~3% of the weekly Codex limit (observed)" (Claude: "~6% of the 5-hour Claude limit"; sv "5-timmarsgränsen för Claude", "veckogränsen för Claude") or "≈ 3% (estimate)". Never show decimals for a whole-percent counter.
+- Say "~3% of the weekly Codex limit (observed)" (Claude: "~6% of the 5-hour Claude limit"; sv "5-timmarsgränsen för Claude", "veckogränsen för Claude") Never show decimals for a whole-percent counter.
   Show "< 1%" when the counter did not move.
+- Bounds are displayed so they never claim more than the evidence: the lower end is rounded down and the upper end up ("3.6 to 9.2 points" reads "3–10%"), and a one-sided bound is floored ("≥ 3%", never "≥ 4%"). `--json` keeps two decimals, lower rounded down and upper up. An observed share or a point estimate rounds normally.
+- A turn that overlapped others shows its range, "2–28% of the weekly Codex limit (shared with 4 turns)" (sv "2–28 % av veckogränsen för Codex
+  (delad med 4 turer)"); a lower bound of 0 reads "< 1%–28%". A point appears only for a narrow range (at most 5 points), "≈ 9% (7–11%)", and
+  never alone for a wider one. Never present a point for a shared turn as a measurement.
 - A calibrated share is always "≈", says "your calibration" and its date, and is never called exact or observed. An auto-calibrated one says "estimated from your limit hits / statusline readings" instead.
 - Name a window by its length (`window_minutes`, or Claude's `five_hour` / `seven_day`), never by the `primary` /
   `secondary` slot.

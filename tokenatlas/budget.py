@@ -579,13 +579,13 @@ def share(derived, harness, cost, lower_bound=False, plan=None):
 
 
 def mark_turns(items, derived, costs):
-    """Give each ranked turn without an observed or estimated share (quota_share is None or unknown) a calibrated one ('auto-calibrated' for an automatic budget). `costs` is turn_costs over the whole
+    """Give each ranked turn without an observed share or a range (quota_share is None or unknown) a calibrated one ('auto-calibrated' for an automatic budget). `costs` is turn_costs over the whole
     history (never the filtered turn's own cost, which may be partial), keyed by (harness, session, turn_id)."""
     if not derived:
         return items
     for item in items:
         current = item.get('quota_share')
-        if current and current['label'] in ('observed', 'estimate'):
+        if current and current['label'] in ('observed', 'estimate', 'range'):  # a turn with its own share or range keeps it
             continue
         cost = costs.get((item['harness'], item['session'], item['turn_id']))
         found = share(derived, item['harness'], *cost) if cost else None

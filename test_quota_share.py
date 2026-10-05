@@ -113,7 +113,7 @@ class Shares(unittest.TestCase):
         self.assertEqual(s['observed'], dict(before=10.0, after=13.0, delta=3.0, shared_with=0))
         self.assertEqual(s['window_key'][2:4], (10080, RESET))
         self.assertEqual(qs.text(s), '~3% of weekly Codex limit')
-        self.assertEqual(qs.as_json(s), dict(window_minutes=10080, delta_percent=3.0, label='observed', before=10.0, after=13.0, shared_with=0))
+        self.assertEqual(qs.as_json(s), dict(window_minutes=10080, delta_percent=3.0, lower_percent=3.0, upper_percent=3.0, label='observed', before=10.0, after=13.0, shared_with=0))
 
     def test_zero_delta_is_less_than_one_percent(self):
         recs = [req('0', iso(0), turn='t0', q=quota(week=10)), req('a', iso(10), q=quota(week=10))]
@@ -126,30 +126,61 @@ class Shares(unittest.TestCase):
         recs = [req('0', iso(0), turn='t0', session='other', q=quota(week=40)), req('a', iso(10), q=quota(week=42))]
         self.assertEqual(shares(recs)[1][K1]['observed']['before'], 40.0)
 
-    def test_estimates_over_the_same_interval_sum_to_the_observed_movement(self):
+    def test_turns_over_the_same_interval_each_have_the_whole_movement_as_their_range(self):
         recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
                 req('a1', iso(10), turn='t1', session='s1', out=1_000_000, q=quota(week=11)),
                 req('b1', iso(10), turn='t2', session='s2', out=3_000_000, q=quota(week=12)),
                 req('a2', iso(12), turn='t1', session='s1', out=1_000_000, q=quota(week=18)),
                 req('b2', iso(12), turn='t2', session='s2', out=3_000_000, q=quota(week=18))]
         got = shares(recs)[1]
-        self.assertEqual((got[K1]['label'], got[K1]['observed']['shared_with'], got[K2]['observed']['shared_with']), ('estimate', 1, 1))
-        self.assertAlmostEqual(got[K1]['estimate'] + got[K2]['estimate'], 8.0, places=6)
-        self.assertAlmostEqual(got[K1]['estimate'] / got[K2]['estimate'], 1 / 3, places=6)
-        self.assertEqual(qs.text(got[K2]), '≈6% of weekly Codex limit (estimate)')
+        self.assertEqual((got[K1]['label'], got[K1]['observed']['shared_with'], got[K2]['observed']['shared_with']), ('range', 1, 1))
+        self.assertEqual((qs.bounds(got[K1]), qs.bounds(got[K2])), ((0.0, 8.0), (0.0, 8.0)))  # nobody was alone: any split of the 8 fits
+        self.assertIsNone(got[K1]['estimate'])  # eight points wide is no place for a point
+        self.assertEqual(qs.text(got[K2]), '< 1%–8% of weekly Codex limit (shared with 1 turn)')
+        self.assertIsNone(qs.as_json(got[K2])['delta_percent'])
 
-    def test_staggered_turns_overlap_so_they_estimate_and_conserve(self):
+    def test_a_narrow_range_also_shows_a_point_from_the_cost_in_each_step(self):
+        recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
+                req('a1', iso(10), turn='t1', session='s1', out=1_000_000, q=quota(week=11)),
+                req('b1', iso(11), turn='t2', session='s2', out=1_000_000, q=quota(week=13)),
+                req('a2', iso(12), turn='t1', session='s1', out=1_000_000, q=quota(week=14))]
+        got = shares(recs)[1]
+        a, b = got[K1], got[K2]
+        self.assertEqual((a['label'], qs.bounds(a), a['estimate']), ('estimate', (2.0, 4.0), 2.0))  # alone for 1 + 1; the shared 2 weigh what each had in the step:
+        self.assertEqual((b['label'], qs.bounds(b), b['estimate']), ('estimate', (0.0, 2.0), 2.0))  # only b had a request in it
+        self.assertEqual(qs.text(a), '≈2% (2–4%) of weekly Codex limit (shared with 1 turn)')
+        self.assertEqual(qs.text(b), '≈2% (< 1%–2%) of weekly Codex limit (shared with 1 turn)')
+        self.assertAlmostEqual(a['estimate'] + b['estimate'], 4.0)  # the movement, once
+
+    def test_the_bounds_conserve_the_movement_over_many_participants(self):
+        recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
+                req('a1', iso(10), turn='t1', session='s1', out=1_000_000, q=quota(week=12)),
+                req('b1', iso(10, 30), turn='t2', session='s2', out=1_000_000, q=quota(week=15)),
+                req('a2', iso(11), turn='t1', session='s1', out=1_000_000, q=quota(week=16)),
+                req('c1', iso(12), turn='t3', session='s3', out=1_000_000, q=quota(week=21)),
+                req('b2', iso(13), turn='t2', session='s2', out=1_000_000, q=quota(week=22))]
+        got = shares(sorted(recs, key=lambda r: r['ts']))[1]
+        turns = [K1, K2, ('codex', 's3', 't3')]
+        movement = 22.0 - 10.0
+        self.assertLessEqual(sum(got[k]['lower'] for k in turns), movement + 1e-9)
+        self.assertGreaterEqual(sum(got[k]['upper'] for k in turns), movement - 1e-9)
+        for k in turns:
+            self.assertLessEqual(got[k]['lower'], got[k]['upper'])
+            if got[k]['estimate'] is not None:  # a point is one of the splits: inside the bounds
+                self.assertTrue(got[k]['lower'] - 1e-9 <= got[k]['estimate'] <= got[k]['upper'] + 1e-9)
+
+    def test_staggered_turns_overlap_so_they_have_ranges(self):
         recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
                 req('a1', iso(10), turn='t1', session='s1', out=1_000_000, q=quota(week=11)),
                 req('b1', iso(11), turn='t2', session='s2', out=1_000_000, q=quota(week=17)),
                 req('a2', iso(12), turn='t1', session='s1', out=1_000_000, q=quota(week=18))]
         got = qs.largest(qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE))
         a, b = got[K1], got[K2]
-        self.assertEqual((a['label'], b['label']), ('estimate', 'estimate'))  # b ran inside a's span
+        self.assertEqual((a['label'], b['label']), ('range', 'range'))  # b ran inside a's span
         self.assertEqual((a['observed']['shared_with'], b['observed']['shared_with']), (1, 1))  # symmetric
-        self.assertAlmostEqual(a['estimate'], 5.0)  # 1 alone, half of the 6, 1 alone
-        self.assertAlmostEqual(b['estimate'], 3.0)
-        self.assertAlmostEqual(a['estimate'] + b['estimate'], 8.0)  # all of the window's movement, once
+        self.assertEqual((qs.bounds(a), qs.bounds(b)), ((2.0, 8.0), (0.0, 6.0)))  # a was alone for 1 + 1, b only in the step of 6
+        self.assertLessEqual(a['lower'] + b['lower'], 8.0)
+        self.assertGreaterEqual(a['upper'] + b['upper'], 8.0)
 
     def test_a_millisecond_shift_does_not_flip_the_label(self):
         def build(shift):
@@ -161,8 +192,9 @@ class Shares(unittest.TestCase):
         for shift in (0, 0.001, 0.5):
             recs = build(shift)
             got = qs.largest(qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE))
-            self.assertEqual((got[K1]['label'], got[K2]['label']), ('estimate', 'estimate'), shift)
-            self.assertAlmostEqual(got[K1]['estimate'] + got[K2]['estimate'], 8.0)
+            self.assertEqual((got[K1]['label'], got[K2]['label']), ('range', 'range'), shift)
+            self.assertLessEqual(got[K1]['lower'] + got[K2]['lower'], 8.0)
+            self.assertGreaterEqual(got[K1]['upper'] + got[K2]['upper'], 8.0)
 
     def test_a_step_shared_by_two_turns_is_split_by_cost_and_conserved(self):
         recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
@@ -172,7 +204,8 @@ class Shares(unittest.TestCase):
         got = qs.largest(qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE))
         a, b = got[K1], got[K2]
         self.assertEqual((a['label'], b['label']), ('estimate', 'estimate'))
-        self.assertAlmostEqual(a['observed']['delta'] + b['observed']['delta'], 6.0)  # 2 shared (1 + 1) and 4 alone for a, all of the 6 allocated once
+        self.assertEqual((qs.bounds(a), qs.bounds(b)), ((4.0, 6.0), (0.0, 2.0)))  # a was alone for the last 4
+        self.assertAlmostEqual(a['estimate'] + b['estimate'], 6.0)  # 2 shared (1 + 1) and 4 alone for a: all of the 6, once
         self.assertAlmostEqual(b['estimate'], 1.0)
 
     def test_decrease_then_recovery_inside_a_turn_is_unknown(self):
@@ -260,15 +293,16 @@ class Shares(unittest.TestCase):
         end = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)), req('x1', iso(10), q=quota(week=11)),
                req('x2', iso(12), q=quota(week=14)), req('x3', iso(14))]  # the last request has no snapshot
         s = qs.turn_shares(end, qs.snapshots_from_records(end), TABLE)[K1][10080]
-        self.assertEqual((s['label'], s['estimate']), ('estimate', 4.0))
+        self.assertEqual((s['label'], s['lower'], s['upper']), ('range', 4.0, None))  # alone in every step, but the last request has no reading: at least 4
+        self.assertEqual(qs.text(s), '≥4% of weekly Codex limit')
         gap = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)), req('a1', iso(10), out=1_000_000, q=quota(week=11)),
                req('c1', iso(12), turn='t2', session='s2', out=2_000_000),  # a competitor that reports no quota
                req('a2', iso(14), out=1_000_000, q=quota(week=19))]
         got = qs.turn_shares(gap, qs.snapshots_from_records(gap), TABLE)
         a = got[K1][10080]
-        self.assertEqual(a['label'], 'estimate')
+        self.assertEqual(a['label'], 'range')
         self.assertEqual(a['observed']['shared_with'], 1)
-        self.assertTrue(1.0 < a['estimate'] < 8.0, a['estimate'])  # the competitor took part of the 7 points
+        self.assertTrue(a['lower'] < a['upper'], (a['lower'], a['upper']))  # the competitor may have moved part of the 7 points
         self.assertNotIn(K2, got)  # nothing to show for it
 
     def test_a_sliding_reset_time_is_one_window_instance(self):
@@ -390,7 +424,7 @@ class Shares(unittest.TestCase):
                 req('a2', iso(20), out=1_000_000, q=quota(week=19, five=32))]
         got = qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE)
         a = got[K1][10080]
-        self.assertEqual(a['label'], 'estimate')
+        self.assertEqual(a['label'], 'range')
         self.assertEqual(a['observed']['shared_with'], 1)
 
     def test_the_window_table_takes_hits_from_limit_hits_and_counts_quota_events(self):
@@ -465,9 +499,9 @@ class Shares(unittest.TestCase):
         recs += [req(f'q{n}', iso(22 + n), turn='tb', session='sb', out=2_000_000) for n in range(8)]  # the same turn went on, with no readings
         snaps = qs.snapshots_from_records(recs)
         a = qs.turn_shares(recs, snaps, TABLE)[('codex', 'sa', 'ta')][10080]
-        self.assertEqual(a['label'], 'estimate')
+        self.assertEqual(a['label'], 'range')
         self.assertEqual(a['observed']['shared_with'], 1)
-        self.assertLess(a['estimate'], 7.0)  # not all of the 7 points
+        self.assertTrue(a['lower'] < a['upper'] <= 7.0)  # alone for part of the 7 points, never more than all of them
 
     def test_a_request_after_an_instances_reset_is_not_charged_to_it(self):
         cost = lambda r: prompts._cost(r, TABLE)
@@ -499,13 +533,14 @@ class Shares(unittest.TestCase):
         self.assertGreater(b['estimate'], 1.0)  # not weighed as free
         self.assertAlmostEqual(a['estimate'] + b['estimate'], 6.0)  # the movement 10 -> 16, once
 
-    def test_with_no_priced_request_in_the_window_a_shared_step_is_unknown(self):
+    def test_with_no_priced_request_in_the_window_the_bounds_still_hold_but_there_is_no_point(self):
         recs = [req('0', iso(0), turn='t0', session='s0', model='no-such-model', q=quota(week=10)),
                 req('a1', iso(10), out=1_000_000, model='no-such-model', q=quota(week=11)),
                 req('b1', iso(10, 30), turn='t2', session='s2', out=1_000_000, model='no-such-model', q=quota(week=13)),
                 req('a2', iso(12), out=1_000_000, model='no-such-model', q=quota(week=15)), req('b2', iso(12, 30), turn='t2', session='s2', out=1_000_000, model='no-such-model', q=quota(week=16))]
         got = qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE)
-        self.assertEqual((got[K1][10080]['label'], got[K2][10080]['label']), ('unknown', 'unknown'))
+        self.assertEqual((got[K1][10080]['label'], got[K2][10080]['label']), ('range', 'range'))  # no price is needed for the bounds; with no rate there is no point
+        self.assertIsNone(got[K1][10080]['estimate'])
 
     def test_a_lone_unpriced_turn_is_observed(self):
         recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
@@ -524,6 +559,33 @@ class Shares(unittest.TestCase):
         ws = {w['minutes']: w for w in qs.windows(qs.snapshots_from_records(recs), records=recs, cost_of=cost)}
         self.assertAlmostEqual(ws[10080]['cost'], 5 * cost(recs[0]))
         self.assertFalse(ws[10080]['lower_bound'])
+
+    def test_the_shown_window_prefers_what_the_turn_surely_used(self):
+        recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10, five=20)),
+                req('a1', iso(10), turn='t1', session='s1', out=1_000_000, q=quota(week=11, five=21)),
+                req('b1', iso(10, 30), turn='t2', session='s2', out=1_000_000, q=quota(week=11, five=21)),  # shares the weekly step only
+                req('a2', iso(11), turn='t1', session='s1', out=1_000_000, q=quota(week=11, five=22))]
+        got = qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE)
+        shown = qs.largest(got)[K1]
+        self.assertGreaterEqual(shown['lower'], 1.0)
+
+    def test_a_missing_trailing_reading_leaves_only_a_lower_bound(self):
+        recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
+                req('a1', iso(10), turn='t1', session='s1', out=1_000_000, q=quota(week=11)),
+                req('b1', iso(11), turn='t2', session='s2', out=1_000_000, q=quota(week=17)),
+                req('b2', iso(12), turn='t2', session='s2', out=1_000_000, q=quota(week=17)),
+                req('a2', iso(12, 30), turn='t1', session='s1', out=1_000_000)]  # a request of A after its last reading
+        got = qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE)
+        a, b = got[K1][10080], got[K2][10080]
+        self.assertEqual((a['label'], a['lower'], a['upper']), ('range', 1.0, None))  # it could have moved more than the shared 6
+        self.assertEqual((qs.bounds(a), qs.bounds(b)), ((1.0, None), (0.0, 6.0)))
+        self.assertEqual(qs.text(a), '≥1% of weekly Codex limit (shared with 1 turn)')
+        j = qs.as_json(a)
+        self.assertEqual((j['lower_percent'], j['upper_percent'], j['delta_percent']), (1.0, None, None))
+        # and with nothing proven (lower 0) there is nothing to show
+        none = [recs[0], recs[2], recs[3], req('a1', iso(10), turn='t1', session='s1', out=1_000_000)]
+        none = sorted(none, key=lambda r: r['ts'])
+        self.assertEqual(qs.turn_shares(none, qs.snapshots_from_records(none), TABLE).get(K1, {}).get(10080, {'label': 'unknown'})['label'], 'unknown')
 
     def test_per_window_shares_are_kept(self):
         recs = [req('0', iso(0), turn='t0', q=quota(week=10, five=20)), req('a', iso(10), q=quota(week=12, five=26))]
@@ -646,7 +708,7 @@ class Surfaces(unittest.TestCase):
             self.assertNotIn(f'"{secret}"', blob)
         self.assertEqual(set(payload['quota_windows'][0]), {'harness', 'account', 'minutes', 'resets_at', 'start', 'peak_percent', 'peak_at', 'hit',
                                                             'snapshots', 'cost', 'unpriced_requests', 'uncertain_requests', 'lower_bound'})
-        self.assertEqual(set(next(iter(payload['quota_shares'].values()))), {'harness', 'minutes', 'label', 'percent', 'shared_with'})
+        self.assertEqual(set(next(iter(payload['quota_shares'].values()))), {'harness', 'minutes', 'label', 'percent', 'lower', 'upper', 'shared_with'})
 
     def test_a_subagent_only_filter_keeps_the_quota_fact_equal_to_the_card(self):
         from tokenatlas import report
@@ -682,6 +744,103 @@ class Surfaces(unittest.TestCase):
         alone = report.build_report(sub, {}, now=now)
         self.assertNotEqual([v['label'] for v in alone['quota_shares'].values()], ['observed'])  # without the universe it cannot know
 
+    def test_range_strings_in_both_languages(self):
+        import json
+        from pathlib import Path
+        texts = json.loads((Path(__file__).parent / 'tokenatlas' / 'report_i18n.json').read_text(encoding='utf-8'))
+        sv, en = texts['sv'], texts['en']
+        self.assertEqual((en['qs_rng'], sv['qs_rng']), ('{lo}–{up}%', '{lo}–{up} %'))
+        self.assertEqual((en['qs_rng_lt1'], sv['qs_rng_lt1']), ('< 1%–{up}%', '< 1 %–{up} %'))
+        self.assertEqual((en['qs_range'], sv['qs_range']), ('{r} of {w}{sh}', '{r} av {w}{sh}'))
+        self.assertEqual((en['qs_atleast'], sv['qs_atleast']), ('≥ {n}%', '≥ {n} %'))
+        self.assertEqual((en['qs_pt_short'], sv['qs_pt_short']), ('≈ {n}% ({r})', '≈ {n} % ({r})'))
+        self.assertEqual((en['qs_with'], en['qs_with_one']), (' (shared with {n} turns)', ' (shared with 1 turn)'))
+        self.assertEqual((sv['qs_with'], sv['qs_with_one']), (' (delad med {n} turer)', ' (delad med 1 tur)'))
+        self.assertEqual(en['qs_w_week'].format(agent='Codex'), 'the weekly Codex limit')
+        self.assertEqual(sv['qs_w_week'].format(agent='Codex'), 'veckogränsen för Codex')
+
+    def test_top_text_and_json_for_a_range(self):
+        item = dict(window_minutes=10080, delta_percent=None, lower_percent=2.0, upper_percent=28.0, label='range', before=10.0, after=40.0, shared_with=4)
+        self.assertEqual(qs.line(item, 'codex'), '2–28% of weekly Codex limit (shared with 4 turns)')
+        self.assertEqual(qs.line({**item, 'lower_percent': 0.2, 'shared_with': 1}, 'codex'), '< 1%–28% of weekly Codex limit (shared with 1 turn)')
+        self.assertEqual(qs.line({**item, 'label': 'estimate', 'delta_percent': 9.0, 'lower_percent': 7.0, 'upper_percent': 11.0}, 'codex'),
+                         '≈9% (7–11%) of weekly Codex limit (shared with 4 turns)')
+        self.assertEqual(qs.range_text(0.0, 0.2), '< 1%')
+        self.assertEqual(qs.range_text(4.0, 4.0), '4%')
+
+    def test_one_rule_decides_whether_it_is_a_range_from_the_rounded_endpoints(self):
+        from tokenatlas import insights
+        for lo, up, shown in ((2.0, 2.5, '2–3%'), (1.4, 1.6, '1–2%'), (2.0, 2.4, '2–3%'), (0.2, 0.4, '< 1%'), (3.0, 3.0000000001, '3%'), (0.6, 3.6, '< 1%–4%')):
+            self.assertEqual(qs.range_text(lo, up), shown)
+            if shown != '< 1%':  # (a range under 1 point reads "< 1%" whatever its ends)
+                self.assertEqual(qs.wide(lo, up), '–' in shown)
+        item = dict(window_minutes=10080, delta_percent=2.2, lower_percent=2.0, upper_percent=2.5, label='estimate', before=1, after=5, shared_with=1)
+        self.assertEqual(qs.line(item, 'claude'), '≈2% (2–3%) of weekly Claude limit (shared with 1 turn)')  # a Claude reading with fractions
+        self.assertEqual(qs.line({**item, 'upper_percent': 2.0}, 'claude'), '≈2% of weekly Claude limit (estimate)')
+        turn = dict(cost=5.0, percent=2.2, lower=2.0, upper=2.5, label='estimate', harness='claude')
+        self.assertEqual(insights._quota_pct(turn), '≈2% (2–3%)')
+        self.assertEqual(insights._quota_pct({**turn, 'upper': 2.0}), '≈2%')
+
+    def test_bounds_are_never_rounded_past_the_evidence(self):
+        from tokenatlas import insights
+        one = dict(window_minutes=10080, delta_percent=None, lower_percent=3.6, upper_percent=None, label='range', before=1, after=9, shared_with=1)
+        self.assertEqual(qs.line(one, 'claude'), '≥3% of weekly Claude limit (shared with 1 turn)')  # floored, not "≥ 4%"
+        self.assertEqual(qs.line({**one, 'lower_percent': 0.6}, 'claude'), 'share of weekly Claude limit: n/a')  # a floor of 0 is no information
+        two = {**one, 'lower_percent': 3.6, 'upper_percent': 9.2}
+        self.assertEqual(qs.line(two, 'claude'), '3–10% of weekly Claude limit (shared with 1 turn)')  # floor the lower end, ceil the upper
+        turn = dict(cost=1.0, percent=None, lower=3.6, upper=None, label='range', harness='claude')
+        self.assertEqual(insights._quota_pct(turn), '≥3%')
+        self.assertEqual(insights._quota_pct({**turn, 'upper': 9.2}), '3–10%')
+        share = dict(window_key=('claude', 'claude', 10080, None, None, 0, 0), observed=dict(before=0, after=4, delta=3.999, shared_with=0), estimate=None,
+                     label='range', lower=3.999, upper=None)
+        j = qs.as_json(share)
+        self.assertEqual((j['lower_percent'], j['upper_percent']), (3.99, None))  # never 4.0
+        j = qs.as_json({**share, 'upper': 4.001})
+        self.assertEqual((j['lower_percent'], j['upper_percent']), (3.99, 4.01))
+
+    def test_a_point_that_rounds_to_zero_is_left_out_of_a_narrow_range(self):
+        from tokenatlas import insights
+        item = dict(window_minutes=10080, delta_percent=0.3, lower_percent=0.0, upper_percent=2.0, label='estimate', before=1, after=3, shared_with=4)
+        self.assertEqual(qs.line(item, 'codex'), '< 1%–2% of weekly Codex limit (shared with 4 turns)')  # not "≈ 0% (< 1%–2%)"
+        self.assertEqual(insights._quota_pct(dict(cost=1.0, percent=0.3, lower=0.0, upper=2.0, label='estimate', harness='codex')), '< 1%–2%')
+
+    def test_the_insights_fact_lists_a_range_for_independent_overlapping_turns(self):
+        from tokenatlas import insights
+        recs = [req('0', iso(0), turn='t0', session='s0', q=quota(week=10)),
+                req('a1', iso(10), turn='t1', session='s1', out=3_000_000, q=quota(week=14)),
+                req('b1', iso(11), turn='t2', session='s2', out=2_000_000, q=quota(week=20)),
+                req('a2', iso(14), turn='t1', session='s1', out=3_000_000, q=quota(week=22)),
+                req('b2', iso(15), turn='t2', session='s2', out=2_000_000, q=quota(week=26))]
+        got = qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE)
+        self.assertEqual({got[K1][10080]['label'], got[K2][10080]['label']}, {'range'})
+        result = insights.cost_facts(recs, TABLE, quota=got)
+        fact = next(f for f in result['facts'] if f['id'] == 'quota_share')
+        turns = {x['label']: x for x in fact['values']['turns']}
+        self.assertEqual(set(turns), {'range'})
+        for x in fact['values']['turns']:
+            self.assertIsNone(x['percent'])
+            self.assertLess(x['lower'], x['upper'])
+        text = insights.render_text(result)
+        self.assertRegex(text, r'used (< 1%|\d+)–\d+%( and (< 1%|\d+)–\d+%)? of the weekly Codex limit')
+
+    def test_a_range_blocks_calibration_but_unknown_does_not(self):
+        from tokenatlas import budget
+        derived = {('codex', 10080, 'pro'): dict(harness='codex', minutes=10080, plan='pro', budget_usd=10.0, readings=3, spread=[9, 11], source='manual', date='2026-10-01')}
+        items = [dict(harness='codex', session='s1', turn_id='t1', quota_share=dict(label='range', lower_percent=1.0, upper_percent=9.0)),
+                 dict(harness='codex', session='s1', turn_id='t2', quota_share=dict(label='unknown'))]
+        budget.mark_turns(items, derived, {('codex', 's1', 't1'): (5.0, True, False), ('codex', 's1', 't2'): (5.0, True, False)})
+        self.assertEqual(items[0]['quota_share']['label'], 'range')
+
+    def test_the_insights_fact_lists_ranges(self):
+        from tokenatlas import insights
+        recs = TestOrchestration.build()
+        got = qs.turn_shares(recs, qs.snapshots_from_records(recs), TABLE)
+        result = insights.cost_facts(recs, TABLE, quota=got)
+        fact = next(f for f in result['facts'] if f['id'] == 'quota_share')
+        self.assertTrue(all('lower' in x and 'upper' in x for x in fact['values']['turns']))
+        text = insights.render_text(result)
+        self.assertRegex(text, r'costliest turns used .*% of the weekly Codex limit')
+
     def test_top_json_and_text(self):
         from tokenatlas import prompts
         recs = history_records()
@@ -689,7 +848,7 @@ class Surfaces(unittest.TestCase):
         top = prompts.top_prompts(recs, TABLE, 5)['prompts']
         qs.mark_turns(top, got)
         by = {p['turn_id']: p['quota_share'] for p in top}
-        self.assertEqual(by['t2'], dict(window_minutes=10080, delta_percent=9.0, label='observed', before=12.0, after=21.0, shared_with=0))
+        self.assertEqual(by['t2'], dict(window_minutes=10080, delta_percent=9.0, lower_percent=9.0, upper_percent=9.0, label='observed', before=12.0, after=21.0, shared_with=0))
         self.assertEqual(qs.line(by['t2'], 'codex'), '~9% of weekly Codex limit')
         self.assertEqual(by['t0']['label'], 'unknown')
         self.assertEqual(qs.line(by['t0'], 'codex'), 'share of weekly Codex limit: n/a')
@@ -867,8 +1026,9 @@ class ClaudeSnapshots(unittest.TestCase):
         self.write(cline(0, 0, 0, session='before'), cline(1, 4, 4, seconds=30, session='A'), cline(3, 9, 9, seconds=30, session='B'),
                    cline(5, 14, 14, seconds=30, session='A'), cline(7, 20, 20, seconds=30, session='B'))
         by = qs.turn_shares(recs, qs.snapshots_from_records(recs, claude=self.path), TABLE)
-        total = sum(qs.value(by[k][10080]) for k in (('claude', 'A', 'c1'), ('claude', 'B', 'c2')))
-        self.assertAlmostEqual(total, 20.0)
+        mine = [by[k][10080] for k in (('claude', 'A', 'c1'), ('claude', 'B', 'c2'))]
+        self.assertLessEqual(sum(x['lower'] for x in mine), 20.0)  # the bounds bracket the 20 points the two turns and the ones around them moved
+        self.assertGreaterEqual(sum(x['upper'] for x in mine), 20.0)
 
     def test_a_reading_of_a_window_that_began_after_the_request_does_not_attach_to_it(self):
         recs = [creq('a', iso(0))]

@@ -229,7 +229,7 @@ def _over_cap(history,db,auto,manual):
     from tokenatlas import budget, pricing, quota_share
     records,table=history.records(),pricing.load_prices()
     shares=quota_share.compute(records,table,claude=_claude_quota(db))[1]
-    return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate')})
+    return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate','range')})
 
 
 def _events(events):
@@ -539,7 +539,7 @@ def main(argv=None):
                 snaps,shares=quota_share.compute(everything,table,only={(p['harness'],p['session'],p['turn_id']) for p in result['prompts']},claude=_claude_quota(args.db))
                 quota_share.mark_turns(result['prompts'],shares)
                 derived=budget.load_derived(budget.path_for(args.db),table=table,records_fn=lambda:everything)
-                if any((p.get('quota_share') or {}).get('label') not in ('observed','estimate') for p in result['prompts']):  # automatic budgets only matter for a turn without its own share (#116)
+                if any((p.get('quota_share') or {}).get('label') not in ('observed','estimate','range') for p in result['prompts']):  # automatic budgets only matter for a turn without its own share (#116)
                     derived=budget.combine(derived,_auto_budgets(history,args.db,table,everything,all_hits,snaps or None)[0])
                 if derived:  # only where there is no observed or estimated share; the turn's whole identified cost, whatever the filters keep
                     memo={};budget.mark_turns(result['prompts'],derived,budget.turn_costs(everything,prompts.assign_prompts(everything),insights.memo_cost(table,memo),table))
