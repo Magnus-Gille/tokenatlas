@@ -533,7 +533,7 @@ class ReportClarity(unittest.TestCase):  # #145
         self.assertIn('rounded percentage for the whole account', en['glance_qs_range'])
         self.assertIn('avrundad procentsats för hela kontot', sv['glance_qs_range'])
         self.assertEqual(sv['glance_qs_range'].format(pct='minst 8 %, högst 38 %', w='veckogränsen för Codex', n=603, who='Codex'),
-                         'Den dyraste turen använde minst 8 %, högst 38 % av veckogränsen för Codex – 603 andra turer pågick samtidigt och Codex rapporterar bara en avrundad procentsats för hela kontot.')
+                         'Den dyraste turen tillskrivs minst 8 %, högst 38 % av veckogränsen för Codex – 603 andra turer pågick samtidigt, och Codex visar bara en avrundad procentsats för hela kontot, där även användning som loggarna inte ser ingår.')
 
 
     def test_a_one_sided_range_is_explained_by_the_missing_reading(self):
@@ -544,6 +544,14 @@ class ReportClarity(unittest.TestCase):  # #145
         template = (self.root / 'report_template.html').read_text(encoding='utf-8')
         self.assertIn("sp.title=q.upper==null?t('qs_open')", template)
         self.assertIn("t(q.upper==null?'glance_qs_range_open'", template)
+
+    def test_limit_share_bounds_name_unseen_usage(self):
+        texts = self.texts()  # the bounds attribute observed account movement; usage the logs do not see is in the meter too (docs/quota.md)
+        for lang, phrase in (('sv', 'loggarna inte ser'), ('en', 'the logs do not see')):
+            for k in ('gl_d_qs', 'qs_shared', 'qs_shared_one', 'qs_alone', 'qs_open', 'glance_qs_range', 'glance_qs_range_one', 'glance_qs_range_alone', 'glance_qs_range_open'):
+                self.assertIn(phrase, texts[lang][k], (lang, k))
+        self.assertIn('kan vara lägre än det lägsta värdet', texts['sv']['gl_d_qs'])
+        self.assertIn('can be lower than the lowest value', texts['en']['gl_d_qs'])
 
     def test_glossary_definitions_match_what_is_computed(self):
         texts = self.texts()
