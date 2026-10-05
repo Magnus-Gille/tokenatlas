@@ -862,12 +862,20 @@ class History:
             'SELECT count(*), min(ts_us), max(ts_us), coalesce(sum(complete=0),0), coalesce(sum(turn_id IS NULL),0)'
             ' FROM observations').fetchone()
         imports = [json.loads(r[0]) for r in self.connection.execute('SELECT data FROM imports ORDER BY harness,root')]
-        missing = sum(not _REMOTE_PATH.match(r[0]) and not Path(r[0]).exists()
-                      for r in self.connection.execute('SELECT path FROM files'))
+        missing, distinct = 0, {}
+        # Distinct locally collected files per harness (#151): import entries are per root, so nested roots would count a file twice.
+        for harness, path, diagnostics, origin in self.connection.execute('SELECT harness,path,diagnostics,origin FROM files'):
+            if _REMOTE_PATH.match(path):continue
+            if not Path(path).exists():missing += 1;continue
+            if origin != 'local':continue
+            entry = distinct.setdefault(harness, dict(files=0, malformed_lines=0, partial_lines=0, unparsed_usage_lines=0))
+            entry['files'] += 1
+            for key, value in (json.loads(diagnostics) if diagnostics else {}).items():
+                if key in entry and isinstance(value, int):entry[key] += value
         return dict(schema_version=SCHEMA_VERSION, machine=self.machine, revision=self.revision, observations=count,
                     first_event=None if first is None else _ts_text(first),
                     last_event=None if last is None else _ts_text(last),
-                    missing_source_files=missing, imports=imports, coverage_complete=False,
+                    missing_source_files=missing, imports=imports, files_by_harness=distinct, coverage_complete=False,
                     incomplete_observations=incomplete, unlinked_turns=unlinked,
                     billing_verified=False,
                     notes=['Local retained sources only; missing history cannot be reconstructed.',
