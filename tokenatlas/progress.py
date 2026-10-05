@@ -58,9 +58,14 @@ class Progress:
         parts=[f'{outer}: ' if outer else '',step.label,f' {self.note_text}' if self.note_text else '',f' {self.count_text}' if self.count_text else '',f' {self.clock()-step.start:.1f} s']
         line=f'{self.spin[self.frame%len(self.spin)]} {"".join(parts)}'
         self.frame+=1
-        cols=self.width or shutil.get_terminal_size((80,24)).columns
+        cols=self.width or self._columns()
         line=line[:max(cols-1,10)]
         self._write('\r'+line+' '*max(self.drawn-len(line),0));self.drawn=len(line)
+
+    def _columns(self):
+        """Width of the terminal this stream is on (stdout may be piped while stderr is a narrow terminal); else the shutil fallback."""
+        try:return os.get_terminal_size(self.stream.fileno()).columns
+        except (AttributeError,ValueError,OSError):return shutil.get_terminal_size((80,24)).columns
 
     def _run(self):
         while not self.stop_event.wait(self.interval):
@@ -94,10 +99,10 @@ class Progress:
     @contextlib.contextmanager
     def suspend(self):
         """Hold the live line off the screen while something else (collect's stdout log lines) prints."""
-        with self.lock:
-            self.paused+=1;self._clear()
-            try:yield
-            finally:self.paused-=1
+        with self.lock:self.paused+=1;self._clear()
+        try:yield  # the lock is not held here: the redraw thread just skips while paused
+        finally:
+            with self.lock:self.paused-=1
 
     def close(self):
         """Stop the redraw thread and clear the live line (idempotent); steps still open end without a line."""

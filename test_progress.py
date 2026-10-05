@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tokenatlas import progress
@@ -165,6 +166,40 @@ class Module(unittest.TestCase):
         self.assertIs(progress.current(), progress.NOOP)
 
 
+    def test_width_comes_from_the_progress_stream_not_stdout(self):
+        out = Stream(); out.fileno = lambda: 7
+        p = Progress(out, 'live')
+        with mock.patch('os.get_terminal_size', return_value=os.terminal_size((30, 10))) as size:
+            with p.step('A label that is much longer than thirty columns wide'):
+                p._draw()
+            p.close()
+        size.assert_called_with(7)
+        drawn = [part for part in out.getvalue().split('\r') if part.strip() and not part.startswith('✓')]
+        self.assertTrue(drawn and all(len(part.rstrip()) <= 29 for part in drawn), drawn)
+
+    def test_width_falls_back_when_the_stream_has_no_terminal(self):
+        out = Stream()  # StringIO.fileno raises UnsupportedOperation (an OSError)
+        with mock.patch('shutil.get_terminal_size', return_value=os.terminal_size((50, 10))):
+            self.assertEqual(Progress(out, 'live')._columns(), 50)
+
+    def test_remote_sync_runs_with_the_live_line_suspended(self):
+        from tokenatlas import collect
+        out = Stream(); seen = {}
+        class Proc:
+            def wait(self, timeout=None):
+                seen['paused'] = progress.current().paused
+                before = out.getvalue(); threading.Event().wait(0.05); seen['quiet'] = out.getvalue() == before
+                return 0
+        script = Path(tempfile.mkdtemp()) / 'sync.sh'; script.write_text('true\n'); self.addCleanup(script.unlink)
+        self.assertTrue(progress.start(out, env={}, interval=0.005))
+        try:
+            with progress.step('Remote sync'), mock.patch('subprocess.Popen', return_value=Proc()):
+                self.assertEqual(collect._sync(script, 'pi:h', 5, Path('db'), 0), 0)
+            self.assertEqual(progress.current().paused, 0)
+        finally:progress.stop()
+        self.assertEqual(seen, {'paused': 1, 'quiet': True})
+
+
 def run(db, *argv, progress='0'):
     env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', 'TOKENATLAS_PROGRESS': progress}
     return subprocess.run([sys.executable, '-m', 'tokenatlas', '--db', str(db), *argv], cwd=ROOT, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
@@ -195,6 +230,13 @@ class Cli(unittest.TestCase):
         on = run(self.db, 'refresh', '--harness', 'claude', '--root', str(self.logs), progress='1')
         self.assertEqual(json.loads(on.stdout)['status'], json.loads(off.stdout)['status'])
         self.assertIn('Refresh claude done', on.stderr)
+
+    def test_a_failed_refresh_ends_as_failed_not_done(self):
+        missing = str(Path(self.tmp.name) / 'nowhere')
+        proc = run(self.db, 'refresh', '--harness', 'claude', '--root', missing, progress='1')
+        self.assertNotEqual(json.loads(proc.stdout)['status'], 'ok')
+        self.assertIn('Refresh claude failed', proc.stderr)
+        self.assertNotIn('Refresh claude done', proc.stderr)
 
     def test_report_html_writes_phase_lines_and_keeps_the_receipt(self):
         out = Path(self.tmp.name) / 'r.html'

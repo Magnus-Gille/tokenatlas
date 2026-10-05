@@ -111,9 +111,11 @@ def refresh_all(history):
             found=[r for r in [root,*cowork] if _present(r)]
             if not found and not problems:
                 entries.append({'harness':name,'status':'absent'});continue
-            with progress.step(f'Refresh {name}'):results=[history.refresh(name,r) for r in found]
-            entry=(results[0] if len(results)==1 else aggregate(results)) if results else {'harness':name,'status':'ok','errors':[]}
-            entry=_with_problems(entry,problems)
+            with progress.step(f'Refresh {name}') as shown:
+                results=[history.refresh(name,r) for r in found]
+                entry=(results[0] if len(results)==1 else aggregate(results)) if results else {'harness':name,'status':'ok','errors':[]}
+                entry=_with_problems(entry,problems)
+                shown.failed=entry['status']!='ok'  # a missing root or a partial import ends as failed, not ✓
         except OSError as exc:
             entry={'harness':name,'status':'error','errors':[f'{type(exc).__name__}: {exc}']}
         entries.append(entry)
@@ -536,12 +538,14 @@ def _main(argv=None):
             elif args.command=='refresh':
                 roots={h:why.harness_root(h)[0] for h in ('claude','codex','pi','opencode')}
                 if args.root or args.harness!='claude':
-                    with progress.step(f'Refresh {args.harness}'):result=history.refresh(args.harness,args.root or roots[args.harness])
+                    with progress.step(f'Refresh {args.harness}') as shown:
+                        result=history.refresh(args.harness,args.root or roots[args.harness]);shown.failed=result['status']!='ok'
                 else:
                     # Main root, then each Cowork transcript root (macOS; absent elsewhere and simply skipped).
                     cowork,problems=why.cowork_scan()
-                    with progress.step('Refresh claude'):results=[history.refresh('claude',root) for root in [roots['claude'],*cowork]]
-                    result=_with_problems(results[0] if len(results)==1 else aggregate(results),problems)
+                    with progress.step('Refresh claude') as shown:
+                        results=[history.refresh('claude',root) for root in [roots['claude'],*cowork]]
+                        result=_with_problems(results[0] if len(results)==1 else aggregate(results),problems);shown.failed=result['status']!='ok'
                 with progress.step('Update statusline cache'):statusline.refresh_cache(history)
             elif args.command=='top':
                 from tokenatlas import budget

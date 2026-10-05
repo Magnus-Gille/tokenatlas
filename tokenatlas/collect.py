@@ -120,7 +120,7 @@ def _sync(script,hosts,timeout,db,lock_fd):
     env={**os.environ,'REMOTE_HOSTS_OVERRIDE':hosts,'TOKENATLAS_DB':str(db),'TOKENATLAS_SINGLE_GROUP':'1'}
     # A signal never interrupts this function: it is noted, the group is stopped, and it is raised on the way out (no bytecode gap in which
     # the sync could be left running without its supervisor).
-    with _deferred():
+    with _deferred(),progress.suspend():  # the script prints to the inherited stdout/stderr: no live line may interleave with it
         proc=subprocess.Popen(['bash',str(script)],env=env,start_new_session=True,pass_fds=(lock_fd,))
         deadline=time.monotonic()+timeout
         while True:
