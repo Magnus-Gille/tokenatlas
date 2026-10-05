@@ -550,6 +550,19 @@ class CoverageSummary(unittest.TestCase):  # #147
         self.assertIn('function appendImports(', template)
 
 
+class BackToTop(unittest.TestCase):  # #148
+    def test_button_is_accessible_offline_and_hidden_in_print(self):
+        root = Path(__file__).parent / 'tokenatlas'
+        template = (root / 'report_template.html').read_text(encoding='utf-8')
+        texts = json.loads((root / 'report_i18n.json').read_text(encoding='utf-8'))
+        self.assertEqual((texts['sv']['to_top'], texts['en']['to_top']), ('Till toppen', 'Back to top'))
+        self.assertRegex(template, r'<button type="button" id="to-top" class="to-top hidden" data-t-aria-label="to_top"><svg ')
+        self.assertIn('@media print{.to-top{display:none!important}}', template)
+        self.assertIn('prefers-reduced-motion: reduce', template)
+        self.assertIn('env(safe-area-inset-bottom)', template)
+        self.assertNotRegex(template[template.index('id="to-top"'):][:600], r'https?://(?!www\.w3\.org)')
+
+
 class TopTurnsCardSize(unittest.TestCase):
     def test_card_shows_ten_turns(self):
         template = (Path(__file__).parent / 'tokenatlas' / 'report_template.html').read_text(encoding='utf-8')

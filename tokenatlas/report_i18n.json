@@ -464,7 +464,8 @@
 "imp_bad": "{n} inte ok",
 "imp_problem": "Källmappar med fel eller källdiagnoser:",
 "imp_all": "Visa alla {n}",
-"diag_note": "Källdiagnoser är filer eller rader i loggarna som inte gick att läsa eller tolka."
+"diag_note": "Källdiagnoser är filer eller rader i loggarna som inte gick att läsa eller tolka.",
+"to_top": "Till toppen"
 },
 "en": {
 "title": "TokenAtlas · Local token usage",
@@ -939,6 +940,7 @@
 "imp_bad": "{n} not ok",
 "imp_problem": "Source folders with errors or source diagnostics:",
 "imp_all": "Show all {n}",
-"diag_note": "Source diagnostics are files or lines in the logs that could not be read or parsed."
+"diag_note": "Source diagnostics are files or lines in the logs that could not be read or parsed.",
+"to_top": "Back to top"
 }
 }
