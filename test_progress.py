@@ -177,6 +177,15 @@ class Module(unittest.TestCase):
         drawn = [part for part in out.getvalue().split('\r') if part.strip() and not part.startswith('✓')]
         self.assertTrue(drawn and all(len(part.rstrip()) <= 29 for part in drawn), drawn)
 
+    def test_a_shrinking_or_tiny_terminal_never_gets_a_wider_write(self):
+        for before, after in ((80, 30), (80, 8), (5, 5)):
+            out = Stream(); p = Progress(out, 'live', width=before)
+            with p.step('A label that is much longer than thirty columns wide'):
+                p._draw(); mark = len(out.getvalue()); p.width = after; p._draw(); p._clear()
+            p.close()
+            writes = [part for part in out.getvalue()[mark:].split('\r') if part and '\n' not in part]
+            self.assertTrue(writes and all(len(part) <= after - 1 for part in writes), (before, after, writes))
+
     def test_width_falls_back_when_the_stream_has_no_terminal(self):
         out = Stream()  # StringIO.fileno raises UnsupportedOperation (an OSError)
         with mock.patch('shutil.get_terminal_size', return_value=os.terminal_size((50, 10))):

@@ -49,7 +49,7 @@ class Progress:
         except (OSError,ValueError):self.mode='off'  # a closed or broken stderr must never break the command
 
     def _clear(self):
-        if self.drawn:self._write('\r'+' '*self.drawn+'\r');self.drawn=0
+        if self.drawn:self._write('\r'+' '*min(self.drawn,self._fit())+'\r');self.drawn=0  # never wider than the terminal now: a wrapped blank leaves rows behind
 
     def _draw(self):
         if self.mode!='live' or not self.steps or self.paused:return
@@ -58,9 +58,12 @@ class Progress:
         parts=[f'{outer}: ' if outer else '',step.label,f' {self.note_text}' if self.note_text else '',f' {self.count_text}' if self.count_text else '',f' {self.clock()-step.start:.1f} s']
         line=f'{self.spin[self.frame%len(self.spin)]} {"".join(parts)}'
         self.frame+=1
-        cols=self.width or self._columns()
-        line=line[:max(cols-1,10)]
-        self._write('\r'+line+' '*max(self.drawn-len(line),0));self.drawn=len(line)
+        cols=self._fit();line=line[:cols]
+        self._write('\r'+line+' '*max(min(self.drawn,cols)-len(line),0));self.drawn=len(line)
+
+    def _fit(self):
+        """Characters a line may take without wrapping: one less than the terminal width (at least 1)."""
+        return max((self.width or self._columns())-1,1)
 
     def _columns(self):
         """Width of the terminal this stream is on (stdout may be piped while stderr is a narrow terminal); else the shutil fallback."""
