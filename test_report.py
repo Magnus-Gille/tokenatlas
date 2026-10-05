@@ -536,6 +536,22 @@ class ReportClarity(unittest.TestCase):  # #145
                          'Den dyraste turen använde minst 8 %, högst 38 % av veckogränsen för Codex – 603 andra turer pågick samtidigt och Codex rapporterar bara en avrundad procentsats för hela kontot.')
 
 
+    def test_a_one_sided_range_is_explained_by_the_missing_reading(self):
+        texts = self.texts()
+        self.assertIn('bara den nedre gränsen är känd', texts['sv']['qs_open'])
+        self.assertIn('only the lower bound is known', texts['en']['qs_open'])
+        self.assertIn('only the lower bound is known', texts['en']['glance_qs_range_open'])
+        template = (self.root / 'report_template.html').read_text(encoding='utf-8')
+        self.assertIn("sp.title=q.upper==null?t('qs_open')", template)
+        self.assertIn("t(q.upper==null?'glance_qs_range_open'", template)
+
+    def test_glossary_definitions_match_what_is_computed(self):
+        texts = self.texts()
+        self.assertIn('inte kan koppla till någon tur', texts['sv']['gl_d_nocall'])  # orphans and missing turn metadata too, not only work you did not start
+        self.assertIn('cannot link to any turn', texts['en']['gl_d_nocall'])
+        self.assertIn('markerade ett anrop som avbrutet', texts['sv']['gl_d_int'])  # explicit interruption flags only
+        self.assertIn('marked a request as interrupted', texts['en']['gl_d_int'])
+
 class CoverageSummary(unittest.TestCase):  # #147
     def test_strings_have_singular_forms_and_an_explanation_in_both_languages(self):
         texts = json.loads((Path(__file__).parent / 'tokenatlas' / 'report_i18n.json').read_text(encoding='utf-8'))
