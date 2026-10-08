@@ -234,7 +234,16 @@ class ReportReviewTests(unittest.TestCase):
                 observation('c', provider='anthropic', model='claude-opus-5-5'),
                 observation('d', provider='openai', model='gpt-5.6-luna', effort='xhigh')]
         html = render_report(build_report(rows, {}))
-        shown = json.dumps(decode_html(html))
+        payload = decode_html(html)
+        # Reference choices are public catalogue constants, not observed local names.
+        # A public identifier may contain a local model name as a substring.
+        refs = payload['usage'].pop('cloud_references')
+        from tokenatlas import pricing
+        from tokenatlas.report import PUBLIC_NAMES, public_model_checker
+        public_reference = public_model_checker(pricing.load_prices())
+        self.assertTrue(all(r['provider'] in PUBLIC_NAMES['provider'] and public_reference(r['provider'], r['model']) for r in refs))
+        self.assertIn(('openrouter', 'qwen/qwen3-coder'), {(r['provider'], r['model']) for r in refs})
+        shown = json.dumps(payload)
         for private in ('m5', 'inference-gille', 'qwen3-coder', 'gpt-oss-120b', 'my-host-tui'):
             self.assertNotIn(private, shown)
             self.assertNotIn(private, page_text(html))

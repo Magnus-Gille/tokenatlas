@@ -42,7 +42,8 @@ def public_model_checker(*tables):
 # (`open`, `report --if-changed`, `--max-age`). Bump it with ANY change to what a shared report reveals or how it pseudonymizes.
 # 1: model names are shown only when exact packaged public identifiers (#133).
 # 2: public client labels, local-inference counts and public plan tiers are allowed (#146); work context remains private.
-REDACTION_REVISION = 2
+# 3: compact public cloud-reference rate cards are allowed for explicit local what-if comparisons.
+REDACTION_REVISION = 3
 INSIGHT_DAYS = 30
 MAX_QUOTA_WINDOWS = 12
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -117,7 +118,7 @@ def _usage_code(kind, value):
     return f'{kind} {int(digest[:6], 16) % 1000 + 1:03d}'
 
 
-def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context, redact, profile):
+def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context, redact, profile, table):
     """Filter-following metadata for the work and client cards.
 
     Context and prompt text are already limited by prompt_store to its global
@@ -127,7 +128,13 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
     profile = profile or {}
     configured = profile.get('local_providers') or []
     clients = [usage_profiles.client_key(r.get('harness'), r.get('origin')) for r in records]
-    local_rows = [i for i, r in enumerate(records) if usage_profiles.is_local_provider(r.get('provider'), configured)]
+    local_rows = [i for i, r in enumerate(records)
+                  if usage_profiles.is_local_provider(r.get('provider'), configured)
+                  or pricing.is_local_provider(r.get('provider'), table)]
+    cloud_references = pricing.reference_rate_card(table)
+    if redact:
+        public = public_model_checker(pricing.load_prices(), credit_rates.packaged())
+        cloud_references = [r for r in cloud_references if r['provider'] in PUBLIC_NAMES['provider'] and public(r['provider'], r['model'])]
     safe_plan = lambda value, kind: value if not redact or value in usage_profiles.KNOWN_PLAN_NAMES else f'{kind} plan'
     plans, seen = [], set()
     for i, record in enumerate(records):
@@ -183,7 +190,7 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
         turn_map[turn_key]['rows'].append(i)
     for group in groups.values():
         group.pop('_turn_map', None)
-    return dict(source_keys=clients, local_rows=local_rows, plans=plans, groups=list(groups.values()))
+    return dict(source_keys=clients, local_rows=local_rows, cloud_references=cloud_references, plans=plans, groups=list(groups.values()))
 
 
 def build_report(records, source_status, timezone_name='Europe/Stockholm', redact=True, prompt_texts=None, table=None, lang='auto',
@@ -296,7 +303,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         mult, weighted = energy.multiplier(record.get('provider'), record.get('model'))
         if weighted:
             weights.setdefault(row['provider'], {})[row['model']] = mult
-    usage = _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context, redact, profile)
+    usage = _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context, redact, profile, table)
     # Shared reports deliberately omit work context; the client summary uses
     # fixed labels and aggregate row associations only.
     if redact:

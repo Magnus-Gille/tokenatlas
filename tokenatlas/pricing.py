@@ -4,6 +4,8 @@ Costs are computed at report time from a price table; a missing price or tariff 
 (None) part, never a default or zero.  Reasoning tokens are a subset of output and are not priced separately.
 """
 import json
+import math
+import re
 from pathlib import Path
 
 PACKAGED = Path(__file__).with_name('prices.json')
@@ -65,6 +67,54 @@ def _find(table, provider, model):
         if entry['provider'] == provider and (entry['model'] == model or model in (entry.get('aliases') or ())):
             return provider, entry
     return provider, None
+
+
+def is_local_provider(provider, table):
+    """Whether *provider* is local according to a price table, after aliases."""
+    if not isinstance(provider, str):
+        return False
+    canonical = (table.get('provider_aliases') or {}).get(provider, provider)
+    return canonical in (table.get('local_providers') or ())
+
+
+def _finite_rate(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
+def _reference_long_context(entry):
+    """The standard input/output long-context rates needed by a no-cache reference."""
+    long = entry.get('long_context')
+    if long is None:
+        return None
+    if not isinstance(long, dict):
+        return dict(above_input_tokens=None, input=None, output=None)
+    threshold = long.get('above_input_tokens')
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0:
+        threshold = None
+    return dict(above_input_tokens=threshold,
+                input=long.get('input') if _finite_rate(long.get('input')) else None,
+                output=long.get('output') if _finite_rate(long.get('output')) else None)
+
+
+def reference_rate_card(table):
+    """Compact public cards for non-free hosted USD models.
+
+    These are for an explicit offline what-if: all input classes are charged at
+    the standard input rate and output at the standard output rate. Missing
+    long-context rates remain null so a request crossing that threshold stays
+    unknown rather than silently falling back.
+    """
+    valid_date = lambda value: value if isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', value) else None
+    retrieved = valid_date(table.get('retrieved_on'))
+    cards = []
+    for entry in table.get('models', ()):
+        if not isinstance(entry, dict) or entry.get('free') or entry.get('currency') != 'USD' or is_local_provider(entry.get('provider'), table):
+            continue
+        if not _finite_rate(entry.get('input')) or not _finite_rate(entry.get('output')):
+            continue
+        cards.append(dict(provider=entry['provider'], model=entry['model'], input=entry['input'], output=entry['output'],
+                          long_context=_reference_long_context(entry), retrieved_on=valid_date(entry.get('retrieved_on')) or retrieved))
+    return cards
 
 
 def _result(status, parts=None, cost=None, currency=None, assumptions=(), reason=None, ref=None):

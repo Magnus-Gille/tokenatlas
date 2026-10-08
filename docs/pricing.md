@@ -5,12 +5,12 @@ prices. They are not what was paid (subscriptions, credits, discounts and batch 
 
 ## Status values
 
-`usage.pricing.price_observation` returns one status per observation:
+`tokenatlas.pricing.price_observation` returns one status per observation:
 
 - `priced`: every token class has a price and no assumption was needed.
 - `assumed`: fully priced, but a tariff dimension was not recorded and standard was assumed.
 - `free`: the table marks the model free; cost is 0.
-- `local`: the provider is listed in `local_providers`; no cost.
+- `local`: the provider is listed in `local_providers`; cost is unknown, not zero.
 - `partial`: some part is unknown (missing token count or price, cache write TTL unknown, context size
   unknown for a long-context model). Known parts are kept; `cost` is None.
 - `unpriced`: no model or list price, or a required tariff price (fast mode, `inference_geo=us`) is missing.
@@ -50,3 +50,11 @@ These show as `unpriced` with reason `no list price for <provider>/<model>`:
   per-token prices, for these (both retired in September 2026).
 
 Local providers (`m5`, `ollama`, `inference-gille`) have no API-equivalent list price and show as `local`.
+
+## Local inference: selectable cloud reference
+
+The offline report provides a separate hypothetical cost for local requests. The reader chooses a hosted, non-free USD model from the report's active price table; there is no automatic recommendation. Shared reports include only exact public model identifiers known to the packaged table.
+
+For this scenario, input is `fresh_input + cache_read + cache_write`, all at the standard input rate. Output is charged at the standard output rate; reasoning is already included and is never added again. Local tariffs and cache TTL do not transfer to this scenario. When a request exceeds the reference model's long-context input threshold, that request uses the long-context input/output rates. Missing applicable rates remain unknown.
+
+Requests with missing token counters or synthetic identities are excluded and counted as unknown. Known counters on incomplete requests contribute a lower bound only when it is safe; otherwise the request is unknown (for example, when missing input could cross into a cheaper or unknown long-context tariff). The card shows coverage and the reference price date and follows the report filters. Existing list-price totals are unchanged. Actual electricity/hardware cost is unknown; this is not a measured saving or a promise of equivalent quality, output length, or tokenization.
