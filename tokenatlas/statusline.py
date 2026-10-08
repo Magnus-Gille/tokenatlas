@@ -20,10 +20,11 @@ import subprocess
 import stat
 import sys
 import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from tokenatlas import energy
+from tokenatlas import energy, __version__
 
 CACHE_NAME = 'statusline.json'
 CACHE_DAYS = 31  # per-local-day buckets kept in the cache, today included
@@ -109,9 +110,30 @@ def write_atomic(path, payload):
 
 
 def refresh_cache(history):
-    """Write statusline.json beside the history; a failure is a warning on stderr and never fails the refresh."""
+    """Write statusline.json beside the history; reuse unchanged same-day totals without scanning history."""
     try:
-        write_atomic(cache_path(history.path), build_cache(history))
+        path = cache_path(history.path)
+        now = datetime.now(timezone.utc)
+        identity = {'token': history.revision_token, 'machine': history.machine, 'version': __version__,
+                    'timezone': [os.environ.get('TZ'), list(time.tzname), time.timezone, time.daylight]}
+        try:
+            current = json.loads(_read_small(path))
+            written = datetime.fromisoformat(current['written_at'])
+            reusable = (isinstance(current, dict) and current.get('v') == 1
+                        and current.get('revision') == history.revision
+                        and current.get('source') == identity
+                        and written.tzinfo is not None
+                        and isinstance(current.get('days'), dict)
+                        and written.astimezone().date() == now.astimezone().date())
+        except (OSError, TypeError, ValueError, KeyError):
+            reusable = False
+        if reusable:
+            current['written_at'] = now.isoformat(timespec='seconds')
+            write_atomic(path, current)
+        else:
+            fresh = build_cache(history, now=now)
+            fresh['source'] = identity
+            write_atomic(path, fresh)
     except Exception as exc:
         print(f'warning: could not write {CACHE_NAME}: {type(exc).__name__}: {exc}', file=sys.stderr)
 

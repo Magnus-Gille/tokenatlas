@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-10-08
+
+### Added
+
+- `tokenatlas schedule` explicitly opts into periodic collection, with macOS LaunchAgents, Linux user timers or cron, and Windows Task Scheduler. `--dry-run`, `--status`, and `--remove` preview, inspect, and manage only TokenAtlas-owned jobs. The scheduled command keeps the selected history database, installation, and configured harness locations (#55).
+- Private reports group spending by project and known branch, with the costliest turns and their already-retained prompt text. Unknown branches and requests without a turn remain explicit. Shared reports omit this work context (#79).
+- Reports summarize the clients, observed Codex plans, and local inference used in the selected period. `plan set --harness claude` supplies an explicitly manual Claude plan; `profile provider add` recognizes custom local providers. Unknown clients/plans stay unknown, and shared reports do not expose custom provider names (#146).
+
+### Changed
+
+- Reuse history and derived calculations during analysis; skip retained-text and report work when the relevant inputs have not changed. Price, history, retention and profile changes invalidate the appropriate cached work (#143, #56).
+
 ## [1.17.0] - 2026-10-05
 
 ### Fixed

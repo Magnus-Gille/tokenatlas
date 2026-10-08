@@ -66,6 +66,11 @@ def _kept_choice(db):
     return ['-n',str(k),'--by',by] if prompt_store.valid_choice(k,by) else None
 
 
+def _top_up_to_date(db, revision, history_token=None, machine=None, prices=None):
+    from tokenatlas import prompt_store
+    return prompt_store.up_to_date(prompt_store.store_path(db), revision, history_token, machine, prices)
+
+
 def _hosts(args,state):
     if args.remote:return ' '.join(args.remote)
     if os.environ.get('REMOTE_HOSTS_OVERRIDE','').strip():return os.environ['REMOTE_HOSTS_OVERRIDE'].strip()
@@ -156,7 +161,15 @@ def _run(args):
         if prompt_store.store_path(db).exists():
             choice=_kept_choice(db)
             if choice is None:log(f'top: skipped: {prompt_store.store_path(db)} has no valid recorded k/by; choose one with tokenatlas top --keep-text -n N (or --forget-text)');failed=True
-            else:failed|=_step('top',lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice))!=0
+            else:
+                with History(db) as history:
+                    current_revision, history_token, machine = history.revision, history.revision_token, history.machine
+                from tokenatlas import budget, pricing
+                prices = budget.table_id(pricing.load_prices())
+                if _top_up_to_date(db, current_revision, history_token, machine, prices):
+                    log('top: skipped: history revision and stored choice are unchanged')
+                else:
+                    failed|=_step('top',lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice))!=0
         if not args.no_report:failed|=_step('report',report())!=0
         hosts=_hosts(args,state)
         if hosts:

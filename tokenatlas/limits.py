@@ -76,11 +76,12 @@ def label(minutes, reached=None):
     return 'five_hour' if minutes == 300 else 'weekly' if minutes == 10080 else (reached or None)
 
 
-def limit_hits(records, events, table):
+def limit_hits(records, events, table, assigned=None):
     """Hits, oldest first: {harness, at, reached, window_minutes, resets_at, retries, turn, window}. `turn` is (harness, session, turn_id) of
     the request running at the hit, or None. `window` (None when the window length is unknown) is {start, end, requests, priced_requests,
     unpriced_requests, cost, top: [{turn, requests, cost, share}]}: the same provider's list-price cost in [resets_at - minutes, at] and
     the three costliest turns in it as a share of that cost (unattributed requests count in the cost, not in the ranking)."""
+    assignment_records = records
     records, events = sorted(records, key=lambda r: r['ts']), sorted(events, key=lambda r: r['ts'])
     found = []
     claude, recent = {}, {}  # by reset time; and, for events without one, the latest hit per (harness, type) with its last event time
@@ -225,7 +226,8 @@ def limit_hits(records, events, table):
         return []  # the usual case: skip the turn assignment over the whole history
     found.sort(key=lambda h: h['at'])
     # One assignment, over usage only (as top_prompts and the report do); a rejection carries its own turn and never feeds the assignment.
-    assigned = {id(r): a for r, a in zip(records, prompts.assign_prompts(records))}
+    assigned = ({id(r): a for r, a in zip(records, prompts.assign_prompts(records))} if assigned is None
+                else {id(r): a for r, a in zip(assignment_records, assigned)})
     threads = {}  # subagent thread -> [(time, assigned turn)] of its usage, for a rejection in a subagent file (it carries no usable turn of its own)
     for r in records:
         if r['thread_kind'] == 'subagent' and assigned[id(r)]:
@@ -323,7 +325,7 @@ def badge(hit):
     return {'five_hour': 'Hit the 5-hour limit', 'weekly': 'Hit the weekly limit'}.get(name) or (f'Hit a limit ({name})' if name and name != 'window_full' else 'Hit a limit')
 
 
-def scope_hits(hits, records, harness=None, start=None, end=None, project=None, session=None, turn=None, model=None, effort=None, provider=None, agent=None, universe=None):
+def scope_hits(hits, records, harness=None, start=None, end=None, project=None, session=None, turn=None, model=None, effort=None, provider=None, agent=None, universe=None, assigned=None):
     """Hits that belong to a filtered report: the hit's harness and time must match the harness and start/end filters. With a project, session,
     turn, model, effort, provider or agent filter a hit is kept when its turn is among the filtered `records`' turns or when the hit's own row
     (a rejection has no usage record) matches every given filter; `universe` is the whole history's usage, the basis of the hits' turns. The hits themselves are computed over the whole history first."""
@@ -343,7 +345,7 @@ def scope_hits(hits, records, harness=None, start=None, end=None, project=None, 
     if given:
         # Hits carry rolled-up turn identities, so map the filtered records through the same whole-history assignment.
         everything = universe if universe is not None else records
-        found = {prompts.ident(r): a for r, a in zip(everything, prompts.assign_prompts(everything))}
+        found = {prompts.ident(r): a for r, a in zip(everything, prompts.assign_prompts(everything) if assigned is None else assigned)}
         turns = {tuple(found[prompts.ident(r)][:3]) if found.get(prompts.ident(r)) else (r['harness'], r['session'], r.get('turn_id')) for r in records}
     out = []
     for hit in hits:

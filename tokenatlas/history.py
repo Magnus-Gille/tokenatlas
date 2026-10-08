@@ -817,7 +817,37 @@ class History:
             raise
 
     def limit_events(self, start=None, end=None):
-        return [r for r in self.records(start, end, include_limit_events=True) if is_limit_event(r)]
+        """Return quota-only limit events without decoding ordinary observations.
+
+        The token columns are typed in SQLite, so this candidate query is
+        deliberately conservative: a row is considered only when every
+        persisted token counter is zero or NULL and a quota reference exists.
+        ``is_limit_event`` remains the final authority after decoding the
+        candidate rows; this keeps malformed or non-event quota payloads out
+        without relying on SQLite JSON extensions.
+        """
+        c = self.connection
+        where, params = ['o.quota IS NOT NULL'], []
+        where.extend(f'(o.{field} IS NULL OR o.{field}=0)' for field in ALL_FIELDS)
+        if start is not None:
+            where.append('o.ts_us>=?'); params.append((start - _EPOCH) // _MICRO)
+        if end is not None:
+            where.append('o.ts_us<?'); params.append((end - _EPOCH) // _MICRO)
+        clause = 'WHERE ' + ' AND '.join(where)
+        paths = {}
+        for observation, path in c.execute(
+                'SELECT s.observation,f.path FROM sources s JOIN files f ON f.id=s.file '
+                f'JOIN observations o ON o.id=s.observation {clause}', params):
+            paths.setdefault(observation, []).append(path)
+        strings = {r[0]: r[1] for r in c.execute('SELECT id,value FROM strings')}
+        result = []
+        for row in c.execute(f'SELECT o.id,{",".join("o." + n for n in COLUMNS)} FROM observations o {clause}', params):
+            item = _decode(tuple(strings[v] if i in _REF_INDEX and v is not None else v
+                                 for i, v in enumerate(row[1:])))
+            item['sources'] = sorted(paths.get(row[0], ()))
+            if is_limit_event(item):
+                result.append(item)
+        return sorted(result, key=lambda x: (x['ts'], x['provider'], x['id']))
 
     def records(self, start=None, end=None, harness=None, project=None, session=None, turn=None, include_limit_events=False):
         session_harness = None

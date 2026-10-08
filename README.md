@@ -168,7 +168,24 @@ the whole sync gets `--sync-timeout` seconds (default 600). Past that, `collect`
 process group, waits 2 seconds, then SIGKILL, and logs `remote sync: timeout after Ns`. The log is one line per
 step with its exit status and duration.
 
-Cron, every 30 minutes (use the full path; cron has a short `PATH`):
+The supported installer creates and owns the platform entry for you. It uses macOS LaunchAgent, a systemd user timer
+when the user systemd session is available (otherwise crontab), or Windows Task Scheduler:
+
+```bash
+tokenatlas schedule --every 30m
+tokenatlas schedule --every 1h --remote pi:myhost
+tokenatlas schedule --status
+tokenatlas schedule --remove
+```
+
+Add `--dry-run` to print the exact files and scheduler commands without writing or installing anything. Re-running
+the install replaces only TokenAtlas's own marked entry; a possible hand-written collect entry in crontab is preserved and
+reported as a warning (other custom schedulers must be checked manually). The generated job uses an absolute TokenAtlas executable, a non-interactive `PATH` containing
+`ssh`, `rsync`, and `bash`, and only the set harness path variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_DATA_HOME`,
+and `PI_CODING_AGENT_DIR`). `--status` also shows the last non-empty line in the TokenAtlas collect log.
+
+
+Manual fallback — Cron, every 30 minutes (use the full path; cron has a short `PATH`):
 
     */30 * * * * $HOME/.local/bin/tokenatlas collect --remote pi:myhost >> ~/Library/Logs/tokenatlas/collect.log 2>&1
 
@@ -176,6 +193,7 @@ Cron, every 30 minutes (use the full path; cron has a short `PATH`):
 remote machines, drop `--remote`. On macOS prefer launchd: it runs a missed job after sleep, cron does not. Save as
 `~/Library/LaunchAgents/com.tokenatlas.report.plist` (replace `YOU` with your user name; launchd does not expand
 `$HOME`) and run `launchctl load` on it:
+
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -197,6 +215,29 @@ you want an exact view: it runs `refresh --all` (continuing if a harness is part
 report to `$XDG_STATE_HOME/tokenatlas/report.html` (or `--html PATH`; `--shared` pseudonymizes it) and
 opens it in your default browser. `--no-refresh` skips the refresh. `report` itself keeps the shared,
 pseudonymized default unless you pass `--private`.
+
+### Work and clients in the report
+
+Private reports include **What you work on**: cost by project and known branch,
+with the most expensive turns and text already kept by `top --keep-text`.
+Branches outside that retained context remain unknown. Shared reports omit this section.
+**Used in this period** follows the same filters and separates the client from
+local inference. Codex plan names come from recorded quota snapshots; missing
+plans remain unknown. A Claude plan can be supplied explicitly as a manual label:
+
+```bash
+tokenatlas plan set --harness claude max-5x
+tokenatlas plan show
+tokenatlas plan remove --harness claude
+tokenatlas profile provider add my-local-server
+tokenatlas profile provider show
+tokenatlas profile provider remove my-local-server
+```
+
+These preferences stay in `usage-profile.json` beside the selected history (`--db`),
+with private file permissions. They do not read account credentials or claim to
+reconstruct past subscriptions. Standard local providers such as Ollama,
+llama-swap, LM Studio and vLLM are recognized without a custom setting.
 
 ## Session trees and outcomes
 

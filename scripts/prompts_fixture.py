@@ -12,7 +12,7 @@ def obs(i, minute, turn, kind='main', agent='main', model='claude-sonnet-4-5', f
         harness='claude', provider='anthropic', write=0, split=None, out=0, day='2026-09-03', complete=True, synthetic=False):
     return dict(id=f'o{i}', harness=harness, session=session, agent=agent, thread_kind=kind, parent_session=session if kind == 'subagent' else None,
                 turn_id=turn, turn_confidence='derived', ts=f'{day}T10:{minute:02d}:00+00:00', model=model, provider=provider,
-                machine='m', project_id='/w/app', project_label='app', effort=None, origin='cli', raw_usage={'cache_creation': split} if split else {}, tariff=None,
+                machine='m', project_id='/w/codex' if harness == 'codex' else '/w/app', project_label='codex' if harness == 'codex' else 'app', effort=None, origin='cli', raw_usage={'cache_creation': split} if split else {}, tariff=None,
                 tokens=dict(fresh_input=fresh, cache_write=write, cache_read=0, output=out, reasoning=0), complete=complete,
                 id_synthetic=synthetic, warnings=[], sources=[])
 

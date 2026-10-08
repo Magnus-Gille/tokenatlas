@@ -77,14 +77,14 @@ def _cost(r, table):
     return priced['cost'] if priced.get('currency') == 'USD' or (priced.get('status') == 'free' and priced.get('currency') is None) else None
 
 
-def top_prompts(records, table, k=5, by='cost', keep=None, credit_table=None):
+def top_prompts(records, table, k=5, by='cost', keep=None, credit_table=None, assigned=None):
     """Rank prompts by list-price cost (unpriced last) or total tokens. Assignment runs over all records; `keep`, a set of
     ident() values, then restricts which observations contribute (a filter window), so a subagent still rolls up to a parent turn outside it.
     `credits` is the turn's ChatGPT credit equivalent (credits.py), only when every request in it has a credit rate, else None; `credits_lower_bound`
     marks a sum over incomplete token counters."""
     if by not in ('cost', 'tokens'):raise ValueError("by must be 'cost' or 'tokens'")
     credit_table = credit_table or credit_rates.packaged()
-    assigned = assign_prompts(records)
+    assigned = assign_prompts(records) if assigned is None else assigned
     groups, unattributed = {}, 0
     for r, found in zip(records, assigned):
         if keep is not None and ident(r) not in keep:continue
