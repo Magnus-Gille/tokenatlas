@@ -71,6 +71,29 @@ class UsageProfileTests(unittest.TestCase):
         self.assertEqual(payload["usage"]["plans"][0]["plan"], "pro")
         self.assertEqual(payload["usage"]["plans"][0]["rows"], [1])
 
+    def test_local_rows_include_packaged_local_providers_and_references_are_compact(self):
+        rows = [
+            observation('m5', harness='pi', origin='local', provider='m5', model='private-secret-model'),
+            observation('gille', harness='pi', origin='local', provider='inference-gille', model='local-model'),
+            observation('cloud', harness='codex', origin='codex_exec', provider='openai', model='gpt-4o-mini'),
+        ]
+        private = report.build_report(rows, {}, redact=False, profile={'plans': {}, 'local_providers': []})
+        # build_report orders rows by timestamp/harness/id, so the two local ids
+        # sort after the cloud row in this fixture.
+        self.assertEqual(private['usage']['local_rows'], [1, 2])
+        refs = private['usage']['cloud_references']
+        self.assertTrue(refs)
+        self.assertTrue(all(set(ref) == {'provider', 'model', 'input', 'output', 'long_context', 'retrieved_on'} for ref in refs))
+        self.assertTrue(all('source_url' not in ref for ref in refs))
+        self.assertEqual(len(refs), len({(ref['provider'], ref['model']) for ref in refs}))
+        self.assertNotIn(('m5', 'private-secret-model'), {(ref['provider'], ref['model']) for ref in refs})
+        shared = report.build_report(rows, {}, redact=True)
+        shared_json = json.dumps(shared)
+        self.assertEqual(report.REDACTION_REVISION, 3)
+        self.assertNotIn('private-secret-model', shared_json)
+        self.assertNotIn('local-model', shared_json)
+        self.assertTrue(all('source_url' not in ref for ref in shared['usage']['cloud_references']))
+
     def test_missing_plans_are_explicit_and_follow_only_their_rows(self):
         rows = [observation('claude', harness='claude'), observation('codex', harness='codex'), observation('codex-pro', harness='codex', quota={'plan_type':'pro', 'windows':[]})]
         payload = report.build_report(rows, {}, redact=False)

@@ -81,6 +81,25 @@ function withLargeRows(html, n = 20000) {
     delete data.prompt_texts; delete data.prompt_context; delete data.prompt_resume;
   });
 }
+function withCloudReferenceRows(html) {
+  return edited(html, data => {
+    const c = data.columns, n = c.n;
+    if (n < 4) throw new Error('cloud-reference fixture needs four rows');
+    const set = (key, values, fill = 0) => { c.tokens[key] = Array.from({length: n}, (_, i) => i < values.length ? values[i] : fill); };
+    set('fresh_input', [10, 272000, 272001, null], 0);
+    set('cache_read', [20, 0, 0, 1], 0);
+    set('cache_write', [30, 0, 0, 1], 0);
+    set('output', [40, 100, 10, 1], 0);
+    if (c.tokens.reasoning) set('reasoning', [500, 99, 7, 2], 0);
+    c.complete = Array.from({length: n}, (_, i) => i < 4 ? (i === 2 ? 0 : 1) : 1);
+    c.id_synthetic = Array.from({length: n}, (_, i) => i === 3 ? 1 : 0);
+    c.dict.provider.push('reference-local-one');c.idx.provider[0]=c.dict.provider.length-1;
+    data.usage = {...(data.usage || {}), local_rows: [0, 1, 2, 3], cloud_references: [{
+      provider: 'openai', model: 'gpt-ref', input: 2, output: 10,
+      long_context: {above_input_tokens: 272000, input: 4, output: 15}, retrieved_on: '2026-09-29'
+    }]};
+  });
+}
 const stockholm = iso => new Intl.DateTimeFormat('en-CA', {timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit'}).format(Date.parse(iso));
 function withLimitHit(html) {
   return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
@@ -552,6 +571,7 @@ async function ready(page, errors, what = 'report') {
       }
       {
         // Mobile (#80): the costliest turns become cards at 390 px (cost and prompt text on screen, no sideways scroll); the desktop table is unchanged.
+        const unknownRef=await newPage({locale:T.locale},edited(withCloudReferenceRows(fixture),d=>{d.usage.local_rows=[3]}));await unknownRef.page.locator('#cloud-reference').selectOption('openai\x1fgpt-ref');const unknownRefText=await unknownRef.page.locator('#usage-body').innerText();assert.match(unknownRefText,/n\/a standardlistpris|n\/a standard list price/,'all-unknown comparison never displays zero');assert.deepEqual(unknownRef.errors,[]);await unknownRef.context.close();
         await p2.setViewportSize({width:390,height:844});
         const m=await p2.evaluate(()=>{const box=document.getElementById('top-prompts'),w=box.querySelector('.table-wrap'),W=window.innerWidth,over=e=>e.scrollWidth<=e.clientWidth+1,fit=e=>e.getBoundingClientRect().right<=W&&over(e);
           return {box:over(box),wrap:over(w),doc:document.documentElement.scrollWidth<=W+1,rows:box.querySelectorAll('tr.prompt-row').length,costs:[...box.querySelectorAll('tr.prompt-row td:last-child')].map(fit),texts:[...box.querySelectorAll('tr.prompt-text td')].map(fit),labels:[...box.querySelectorAll('tr.prompt-row')].every(r=>[...r.children].every(c=>c.dataset.label))}});
@@ -593,6 +613,16 @@ async function ready(page, errors, what = 'report') {
         const hostile=await newPage({locale:T.locale},edited(fixture,d=>{for(const g of d.usage.groups||[]){g.project='<img src=x onerror=alert(1)>';g.branch='<svg>';for(const turn of g.turns)turn.title='<b>hostile</b>'}}));const hostileText=await hostile.page.locator('#work-body').innerText();assert.ok(hostileText.includes('<img src=x onerror=alert(1)>')&&hostileText.includes('<b>hostile</b>'));assert.equal(await hostile.page.locator('#work-body img, #work-body svg, #work-body b').count(),0,'hostile values are textContent only');assert.deepEqual(hostile.errors,[]);await hostile.context.close();
         const plans=await newPage({locale:T.locale},edited(fixture,d=>{d.usage.plans=[{harness:'claude',plan:'max-5x',source:'manual',rows:[0]},{harness:'codex',plan:'pro',source:'snapshot',rows:[1]},{harness:'claude',plan:'unknown',source:'observed',rows:[2]}]}));const planText=await plans.page.locator('#usage-body').innerText();assert.ok(planText.includes('Max 5×')&&planText.includes('Pro')&&planText.includes(T.lang==='sv'?'abonnemang okänt':'plan unknown'),'manual, observed and unknown plans are shown');assert.ok(planText.includes(T.lang==='sv'?'manuellt angivet':'manually configured')&&planText.includes(T.lang==='sv'?'observerat':'observed'),'plan provenance is explained');assert.deepEqual(plans.errors,[]);await plans.context.close();
         const local=await newPage({locale:T.locale},edited(fixture,d=>{d.usage.source_keys=Array(d.columns.n).fill('opencode');d.usage.local_rows=[0]}));const localText=await local.page.locator('#usage-body').innerText();assert.ok(localText.includes('OpenCode')&&/local provider|lokal provider/i.test(localText),'local inference is separate from the observed client');assert.deepEqual(local.errors,[]);await local.context.close();
+        const refs=await newPage({locale:T.locale},withCloudReferenceRows(fixture));
+        const arithmetic=await refs.page.evaluate(()=>UsageReport.referenceCost(UsageReport.all,[0,1,2,3],UsageReport.data.usage.cloud_references[0]));
+        assert.equal(arithmetic.known_rows,3);assert.equal(arithmetic.unknown_rows,1);assert.equal(arithmetic.input_tokens,544061);assert.equal(arithmetic.output_tokens,150);assert.equal(arithmetic.lower_bound,true);assert.ok(Math.abs(arithmetic.cost-1.633674)<1e-12,'cache sum, long threshold and reasoning arithmetic: '+arithmetic.cost);
+        const edgeCosts=await refs.page.evaluate(()=>{const cost=UsageReport.referenceCost,ref={input:2,output:10,long_context:{above_input_tokens:100,input:1,output:5}},row={tokens:{fresh_input:50,cache_read:0,cache_write:0,output:10,reasoning:999},complete:false,id_synthetic:false};return{discountIncomplete:cost([row],[0],ref),missingLong:cost([{...row,complete:true,tokens:{...row.tokens,fresh_input:101}}],[0],{...ref,long_context:{above_input_tokens:100,input:null,output:5}}),zero:cost([{...row,complete:true,tokens:{fresh_input:0,cache_read:0,cache_write:0,output:0}}],[0],ref),missing:cost([{...row,tokens:{...row.tokens,output:null}}],[0],ref),overflow:cost([{...row,complete:true,tokens:{fresh_input:Number.MAX_VALUE,cache_read:Number.MAX_VALUE,cache_write:0,output:10}}],[0],ref)}});
+        assert.equal(edgeCosts.discountIncomplete.cost,null,'incomplete counters cannot claim a bound when a future long tier could lower the rate');assert.equal(edgeCosts.missingLong.cost,null,'missing applicable long price stays unknown');assert.equal(edgeCosts.zero.cost,0,'observed zero differs from unknown');assert.equal(edgeCosts.missing.cost,null);assert.equal(edgeCosts.overflow.cost,null,'non-finite sums never become a dollar amount');
+        const chooser=refs.page.locator('#cloud-reference');assert.equal(await chooser.inputValue(),'','reference comparison has no default');await chooser.selectOption('openai\x1fgpt-ref');
+        const selectedText=await refs.page.locator('#usage-body').innerText();assert.match(selectedText,/1[.,]63/);assert.match(selectedText,/Tokeniz|tokeniz|kvalitet|quality/i);assert.equal(await chooser.inputValue(),'openai\x1fgpt-ref');
+        await refs.page.locator('.advanced summary').click();await refs.page.selectOption('#provider','reference-local-one');assert.equal(await refs.page.evaluate(()=>UsageReport.getSelected().length),1);assert.match(await refs.page.locator('#usage-body').innerText(),/1 (?:prissatta|priced) (?:anrop|calls)/,'subset filter updates comparison coverage');await refs.page.click('#reset');
+        await refs.page.fill('#search','no-cloud-reference-match');assert.equal(await refs.page.locator('#cloud-reference').isVisible(),false,'filtered-out local rows hide comparison');await refs.page.click('#reset');assert.equal(await refs.page.locator('#cloud-reference').inputValue(),'openai\x1fgpt-ref','selection survives filters');await refs.page.click('[data-lang="'+(T.lang==='sv'?'en':'sv')+'"]');assert.equal(await refs.page.locator('#cloud-reference').inputValue(),'openai\x1fgpt-ref','selection survives language switch');assert.deepEqual(refs.errors,[]);await refs.context.close();
+        const unknownRef=await newPage({locale:T.locale},edited(withCloudReferenceRows(fixture),d=>{d.usage.local_rows=[3]}));await unknownRef.page.locator('#cloud-reference').selectOption('openai\x1fgpt-ref');const unknownRefText=await unknownRef.page.locator('#usage-body').innerText();assert.match(unknownRefText,/n\/a standardlistpris|n\/a standard list price/,'all-unknown comparison never displays zero');assert.deepEqual(unknownRef.errors,[]);await unknownRef.context.close();
         await p2.setViewportSize({width:390,height:844});assert.ok(await p2.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'feature cards do not overflow on mobile');await p2.setViewportSize({width:1440,height:1080});
       }
       assert.deepEqual(errors2,[]);await c2.close();
@@ -620,12 +650,14 @@ async function ready(page, errors, what = 'report') {
     // is configured, like the rest of this file).
     {
       const started=Date.now();
-      const large=await newPage({locale:'en-US'},withLargeRows(smoke,20000));
+      const large=await newPage({locale:'en-US'},edited(withLargeRows(smoke,20000),d=>{d.usage.local_rows=Array.from({length:20000},(_,i)=>i);d.usage.cloud_references=[{provider:'openai',model:'reference',input:2,output:10,long_context:null,retrieved_on:'2026-09-29'}]}));
+      await large.page.locator('#cloud-reference').selectOption('openai\x1freference');
       const elapsed=Date.now()-started;
       const state=await large.page.evaluate(()=>({n:UsageReport.all.length,selected:UsageReport.getSelected().length,usage:document.getElementById('usage')?.innerText||'',work:document.getElementById('work')?.innerText||'',workVisible:!document.getElementById('work').classList.contains('hidden')}));
       assert.equal(state.n,20000,'large payload keeps all rows');
       assert.equal(state.selected,20000,'large payload selects all rows');
       assert.ok(state.usage&&state.work&&state.workVisible,'feature cards render for the large payload');
+      assert.ok(state.usage.includes('Hypothetical cloud list price')&&state.usage.includes('20,000 priced calls'),'all local rows are compared at scale');
       assert.ok(elapsed<30000,'20k-row aggregation completes within 30s: '+elapsed+'ms');
       assert.deepEqual(large.errors,[]);await large.context.close();
     }

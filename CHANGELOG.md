@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-10-08
+
+### Added
+
+- Local inference in the offline report can be compared with a cloud model chosen by the reader. The hypothetical USD list price uses the same recorded input/output counts, standard rates, no cloud cache reuse, and each model's long-context threshold. The comparison follows filters and shows coverage, price date and unknown local operating cost; it does not claim equivalent quality or actual savings.
+
+### Fixed
+
+- Local usage recognizes providers from the active price table, including `m5` and `inference-gille`, as well as the known and manually configured local providers.
+
 ## [1.18.0] - 2026-10-08
 
 ### Added

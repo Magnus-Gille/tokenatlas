@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tokenatlas.pricing import load_prices, price_observation, price_vector, summarize_costs, unit_prices
+from tokenatlas.pricing import (load_prices, price_observation, price_vector, reference_rate_card,
+                                summarize_costs, unit_prices)
 
 REF = {'source_url': 'https://example.test/prices', 'retrieved_on': '2026-09-01', 'notes': ''}
 CLAUDE = dict(provider='anthropic', model='claude-x', aliases=['claude-x-alias'], currency='USD', input=4.0,
@@ -306,6 +307,31 @@ class LoadPricesTests(unittest.TestCase):
             self.load(bad)
         with self.assertRaises(ValueError):
             self.load(dict(TABLE, schema=2))
+
+
+class CloudReferenceTests(unittest.TestCase):
+    def test_rate_card_is_compact_public_usd_standard_pricing_metadata(self):
+        table = copy.deepcopy(TABLE)
+        table['retrieved_on'] = 'not-a-date'
+        table['models'][0]['retrieved_on'] = '2026-09-15'
+        table['models'].append(dict(provider='m5', model='local-model', currency='USD', input=1.0,
+                                    output=1.0, free=False, long_context=None))
+        table['models'].append(dict(provider='openai', model='bad-long', currency='USD', input=1.0,
+                                    output=1.0, free=False, long_context=dict(above_input_tokens='bad', input=2.0, output=None)))
+        cards = reference_rate_card(table)
+        self.assertEqual({(x['provider'], x['model']) for x in cards},
+                         {('anthropic', 'claude-x'), ('anthropic', 'claude-long'), ('anthropic', 'claude-nofast'),
+                          ('openai', 'gpt-x'), ('openai', 'gpt-write'), ('openai', 'bad-long')})
+        self.assertTrue(all(set(x) == {'provider', 'model', 'input', 'output', 'long_context', 'retrieved_on'} for x in cards))
+        self.assertTrue(all('source_url' not in x for x in cards))
+        self.assertEqual(next(x for x in cards if x['model'] == 'claude-x')['retrieved_on'], '2026-09-15')
+        self.assertTrue(all(x['retrieved_on'] == '2026-09-01' for x in cards if x['model'] not in ('claude-x', 'bad-long')))
+        self.assertIsNone(next(x for x in cards if x['model'] == 'bad-long')['retrieved_on'])
+        self.assertEqual(next(x for x in cards if x['model'] == 'gpt-x')['long_context'],
+                         {'above_input_tokens': 272000, 'input': 4.0, 'output': 15.0})
+        self.assertEqual(next(x for x in cards if x['model'] == 'bad-long')['long_context'],
+                         {'above_input_tokens': None, 'input': 2.0, 'output': None})
+
 
 
 if __name__ == '__main__':

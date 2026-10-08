@@ -321,6 +321,12 @@ a foreign owner, group/other access or extra links are refused with a warning, a
 with a fresh 0600 one (never following a symlink). `--forget-text` unlinks the file itself and warns if other hard links still
 hold the text. On Windows these owner and mode checks are unavailable: the file relies on the user profile's ACLs.
 
+## Local inference and cloud comparison
+
+The report counts local usage separately. Choose a cloud reference model in the local-inference card to estimate the list price of the **same recorded token counts** on that model. No reference is selected automatically, no model is called, and the comparison follows the report filters.
+
+This is a standard-price scenario without cloud cache reuse: fresh input, cache reads and cache writes all count as ordinary input; reasoning is already included in output. Long-context rates apply per request. The card shows the reference's price date and how many requests could be priced. Missing counts remain unknown; partial coverage is marked as a lower bound. Electricity and hardware cost are unknown, so the comparison is neither a savings calculation nor a claim that the models produce equivalent quality or use the same tokenizer.
+
 ## Cost facts
 
 `tokenatlas insights [--days N | --start ISO --end ISO] [--json] [--prices FILE]` prints deterministic, rule-based facts about list-price cost. There is no language model and no interpretation: each fact is a number computed from the saved observations and the selected price table (the packaged one unless `--prices` is given; its `retrieved_on` date is shown), with the computation and the assumptions printed next to it. A fact that has no data, or cannot be computed reliably, is omitted. Without a window the whole history is used; `--json` prints the same facts as data. The output is aggregate only: no project names, sessions, paths or prompt text. The report has the same facts in a "Kostnadsfakta" / "Cost facts" card for the last 30 days and for all history; they are computed when the report is built (the report is rebuilt when the UTC day changes) and do not follow the page filters. In a shared report model names go through the same redaction as the rest of the report.
