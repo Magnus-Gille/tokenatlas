@@ -76,7 +76,8 @@ function withLargeRows(html, n = 20000) {
     c.ts = repeat(times, 0).map(value => { const delta = value - previous; previous = value; return delta; });
     for (const key of ['id', 'prompt', 'price', 'credit', 'cw1h', 'complete', 'interrupted', 'id_synthetic']) c[key] = repeat(c[key] || [], null);
     c.n = n;
-    data.usage = {source_keys: Array(n).fill('claude_cli'), local_rows: [], plans: [], groups: []};
+    const indexes=Array.from({length:n},(_,i)=>i);
+    data.usage = {source_keys: Array(n).fill('claude_cli'), local_rows: [], plans: [], groups: [{project:'benchmark',repository:null,branch:null,rows:indexes,turns:Array.from({length:Math.ceil(n/8)},(_,i)=>({title:null,prompt:null,rows:indexes.slice(i*8,i*8+8)}))}]};
     delete data.prompt_texts; delete data.prompt_context; delete data.prompt_resume;
   });
 }
@@ -621,10 +622,10 @@ async function ready(page, errors, what = 'report') {
       const started=Date.now();
       const large=await newPage({locale:'en-US'},withLargeRows(smoke,20000));
       const elapsed=Date.now()-started;
-      const state=await large.page.evaluate(()=>({n:UsageReport.all.length,selected:UsageReport.getSelected().length,usage:document.getElementById('usage')?.innerText||'',work:document.getElementById('work')?.innerText||''}));
+      const state=await large.page.evaluate(()=>({n:UsageReport.all.length,selected:UsageReport.getSelected().length,usage:document.getElementById('usage')?.innerText||'',work:document.getElementById('work')?.innerText||'',workVisible:!document.getElementById('work').classList.contains('hidden')}));
       assert.equal(state.n,20000,'large payload keeps all rows');
       assert.equal(state.selected,20000,'large payload selects all rows');
-      assert.ok(state.usage&&state.work,'feature cards render for the large payload');
+      assert.ok(state.usage&&state.work&&state.workVisible,'feature cards render for the large payload');
       assert.ok(elapsed<30000,'20k-row aggregation completes within 30s: '+elapsed+'ms');
       assert.deepEqual(large.errors,[]);await large.context.close();
     }

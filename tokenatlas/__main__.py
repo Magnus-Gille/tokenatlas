@@ -558,7 +558,8 @@ def _main(argv=None):
                         history.connection.execute('BEGIN')
                         cache={}
                         def automatic(keep):
-                            if 'records' not in cache:cache['records']=history.records()
+                            if 'records' not in cache:
+                                with progress.step('Read history'):cache['records']=history.records()
                             if 'table' not in cache:cache['table']=pricing.load_prices()
                             records,table=cache['records'],cache['table']
                             if 'assigned' not in cache:cache['assigned']=prompts.assign_prompts(records)
