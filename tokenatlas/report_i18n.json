@@ -470,10 +470,10 @@
 "to_top": "Till toppen",
 "usage_e": "I den här perioden",
 "usage_title": "Använt i den här perioden",
-"usage_p": "Samtal och kostnadsandelar följer filtren ovan. Kostnad är känd listprisbaserad kostnad.",
+"usage_p": "Anrop och kostnadsandelar följer filtren ovan. Kostnad är känd listprisbaserad kostnad.",
 "usage_client": "Klient",
-"usage_calls": "Samtal",
-"usage_call_share": "Andel samtal",
+"usage_calls": "Anrop",
+"usage_call_share": "Andel anrop",
 "usage_cost": "Kostnad",
 "usage_cost_share": "Kostnadsandel",
 "usage_client_claude_cli": "Claude CLI",
@@ -488,7 +488,7 @@
 "usage_client_opencode": "OpenCode",
 "usage_client_local": "Lokal provider",
 "usage_client_unknown": "Okänd klient",
-"usage_local_note": "Lokal inferens (utan listpris): {n} samtal använde en lokal provider.",
+"usage_local_note": "Lokal inferens (utan listpris): {n} anrop använde en lokal provider.",
 "usage_claude_plan": "Manuellt Claude-abonnemang",
 "usage_codex_plan": "Observerad Codex-plan",
 "usage_plan_rows": "{n} rader, {source}",
@@ -503,9 +503,9 @@
 "work_p": "Kostnad, turer och de dyraste turerna per projekt, repository och branch.",
 "work_unknown": "Okänd plats",
 "work_unknown_places": "{projects} turer utan känt projekt · {branches} turer utan känd branch",
-"work_counts": "{turns} turer · {calls} samtal · {cost} · {share}",
+"work_counts": "{turns} turer · {calls} anrop · {cost} · {share}",
 "work_no_cost": "kostnad okänd"
-,"work_unknown_turns": "{n} samtal saknar lagrad turn-koppling"
+,"work_unknown_turns": "{n} anrop saknar lagrad turn-koppling"
 },
 "en": {
 "title": "TokenAtlas · Local token usage",
