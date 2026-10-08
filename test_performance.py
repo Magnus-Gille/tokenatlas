@@ -8,6 +8,29 @@ from tokenatlas import pricing, prompt_store
 
 
 class PerformanceCacheTest(unittest.TestCase):
+    def test_collect_benchmark_isolates_import_time_cowork_root(self):
+        import os
+        from contextlib import closing
+        import sqlite3
+        import subprocess
+        import sys
+        from test_history import write_claude
+        with tempfile.TemporaryDirectory() as directory:
+            outer = Path(directory) / 'outer-home'
+            source = outer / 'Library/Application Support/Claude/local-agent-mode-sessions/o/a/local_1/.claude/projects/p/s.jsonl'
+            write_claude(source, 'must-not-import')
+            db = Path(directory) / 'fixture/history.sqlite3'
+            env = {**os.environ, 'HOME':str(outer), 'USERPROFILE':str(outer)}
+            result = subprocess.run([sys.executable, str(Path(__file__).parent/'scripts/benchmark_collect_fixture.py'),
+                                     '--observations','7','--measure-collect',str(db)],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            timings = json.loads(result.stdout.splitlines()[-1])
+            self.assertTrue(timings['unchanged_collect']['report_unchanged'])
+            self.assertTrue(timings['unchanged_collect']['top_skipped'])
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(conn.execute('SELECT count(*) FROM observations').fetchone()[0], 7)
+
     def test_precomputed_assignments_survive_report_sorting(self):
         from datetime import datetime, timezone
         from tokenatlas import report, prompts

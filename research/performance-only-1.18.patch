@@ -1,0 +1,624 @@
+diff --git a/tokenatlas/__main__.py b/tokenatlas/__main__.py
+index 1763b9e..71010f6 100644
+--- a/tokenatlas/__main__.py
++++ b/tokenatlas/__main__.py
+@@ -1,5 +1,6 @@
+ """python -m tokenatlas: local refresh, report, and doctor."""
+ import argparse
++import hashlib
+ import json
+ import os
+ import sqlite3
+@@ -203,18 +204,53 @@ def default_db():
+     return new/'history.sqlite3'
+ 
+ 
+-def _visible(history,db,records=None):
++def _visible(history,db,records=None,ranked=None,assigned=None,table=None,ranked_choice=None):
+     """(texts, contexts) a private report may embed (the current global top k); the history is read only when a store exists."""
+     from tokenatlas import pricing, prompt_store
+     store=prompt_store.store_path(db)
+     if not os.path.lexists(store):return {},{}
+-    return prompt_store.visible_all(store,history.records() if records is None else records,pricing.load_prices())
++    return prompt_store.visible_all(store,history.records() if records is None else records,table or pricing.load_prices(),ranked=ranked,assigned=assigned,ranked_choice=ranked_choice)
+ 
+ 
+-def _hits(history,records,events=None):
++def _store_token(db):
++    from tokenatlas import prompt_store
++    return prompt_store.store_token(prompt_store.store_path(db))
++
++
++def _budget_token(db):
++    from tokenatlas import budget
++    path = budget.path_for(db)
++    try:
++        raw = path.read_bytes()
++    except OSError:
++        return None
++    return hashlib.sha256(raw).hexdigest()[:32]
++
++
++def _select_records(records, start=None, end=None, harness=None, project=None, session=None, turn=None, **filters):
++    """Apply History.records' selection semantics to an already loaded history."""
++    session_harness, raw_session = None, session
++    if isinstance(session, str):
++        prefix, separator, candidate = session.partition(':')
++        if separator and prefix in ('claude', 'codex', 'pi', 'opencode'):
++            session_harness, raw_session = prefix, candidate
++    if harness is not None and session_harness is not None and harness != session_harness:
++        return []
++    harness = harness or session_harness
++    return [r for r in records
++            if (start is None or datetime.fromisoformat(r['ts']) >= start)
++            and (end is None or datetime.fromisoformat(r['ts']) < end)
++            and (harness is None or r['harness'] == harness)
++            and (project is None or r.get('project_id') == project)
++            and (raw_session is None or r.get('session') == raw_session)
++            and (turn is None or r.get('turn_id') == turn)
++            and all(value is None or r.get(key) == value for key, value in filters.items())]
++
++
++def _hits(history,records,events=None,assigned=None):
+     """Limit hits over the whole history's records (a report's filters never shrink the window a hit is explained from)."""
+     from tokenatlas import limits, pricing
+-    return limits.limit_hits(records,history.limit_events() if events is None else events,pricing.load_prices())  # no shortcut: a full window with no reached type is a hit too
++    return limits.limit_hits(records,history.limit_events() if events is None else events,pricing.load_prices(),assigned=assigned)  # no shortcut: a full window with no reached type is a hit too
+ 
+ 
+ def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=None):
+@@ -464,7 +500,24 @@ def _main(argv=None):
+                 if args.quota=='show' and args.db.expanduser().is_file():
+                     with History(args.db) as history:  # the automatic budgets are computed from the history (#116)
+                         history.connection.execute('BEGIN')
+-                        return budget.run(args,args.db,None,pricing.load_prices,_printing(done),lambda keep:_auto_budgets(history,args.db,pricing.load_prices(),keep=keep),lambda auto,manual:_over_cap(history,args.db,auto,manual)) or 0
++                        cache={}
++                        def automatic(keep):
++                            if 'records' not in cache:
++                                with progress.step('Read history'):cache['records']=history.records()
++                            if 'table' not in cache:cache['table']=pricing.load_prices()
++                            records,table=cache['records'],cache['table']
++                            if 'assigned' not in cache:cache['assigned']=prompts.assign_prompts(records)
++                            assigned=cache['assigned']
++                            if 'hits' not in cache:cache['hits']=_hits(history,records,assigned=assigned)
++                            if 'snapshots' not in cache:cache['snapshots']=quota_share.snapshots_from_records(records,assigned=assigned,claude=_claude_quota(args.db))
++                            hits,snapshots=cache['hits'],cache['snapshots']
++                            return budget.auto_budgets(records,hits,snapshots,table,keep)
++                        def over_cap(auto,manual):
++                            records=cache['records'];table=cache['table'];assigned=cache['assigned']
++                            memo={};cost_of=insights.memo_cost(table,memo)
++                            shares=quota_share.compute(records,table,cost_of=cost_of,assigned=assigned,claude=_claude_quota(args.db))[1]
++                            return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate','range')})
++                        return budget.run(args,args.db,None,lambda:cache['table'] if 'table' in cache else pricing.load_prices(),_printing(done),automatic,over_cap) or 0
+                 return budget.run(args,args.db,None,pricing.load_prices,_printing(done)) or 0
+             if not args.db.expanduser().is_file():raise ValueError('history database does not exist; run refresh first')
+             with History(args.db) as history:
+@@ -515,17 +568,22 @@ def _main(argv=None):
+                 with progress.step('Check saved report'):
+                     source_status=history.doctor()
+                     spec=_spec('redacted' if args.shared else 'local',DEFAULT_TIMEZONE,'day',{},args.lang)
+-                    budgets=_budgets(args.db,pricing.load_prices(),history.records)
+-                    if budgets:spec['budgets']=budgets  # a new calibration is a changed report
++                    budget_token=_budget_token(args.db)
++                    if budget_token:spec['budget_token']=budget_token
+                     if not args.shared:spec['dest']=str(path.absolute())  # a private report names its file: a moved copy is rebuilt, never reused
+-                    texts,ctx=(None,None) if args.shared else _visible(history,args.db)  # shared reports never read the side file
+-                    state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,prompt_store.texts_hash(texts,ctx),datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
++                    store_token=None if args.shared else _store_token(args.db)
++                    state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,store_token,datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
+                 if path.exists() and read_report_state(path)==state:
+                     result={'html':str(path.resolve()),'skipped':True,'reason':'unchanged'}
+                 else:
+-                    with progress.step('Read history'):records=history.records();events=history.limit_events()
+-                    with progress.step('Limit hits'):hits_all=_hits(history,records,events)  # one read of the limit events serves the hits and the quota windows
+-                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets)
++                    with progress.step('Read history'):
++                        records=history.records();events=history.limit_events()
++                    assigned=prompts.assign_prompts(records)
++                    table=pricing.load_prices()
++                    texts,ctx=_visible(history,args.db,records,assigned=assigned,table=table) if not args.shared else (None,None)
++                    budgets=_budgets(args.db,table,lambda:records)
++                    with progress.step('Limit hits'):hits_all=_hits(history,records,events,assigned)  # one read of the limit events serves the hits and the quota windows
++                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned)
+                     payload['initial_granularity']='day'
+                     if not args.shared:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db,always=True))  # private only: a shared report never carries a local path
+                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
+@@ -548,7 +606,7 @@ def _main(argv=None):
+                         result=_with_problems(results[0] if len(results)==1 else aggregate(results),problems);shown.failed=result['status']!='ok'
+                 with progress.step('Update statusline cache'):statusline.refresh_cache(history)
+             elif args.command=='top':
+-                from tokenatlas import budget
++                from tokenatlas import budget, insights
+                 history.connection.execute('BEGIN')
+                 store=prompt_store.store_path(args.db)
+                 if args.forget_text:
+@@ -557,22 +615,27 @@ def _main(argv=None):
+                     print(json.dumps({'forgotten':str(store)}));return 0
+                 table=pricing.load_prices(args.prices)
+                 with progress.step('Read history'):everything=history.records()  # rank over the whole history; the filters only choose which rows contribute
+-                kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths()) if args.keep_text else None
++                assigned=prompts.assign_prompts(everything)
+                 filtered=any(x is not None for x in (start,end,args.harness,args.project))
+-                keep={prompts.ident(r) for r in history.records(start,end,args.harness,args.project)} if filtered else None
+-                with progress.step('Rank turns'):result=prompts.top_prompts(everything,table,args.limit,args.by,keep)
+-                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table)  # windows come from the whole history; the CLI filters then pick the hits
++                selected=_select_records(everything,start,end,args.harness,args.project) if filtered else everything
++                keep={prompts.ident(r) for r in selected} if filtered else None
++                with progress.step('Rank turns'):
++                    global_ranked=prompts.top_prompts(everything,table,args.limit,args.by,assigned=assigned)
++                    result=global_ranked if not filtered else prompts.top_prompts(everything,table,args.limit,args.by,keep,assigned=assigned)
++                kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths(),ranked=global_ranked,assigned=assigned,revision=history.revision,history_token=history.revision_token,prices=budget.table_id(table)) if args.keep_text else None
++                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table,assigned=assigned)  # windows come from the whole history; the CLI filters then pick the hits
+                 all_hits=hits
+-                if filtered:hits=limits.scope_hits(hits,history.records(start,end,args.harness,args.project),args.harness,start,end,args.project,universe=everything)
++                if filtered:hits=limits.scope_hits(hits,selected,args.harness,start,end,args.project,universe=everything,assigned=assigned)
+                 limits.mark_turns(result['prompts'],hits)
+-                with progress.step('Quota shares'):snaps,shares=quota_share.compute(everything,table,only={(p['harness'],p['session'],p['turn_id']) for p in result['prompts']},claude=_claude_quota(args.db))
++                memo={};cost_of=insights.memo_cost(table,memo)
++                with progress.step('Quota shares'):snaps,shares=quota_share.compute(everything,table,cost_of=cost_of,only={(p['harness'],p['session'],p['turn_id']) for p in result['prompts']},claude=_claude_quota(args.db),assigned=assigned)
+                 quota_share.mark_turns(result['prompts'],shares)
+                 derived=budget.load_derived(budget.path_for(args.db),table=table,records_fn=lambda:everything)
+                 if any((p.get('quota_share') or {}).get('label') not in ('observed','estimate','range') for p in result['prompts']):  # automatic budgets only matter for a turn without its own share (#116)
+                     derived=budget.combine(derived,_auto_budgets(history,args.db,table,everything,all_hits,snaps or None)[0])
+                 if derived:  # only where there is no observed or estimated share; the turn's whole identified cost, whatever the filters keep
+-                    memo={};budget.mark_turns(result['prompts'],derived,budget.turn_costs(everything,prompts.assign_prompts(everything),insights.memo_cost(table,memo),table))
+-                texts,ctx=prompt_store.visible_all(store,everything,table)  # only the global top k: never text or context outside it
++                    budget.mark_turns(result['prompts'],derived,budget.turn_costs(everything,assigned,cost_of,table))
++                texts,ctx=prompt_store.visible_all(store,everything,table,ranked=global_ranked,ranked_choice=(args.limit,args.by))  # only the global top k: never text or context outside it
+                 if kept:result['text_store']=kept
+                 done()
+                 if not args.json:
+@@ -586,8 +649,9 @@ def _main(argv=None):
+                 history.connection.execute('BEGIN')
+                 table=pricing.load_prices(args.prices);memo={}
+                 with progress.step('Read history'):everything=history.records()
+-                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table)
+-                with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
++                assigned=prompts.assign_prompts(everything)
++                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table,assigned=assigned)
++                with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,assigned=assigned,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
+                 with progress.step('Cost facts'):result=insights.cost_facts(everything,table,start,end,hits=hits,quota=shares,memo=memo)
+                 done()
+                 if not args.json:
+@@ -610,11 +674,11 @@ def _main(argv=None):
+                     with progress.step('Check saved report'):
+                         path=_output_path(args.html,args.db)
+                         spec=_spec('local' if args.private else 'redacted',args.timezone,args.granularity,vars(args),args.lang)
+-                        budgets=_budgets(args.db,pricing.load_prices(),history.records)
+-                        if budgets:spec['budgets']=budgets
++                        budget_token=_budget_token(args.db)
++                        if budget_token:spec['budget_token']=budget_token
+                         if args.private:spec['dest']=str(path.absolute())  # as in open: a private report names its file
+-                        texts,ctx=_visible(history,args.db) if args.private else (None,None)
+-                        state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,prompt_store.texts_hash(texts,ctx),datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
++                        store_token=None if not args.private else _store_token(args.db)
++                        state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,store_token,datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
+                     if path.exists() and (args.if_changed or max_age is not None):
+                         found=read_report_state(path)
+                         age=time.time()-path.stat().st_mtime
+@@ -627,9 +691,14 @@ def _main(argv=None):
+                             print(f'Report: {path.absolute()} (unchanged)',file=sys.stderr)
+                             return 0
+                 with progress.step('Read history'):
+-                    records=history.records(start,end,args.harness,args.project,args.session,args.turn)
+-                    records=[row for row in records if all(getattr(args,key) is None or row[key]==getattr(args,key)
+-                        for key in ('model','effort','provider','agent'))]
++                    filters={key:getattr(args,key) for key in ('model','effort','provider','agent')}
++                    if args.html:
++                        universe=history.records()
++                        records=_select_records(universe,start,end,args.harness,args.project,args.session,args.turn,**filters)
++                    else:
++                        records=history.records(start,end,args.harness,args.project,args.session,args.turn)
++                        records=[row for row in records if all(value is None or row.get(key) == value for key,value in filters.items())]
++                        universe=records
+                 # The HTML path prints only a short receipt, so skip the (costly) JSON summary there.
+                 if args.html:result={}
+                 else:
+@@ -639,12 +708,14 @@ def _main(argv=None):
+                 if args.records:result['records']=records
+                 if args.html:
+                     filtered=any(getattr(args,key) is not None for key in ('start','end','harness','project','session','turn','model','effort','provider','agent'))
+-                    universe=records  # the whole history: hits and their turns are computed over it
+-                    if filtered:
+-                        with progress.step('Read whole history'):universe=history.records()
+-                    texts,ctx=_visible(history,args.db,universe) if args.private else (None,None)
+-                    with progress.step('Limit hits'):events=history.limit_events();hits_all=_hits(history,universe,events)
+-                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe),universe=universe if filtered else None,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets)
++                    assigned=prompts.assign_prompts(records)
++                    whole_assigned=prompts.assign_prompts(universe) if filtered else assigned
++                    table=pricing.load_prices()
++                    texts,ctx=_visible(history,args.db,universe,assigned=whole_assigned,table=table) if args.private else (None,None)
++                    budgets=_budgets(args.db,table,lambda:universe)
++                    with progress.step('Limit hits'):events=history.limit_events();hits_all=_hits(history,universe,events,whole_assigned)
++                    scoped=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe,assigned=whole_assigned)
++                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned)
+                     payload['initial_granularity']=args.granularity
+                     if args.private:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db))  # private only: a shared report never carries a local path
+                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
+diff --git a/tokenatlas/collect.py b/tokenatlas/collect.py
+index 5537680..75799a0 100644
+--- a/tokenatlas/collect.py
++++ b/tokenatlas/collect.py
+@@ -66,6 +66,11 @@ def _kept_choice(db):
+     return ['-n',str(k),'--by',by] if prompt_store.valid_choice(k,by) else None
+ 
+ 
++def _top_up_to_date(db, revision, history_token=None, machine=None, prices=None):
++    from tokenatlas import prompt_store
++    return prompt_store.up_to_date(prompt_store.store_path(db), revision, history_token, machine, prices)
++
++
+ def _hosts(args,state):
+     if args.remote:return ' '.join(args.remote)
+     if os.environ.get('REMOTE_HOSTS_OVERRIDE','').strip():return os.environ['REMOTE_HOSTS_OVERRIDE'].strip()
+@@ -156,7 +161,15 @@ def _run(args):
+         if prompt_store.store_path(db).exists():
+             choice=_kept_choice(db)
+             if choice is None:log(f'top: skipped: {prompt_store.store_path(db)} has no valid recorded k/by; choose one with tokenatlas top --keep-text -n N (or --forget-text)');failed=True
+-            else:failed|=_step('top',lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice))!=0
++            else:
++                with History(db) as history:
++                    current_revision, history_token, machine = history.revision, history.revision_token, history.machine
++                from tokenatlas import budget, pricing
++                prices = budget.table_id(pricing.load_prices())
++                if _top_up_to_date(db, current_revision, history_token, machine, prices):
++                    log('top: skipped: history revision and stored choice are unchanged')
++                else:
++                    failed|=_step('top',lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice))!=0
+         if not args.no_report:failed|=_step('report',report())!=0
+         hosts=_hosts(args,state)
+         if hosts:
+diff --git a/tokenatlas/history.py b/tokenatlas/history.py
+index 124e0e2..8687158 100644
+--- a/tokenatlas/history.py
++++ b/tokenatlas/history.py
+@@ -817,7 +817,37 @@ class History:
+             raise
+ 
+     def limit_events(self, start=None, end=None):
+-        return [r for r in self.records(start, end, include_limit_events=True) if is_limit_event(r)]
++        """Return quota-only limit events without decoding ordinary observations.
++
++        The token columns are typed in SQLite, so this candidate query is
++        deliberately conservative: a row is considered only when every
++        persisted token counter is zero or NULL and a quota reference exists.
++        ``is_limit_event`` remains the final authority after decoding the
++        candidate rows; this keeps malformed or non-event quota payloads out
++        without relying on SQLite JSON extensions.
++        """
++        c = self.connection
++        where, params = ['o.quota IS NOT NULL'], []
++        where.extend(f'(o.{field} IS NULL OR o.{field}=0)' for field in ALL_FIELDS)
++        if start is not None:
++            where.append('o.ts_us>=?'); params.append((start - _EPOCH) // _MICRO)
++        if end is not None:
++            where.append('o.ts_us<?'); params.append((end - _EPOCH) // _MICRO)
++        clause = 'WHERE ' + ' AND '.join(where)
++        paths = {}
++        for observation, path in c.execute(
++                'SELECT s.observation,f.path FROM sources s JOIN files f ON f.id=s.file '
++                f'JOIN observations o ON o.id=s.observation {clause}', params):
++            paths.setdefault(observation, []).append(path)
++        strings = {r[0]: r[1] for r in c.execute('SELECT id,value FROM strings')}
++        result = []
++        for row in c.execute(f'SELECT o.id,{",".join("o." + n for n in COLUMNS)} FROM observations o {clause}', params):
++            item = _decode(tuple(strings[v] if i in _REF_INDEX and v is not None else v
++                                 for i, v in enumerate(row[1:])))
++            item['sources'] = sorted(paths.get(row[0], ()))
++            if is_limit_event(item):
++                result.append(item)
++        return sorted(result, key=lambda x: (x['ts'], x['provider'], x['id']))
+ 
+     def records(self, start=None, end=None, harness=None, project=None, session=None, turn=None, include_limit_events=False):
+         session_harness = None
+diff --git a/tokenatlas/limits.py b/tokenatlas/limits.py
+index 5207130..77046ed 100644
+--- a/tokenatlas/limits.py
++++ b/tokenatlas/limits.py
+@@ -76,11 +76,12 @@ def label(minutes, reached=None):
+     return 'five_hour' if minutes == 300 else 'weekly' if minutes == 10080 else (reached or None)
+ 
+ 
+-def limit_hits(records, events, table):
++def limit_hits(records, events, table, assigned=None):
+     """Hits, oldest first: {harness, at, reached, window_minutes, resets_at, retries, turn, window}. `turn` is (harness, session, turn_id) of
+     the request running at the hit, or None. `window` (None when the window length is unknown) is {start, end, requests, priced_requests,
+     unpriced_requests, cost, top: [{turn, requests, cost, share}]}: the same provider's list-price cost in [resets_at - minutes, at] and
+     the three costliest turns in it as a share of that cost (unattributed requests count in the cost, not in the ranking)."""
++    assignment_records = records
+     records, events = sorted(records, key=lambda r: r['ts']), sorted(events, key=lambda r: r['ts'])
+     found = []
+     claude, recent = {}, {}  # by reset time; and, for events without one, the latest hit per (harness, type) with its last event time
+@@ -225,7 +226,8 @@ def limit_hits(records, events, table):
+         return []  # the usual case: skip the turn assignment over the whole history
+     found.sort(key=lambda h: h['at'])
+     # One assignment, over usage only (as top_prompts and the report do); a rejection carries its own turn and never feeds the assignment.
+-    assigned = {id(r): a for r, a in zip(records, prompts.assign_prompts(records))}
++    assigned = ({id(r): a for r, a in zip(records, prompts.assign_prompts(records))} if assigned is None
++                else {id(r): a for r, a in zip(assignment_records, assigned)})
+     threads = {}  # subagent thread -> [(time, assigned turn)] of its usage, for a rejection in a subagent file (it carries no usable turn of its own)
+     for r in records:
+         if r['thread_kind'] == 'subagent' and assigned[id(r)]:
+@@ -323,7 +325,7 @@ def badge(hit):
+     return {'five_hour': 'Hit the 5-hour limit', 'weekly': 'Hit the weekly limit'}.get(name) or (f'Hit a limit ({name})' if name and name != 'window_full' else 'Hit a limit')
+ 
+ 
+-def scope_hits(hits, records, harness=None, start=None, end=None, project=None, session=None, turn=None, model=None, effort=None, provider=None, agent=None, universe=None):
++def scope_hits(hits, records, harness=None, start=None, end=None, project=None, session=None, turn=None, model=None, effort=None, provider=None, agent=None, universe=None, assigned=None):
+     """Hits that belong to a filtered report: the hit's harness and time must match the harness and start/end filters. With a project, session,
+     turn, model, effort, provider or agent filter a hit is kept when its turn is among the filtered `records`' turns or when the hit's own row
+     (a rejection has no usage record) matches every given filter; `universe` is the whole history's usage, the basis of the hits' turns. The hits themselves are computed over the whole history first."""
+@@ -343,7 +345,7 @@ def scope_hits(hits, records, harness=None, start=None, end=None, project=None,
+     if given:
+         # Hits carry rolled-up turn identities, so map the filtered records through the same whole-history assignment.
+         everything = universe if universe is not None else records
+-        found = {prompts.ident(r): a for r, a in zip(everything, prompts.assign_prompts(everything))}
++        found = {prompts.ident(r): a for r, a in zip(everything, prompts.assign_prompts(everything) if assigned is None else assigned)}
+         turns = {tuple(found[prompts.ident(r)][:3]) if found.get(prompts.ident(r)) else (r['harness'], r['session'], r.get('turn_id')) for r in records}
+     out = []
+     for hit in hits:
+diff --git a/tokenatlas/prompt_store.py b/tokenatlas/prompt_store.py
+index d9d4f30..1962825 100644
+--- a/tokenatlas/prompt_store.py
++++ b/tokenatlas/prompt_store.py
+@@ -9,9 +9,10 @@ import tempfile
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
+-from tokenatlas import prompt_text, prompts, provenance, turn_context
++from tokenatlas import __version__, prompt_text, prompts, provenance, turn_context
+ 
+ FILE = 'top-prompts.json'
++SELECTION_VERSION = 1
+ 
+ 
+ def store_path(db_path):
+@@ -107,6 +108,60 @@ def load_meta(path):
+         _warn(f'ignoring corrupt {path} ({exc})');return {},None,None
+ 
+ 
++def store_token(path):
++    """A cheap, content-sensitive identity for the side store.
++
++    Report cache checks use this before loading history.  Unsafe and malformed files
++    still get a distinct token, while their contents are never trusted for capture.
++    """
++    raw, bad = _read(path)
++    if bad:
++        return hashlib.sha256(f'unsafe:{bad}'.encode()).hexdigest()[:32]
++    if raw is None:
++        return None
++    return hashlib.sha256(raw).hexdigest()[:32]
++
++
++def _state(path):
++    """The trusted cache identity written by ``update``, or ``None`` for old/invalid stores."""
++    raw, bad = _read(path)
++    if bad or raw is None:
++        return None
++    try:
++        value = json.loads(raw)
++    except (ValueError, TypeError, AttributeError):
++        return None
++    if not isinstance(value, dict):return None
++    return {key:value.get(key) for key in ('history_revision','history_token','machine','prices','selection_version','app_version')}
++
++
++def _selection_token(entries, k, by):
++    values = entries.values() if isinstance(entries, dict) else entries
++    entries = sorted(values, key=lambda entry: (entry.get('harness'), entry.get('session'), entry.get('turn_id')))
++    body = json.dumps({'k': k, 'by': by, 'entries': entries}, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
++    return hashlib.sha256(body.encode()).hexdigest()[:32]
++
++
++def load_revision(path):
++    """The history revision recorded by ``update``, or ``None`` for old/invalid stores."""
++    state = _state(path)
++    value = state and state.get('history_revision')
++    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
++
++
++def up_to_date(path, revision, history_token=None, machine=None, prices=None):
++    """Whether a valid store records this history identity and still has its choice."""
++    entries, k, by = load_meta(path)
++    state = _state(path)
++    if not (bool(entries or Path(path).is_file()) and valid_choice(k, by) and state and state.get('history_revision') == revision):
++        return False
++    raw, _ = _read(path)
++    try:stored_semantics = json.loads(raw).get('selection_token') if raw else None
++    except (ValueError, TypeError, AttributeError):stored_semantics = None
++    return all(state.get(key) == value for key, value in (('history_token', history_token), ('machine', machine), ('prices', prices)) if value is not None) \
++        and state.get('app_version') == __version__ and state.get('selection_version') == SELECTION_VERSION and stored_semantics == _selection_token(entries, k, by)
++
++
+ def load(path):
+     """{key: text or None}."""
+     return {k:e['text'] for k,e in load_meta(path)[0].items()}
+@@ -117,12 +172,13 @@ def load_context(path):
+     return {k:e.get('context') for k,e in load_meta(path)[0].items()}
+ 
+ 
+-def visible_all(path,records,table):
++def visible_all(path,records,table,ranked=None,assigned=None,ranked_choice=None):
+     """(texts, contexts) of the stored prompts in the current global top k (the store's recorded k and by): all a private report may embed.
+     Contexts that are blank are left out."""
+     entries,k,by=load_meta(path)
+     if not entries or not valid_choice(k,by):return {},{}
+-    top={(p['harness'],p['session'],p['turn_id']) for p in prompts.top_prompts(records,table,k,by)['prompts']}
++    ranked = ranked if ranked is not None and ranked_choice == (k, by) else prompts.top_prompts(records,table,k,by,assigned=assigned)
++    top={(p['harness'],p['session'],p['turn_id']) for p in ranked['prompts'][:k]}
+     return ({key:e['text'] for key,e in entries.items() if key in top},
+             {key:e['context'] for key,e in entries.items() if key in top and not _blank(e.get('context'))})
+ 
+@@ -167,18 +223,20 @@ def _write(path,data):
+         if os.path.exists(tmp):os.unlink(tmp)
+ 
+ 
+-def update(path,records,table,machine,k=5,by='cost',extract=prompt_text.extract_prompt,context=turn_context.turn_context,local=None):
++def update(path,records,table,machine,k=5,by='cost',extract=prompt_text.extract_prompt,context=turn_context.turn_context,local=None,ranked=None,assigned=None,revision=None,history_token=None,prices=None):
+     """Keep text and turn context for the global top k prompts only: keep known entries, add local new ones, retry unreadable or
+     blank ones (also upgrading version 1 entries), evict the rest. Remote prompts get neither. `local` is the set of
+     source paths the history recorded as collected locally (History.local_source_paths()); without it nothing is readable."""
+     local=frozenset(local or ())
+     _clean_temps(Path(path).parent)
+-    top=prompts.top_prompts(records,table,k,by)['prompts']
++    ranked = ranked or prompts.top_prompts(records,table,k,by)
++    top=ranked['prompts']
+     old_raw,bad=_read(path)  # an unsafe file is not trusted: start over and replace it
+     try:old={(e['harness'],e['session'],e['turn_id']):e for e in _entries(old_raw)} if old_raw else {}
+     except ValueError:old={}  # corrupt: start over
+     own={}  # prompt key -> sources of its own (non-subagent) observations
+-    for r,found in zip(records,prompts.assign_prompts(records)):
++    assigned = prompts.assign_prompts(records) if assigned is None else assigned
++    for r,found in zip(records,assigned):
+         if found and r['thread_kind']!='subagent':own.setdefault(found[:3],[]).extend(r.get('sources') or [])
+     entries,added,kept=[],0,0
+     for p in top:
+@@ -202,7 +260,12 @@ def update(path,records,table,machine,k=5,by='cost',extract=prompt_text.extract_
+                         'captured_at':known['captured_at'] if known else datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                         'text':text if need_text else known['text'],'context':ctx if need_ctx else known.get('context')});added+=1
+     evicted=len(set(old)-{(e['harness'],e['session'],e['turn_id']) for e in entries})
+-    data=json.dumps({'version':2,'k':k,'by':by,'entries':[{**e,'context':e.get('context')} for e in entries]},sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()+b'\n'
++    body={'version':2,'k':k,'by':by,'entries':[{**e,'context':_norm_context(e.get('context'))} for e in entries]}
++    body['selection_token'] = _selection_token(body['entries'], k, by)
++    if revision is not None:
++        body.update(history_revision=revision, history_token=history_token, machine=machine,
++                    prices=prices, selection_version=SELECTION_VERSION, app_version=__version__)
++    data=json.dumps(body,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()+b'\n'
+     if data!=old_raw or bad:_write(path,data)
+     return {'kept':kept,'added':added,'evicted':evicted,'path':str(path)}
+ 
+diff --git a/tokenatlas/prompts.py b/tokenatlas/prompts.py
+index cbf3d59..ecc2814 100644
+--- a/tokenatlas/prompts.py
++++ b/tokenatlas/prompts.py
+@@ -77,14 +77,14 @@ def _cost(r, table):
+     return priced['cost'] if priced.get('currency') == 'USD' or (priced.get('status') == 'free' and priced.get('currency') is None) else None
+ 
+ 
+-def top_prompts(records, table, k=5, by='cost', keep=None, credit_table=None):
++def top_prompts(records, table, k=5, by='cost', keep=None, credit_table=None, assigned=None):
+     """Rank prompts by list-price cost (unpriced last) or total tokens. Assignment runs over all records; `keep`, a set of
+     ident() values, then restricts which observations contribute (a filter window), so a subagent still rolls up to a parent turn outside it.
+     `credits` is the turn's ChatGPT credit equivalent (credits.py), only when every request in it has a credit rate, else None; `credits_lower_bound`
+     marks a sum over incomplete token counters."""
+     if by not in ('cost', 'tokens'):raise ValueError("by must be 'cost' or 'tokens'")
+     credit_table = credit_table or credit_rates.packaged()
+-    assigned = assign_prompts(records)
++    assigned = assign_prompts(records) if assigned is None else assigned
+     groups, unattributed = {}, 0
+     for r, found in zip(records, assigned):
+         if keep is not None and ident(r) not in keep:continue
+diff --git a/tokenatlas/quota_share.py b/tokenatlas/quota_share.py
+index bfd738e..1589353 100644
+--- a/tokenatlas/quota_share.py
++++ b/tokenatlas/quota_share.py
+@@ -880,9 +880,9 @@ def as_json(share):
+                 label=share['label'], before=obs and obs['before'], after=obs and obs['after'], shared_with=obs and obs['shared_with'])
+ 
+ 
+-def compute(records, table, cost_of=None, only=None, claude=None):
++def compute(records, table, cost_of=None, only=None, claude=None, assigned=None):
+     """(snapshots, {turn: largest-window share}) over all records; ([], {}) when no record carries a quota (`claude`: see snapshots_from_records)."""
+-    snapshots = snapshots_from_records(records, claude=claude)
++    snapshots = snapshots_from_records(records, assigned=assigned, claude=claude)
+     return (snapshots, largest(turn_shares(records, snapshots, table, cost_of, only))) if snapshots else ([], {})
+ 
+ 
+diff --git a/tokenatlas/report.py b/tokenatlas/report.py
+index 18ca9cc..f3d2d77 100644
+--- a/tokenatlas/report.py
++++ b/tokenatlas/report.py
+@@ -110,7 +110,7 @@ def report_state(revision, machine, spec, coverage, token=None, texts_hash=None,
+ 
+ 
+ def build_report(records, source_status, timezone_name='Europe/Stockholm', redact=True, prompt_texts=None, table=None, lang='auto',
+-                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None):
++                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None, assigned=None, whole_assigned=None):
+     """prompt_texts ({(harness, session, turn_id): text or None} from prompt_store) and prompt_context ({key: turn_context dict}) are for
+     prompt_inputs ({key: input count or None}) are for private reports only (any of them with redact=True raises);
+     credit_table is the ChatGPT credit rate card behind `credit_classes` and the credits fact (None = packaged credits.json); table is the price table behind the `price_classes` unit prices (None = packaged prices). `insights` holds the cost facts (insights.py) for the
+@@ -124,7 +124,10 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
+     table = table or pricing.load_prices()
+     credit_table = credit_table or credit_rates.packaged()
+     zone = ZoneInfo(timezone_name)
++    assignment_by_row = None if assigned is None else {id(r): a for r, a in zip(records, assigned)}
+     records = sorted(records, key=lambda r: (r['ts'], r['harness'], r['id']))
++    if assignment_by_row is not None:assigned = [assignment_by_row[id(r)] for r in records]
++    del assignment_by_row
+     is_public_model = public_model_checker(pricing.load_prices(), credit_rates.packaged()) if redact else None  # the packaged tables, never a caller-supplied one: they decide what is public
+     aliases = {}
+     def alias(kind, value):
+@@ -153,10 +156,11 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
+         else:
+             public = isinstance(value, str) and value in PUBLIC_NAMES[kind]
+         return value if public else alias(kind, str(value))
+-    assigned = prompts.assign_prompts(records)
++    assigned = prompts.assign_prompts(records) if assigned is None else assigned
++    whole_assigned_arg = whole_assigned
+     whole, whole_assigned = records, assigned  # the history quota shares are computed over: account-wide counters need every request
+     if universe is not None:  # a filtered report: the cards use the whole history's assignment, as the limit hits do
+-        whole, whole_assigned = universe, prompts.assign_prompts(universe)
++        whole, whole_assigned = universe, whole_assigned_arg if whole_assigned_arg is not None else prompts.assign_prompts(universe)
+         full = {prompts.ident(r): a for r, a in zip(universe, whole_assigned)}
+         assigned = [full.get(prompts.ident(r), a) for r, a in zip(records, assigned)]
+     with progress.step('Build report rows'):
+@@ -200,7 +204,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
+                                        first_event=group[0]['ts'], last_event=group[-1]['ts']))
+     now = now or datetime.now(timezone.utc)
+     display = lambda provider, model: metadata('model', model, {'provider': provider})
+-    memo = {}
++    memo = {'assigned': {id(r): a for r, a in zip(whole, whole_assigned)}}
+     cost_of = insights.memo_cost(table, memo)
+     # one captured `now` is the exclusive end of the 30-day window: later-dated observations are not 'the last 30 days'
+     with progress.step('Quota shares and cost insights'):
+diff --git a/tokenatlas/statusline.py b/tokenatlas/statusline.py
+index f4b291c..20d3842 100644
+--- a/tokenatlas/statusline.py
++++ b/tokenatlas/statusline.py
+@@ -20,10 +20,11 @@ import subprocess
+ import stat
+ import sys
+ import tempfile
++import time
+ from datetime import date, datetime, timedelta, timezone
+ from pathlib import Path
+ 
+-from tokenatlas import energy
++from tokenatlas import energy, __version__
+ 
+ CACHE_NAME = 'statusline.json'
+ CACHE_DAYS = 31  # per-local-day buckets kept in the cache, today included
+@@ -109,9 +110,30 @@ def write_atomic(path, payload):
+ 
+ 
+ def refresh_cache(history):
+-    """Write statusline.json beside the history; a failure is a warning on stderr and never fails the refresh."""
++    """Write statusline.json beside the history; reuse unchanged same-day totals without scanning history."""
+     try:
+-        write_atomic(cache_path(history.path), build_cache(history))
++        path = cache_path(history.path)
++        now = datetime.now(timezone.utc)
++        identity = {'token': history.revision_token, 'machine': history.machine, 'version': __version__,
++                    'timezone': [os.environ.get('TZ'), list(time.tzname), time.timezone, time.daylight]}
++        try:
++            current = json.loads(_read_small(path))
++            written = datetime.fromisoformat(current['written_at'])
++            reusable = (isinstance(current, dict) and current.get('v') == 1
++                        and current.get('revision') == history.revision
++                        and current.get('source') == identity
++                        and written.tzinfo is not None
++                        and isinstance(current.get('days'), dict)
++                        and written.astimezone().date() == now.astimezone().date())
++        except (OSError, TypeError, ValueError, KeyError):
++            reusable = False
++        if reusable:
++            current['written_at'] = now.isoformat(timespec='seconds')
++            write_atomic(path, current)
++        else:
++            fresh = build_cache(history, now=now)
++            fresh['source'] = identity
++            write_atomic(path, fresh)
+     except Exception as exc:
+         print(f'warning: could not write {CACHE_NAME}: {type(exc).__name__}: {exc}', file=sys.stderr)
+ 
