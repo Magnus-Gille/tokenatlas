@@ -12,6 +12,16 @@ from tokenatlas import schedule
 
 
 class ScheduleTest(unittest.TestCase):
+    def test_remove_checks_cron_before_removing_launchd(self):
+        path, _ = schedule._mac_paths()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(schedule._plist(1800, [], self.root / 'log'))
+        with patch.object(schedule, '_crontab', side_effect=schedule.ScheduleError('read denied')), patch.object(schedule, '_checked') as checked:
+            with self.assertRaisesRegex(schedule.ScheduleError, 'read denied'):
+                schedule._remove('darwin', False)
+        checked.assert_not_called()
+        self.assertTrue(path.exists())
+
     def test_windows_xml_ownership_and_failed_delete(self):
         import xml.etree.ElementTree as ET
         script, log = schedule._windows_paths()

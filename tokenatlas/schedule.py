@@ -649,6 +649,10 @@ def status(platform: str | None = None) -> dict:
 
 def _remove(platform: str, dry_run: bool) -> dict:
     result = {"removed": [], "commands": [], "writes": [], "warnings": []}
+    cron = ("", False)
+    if platform != "windows":
+        try: cron = _crontab()
+        except ScheduleUnavailable: pass
     if platform == "darwin":
         path, _ = _mac_paths()
         if path.exists() and _owned(path):
@@ -661,7 +665,7 @@ def _remove(platform: str, dry_run: bool) -> dict:
                     _checked(result["commands"][0])
                 path.unlink()
             result["removed"] = [str(path)]
-        return _remove_cron(result, dry_run)
+        return _remove_cron(result, dry_run, cron)
     if platform == "windows":
         script, _ = _windows_paths()
         if script.exists() and _owned(script):
@@ -690,14 +694,11 @@ def _remove(platform: str, dry_run: bool) -> dict:
             for path in owned_units: path.unlink()
             _checked(result["commands"][1])
         result["removed"] = [str(path) for path in owned_units]
-    return _remove_cron(result, dry_run)
+    return _remove_cron(result, dry_run, cron)
 
 
-def _remove_cron(result, dry_run):
-    try:
-        text, exists = _crontab()
-    except ScheduleUnavailable:
-        text, exists = "", False
+def _remove_cron(result, dry_run, cron):
+    text, exists = cron
     owned = _cron_owned_lines(text)
     if owned:
         result["commands"].append(["crontab", "-"])

@@ -508,8 +508,7 @@ def _main(argv=None):
                     data=usage_profiles.save(args.db,data)
                 elif args.plan_action=='remove':
                     data.get('plans',{}).pop(args.harness,None);data=usage_profiles.save(args.db,data)
-                print(json.dumps(data,indent=2,sort_keys=True));return 0
-            if args.profile_action=='provider':
+            elif args.profile_action=='provider':
                 if args.provider_action=='add':
                     if not usage_profiles._valid_name(args.name):
                         parser.exit(2, 'usage: provider name must be 1–120 printable characters\n')
@@ -518,8 +517,8 @@ def _main(argv=None):
                 elif args.provider_action=='remove':
                     data['local_providers']=[x for x in data.get('local_providers',[]) if x.lower()!=args.name.strip().lower()]
                     data=usage_profiles.save(args.db,data)
-                print(json.dumps(data,indent=2,sort_keys=True));return 0
         except (OSError,ValueError) as exc:parser.exit(2,f'usage: {terminal_safe(exc)}\n')
+        print(json.dumps(data,indent=2,sort_keys=True));return 0
     slow=args.command in ('refresh','open','report','top','insights','session','rate','import','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead' and args.refresh
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout

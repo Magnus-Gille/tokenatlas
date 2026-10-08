@@ -75,7 +75,10 @@ class LimitEventQueryTests(unittest.TestCase):
             observation('allowed', 3, quota={'status': 'allowed'}),
             observation('malformed', 4, quota='malformed'),
             observation('no-quota', 5),
-            observation('ordinary', 6, tokens={'fresh_input': 1, 'cache_read': 0, 'cache_write': 0, 'output': 0, 'reasoning': 0}),
+            observation('ordinary', 6, quota={'status': 'allowed'},
+                        tokens={'fresh_input': 1, 'cache_read': 0, 'cache_write': 0, 'output': 0, 'reasoning': 0}),
+            observation('positive-with-quota', 7, quota={'status': 'rejected'},
+                        tokens={'fresh_input': 1, 'cache_read': 0, 'cache_write': 0, 'output': 0, 'reasoning': 0}),
         ]
         self.populate(items)
         with History(self.db) as history:
@@ -83,8 +86,8 @@ class LimitEventQueryTests(unittest.TestCase):
                 found = history.limit_events()
             self.assertEqual([row['id'] for row in found], ['rejected', 'event'])
             # Four rows have a quota reference and all counters are zero/NULL;
-            # ordinary usage, the no-quota row, and its positive counter never
-            # reach Python's final authority check.
+            # the no-quota row and both positive-token rows (each with a quota)
+            # never reach Python's final authority check.
             self.assertEqual(decode.call_count, 4)
 
     def test_start_and_end_keep_records_filter_semantics(self):
