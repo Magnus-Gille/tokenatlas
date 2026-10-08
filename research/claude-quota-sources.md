@@ -67,3 +67,11 @@ Same semantics as the statusline: only for claude.ai subscribers (or gateway `sp
 - Several concurrent sessions each get their own payload; are values identical per account? Likely, but verify, and key snapshots by session_id plus timestamp.
 - Where is the `/usage` last-known snapshot stored (if on disk)? Undocumented; not needed if the wrapper is adopted.
 - Re-verify hook payload claim against the raw hooks page; agent-sdk cost-tracking page not read.
+
+## Subscription name for the report (#146, 2026-10-08)
+
+The current documented statusline schema exposes window usage and reset times, not a subscription tier or multiplier. Its Pro/Max availability rule cannot distinguish Pro, Max 5x and Max 20x. The CLI reference documents `claude auth status` as authentication diagnostics, not a stable historical plan record; invoking authentication commands or reading credential stores is outside this feature. No documented non-credential source of the exact Claude plan was established in this research.
+
+Keep the report offline: show the Claude plan as unknown unless the user explicitly configures it beside TokenAtlas history. Label a configured plan as a user setting, not an observation of the historical subscription. Do not infer the plan from quota percentages, model choices, cost or limits. Codex's observed `plan_type` remains distinct from this manual setting.
+
+Sources checked: [statusline available data](https://code.claude.com/docs/en/statusline#available-data), [rate-limit usage](https://code.claude.com/docs/en/statusline#rate-limit-usage), [CLI reference](https://code.claude.com/docs/en/cli-reference). No credential stores or private Claude configuration files were read.

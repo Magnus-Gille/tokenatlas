@@ -880,9 +880,9 @@ def as_json(share):
                 label=share['label'], before=obs and obs['before'], after=obs and obs['after'], shared_with=obs and obs['shared_with'])
 
 
-def compute(records, table, cost_of=None, only=None, claude=None):
+def compute(records, table, cost_of=None, only=None, claude=None, assigned=None):
     """(snapshots, {turn: largest-window share}) over all records; ([], {}) when no record carries a quota (`claude`: see snapshots_from_records)."""
-    snapshots = snapshots_from_records(records, claude=claude)
+    snapshots = snapshots_from_records(records, assigned=assigned, claude=claude)
     return (snapshots, largest(turn_shares(records, snapshots, table, cost_of, only))) if snapshots else ([], {})
 
 

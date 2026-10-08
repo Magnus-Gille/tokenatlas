@@ -1,5 +1,6 @@
 """python -m tokenatlas: local refresh, report, and doctor."""
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -12,7 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tokenatlas import __version__
-from tokenatlas import progress, statusline
+from tokenatlas import progress, statusline, usage_profiles
 from tokenatlas.terminal import terminal_safe
 from tokenatlas.resume import resume_command,shell_command as _shell_command
 # The heavy modules (history, report, insights, pricing, why, ...) are imported where they are used, so `tokenatlas statusline`, which Claude Code
@@ -74,6 +75,11 @@ def _output_path(path,db):
 
 def _spec(privacy,timezone,granularity,filters,lang='auto'):
     return {'privacy':privacy,'timezone':timezone,'granularity':granularity,'lang':lang,'filters':{k:filters.get(k) for k in FILTERS}}
+
+
+def _usage_profile(db):
+    """Profile preferences participate in report identity and payload."""
+    return usage_profiles.load(db)
 
 
 def _budgets(db,table,records_fn):
@@ -203,18 +209,52 @@ def default_db():
     return new/'history.sqlite3'
 
 
-def _visible(history,db,records=None):
+def _visible(history,db,records=None,ranked=None,assigned=None,table=None,ranked_choice=None):
     """(texts, contexts) a private report may embed (the current global top k); the history is read only when a store exists."""
     from tokenatlas import pricing, prompt_store
     store=prompt_store.store_path(db)
     if not os.path.lexists(store):return {},{}
-    return prompt_store.visible_all(store,history.records() if records is None else records,pricing.load_prices())
+    return prompt_store.visible_all(store,history.records() if records is None else records,table or pricing.load_prices(),ranked=ranked,assigned=assigned,ranked_choice=ranked_choice)
 
 
-def _hits(history,records,events=None):
+def _store_token(db):
+    from tokenatlas import prompt_store
+    return prompt_store.store_token(prompt_store.store_path(db))
+
+
+def _budget_token(db):
+    path = Path(db).expanduser().with_name('quota-budget.json')
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _select_records(records, start=None, end=None, harness=None, project=None, session=None, turn=None, **filters):
+    """Apply History.records' selection semantics to an already loaded history."""
+    session_harness, raw_session = None, session
+    if isinstance(session, str):
+        prefix, separator, candidate = session.partition(':')
+        if separator and prefix in ('claude', 'codex', 'pi', 'opencode'):
+            session_harness, raw_session = prefix, candidate
+    if harness is not None and session_harness is not None and harness != session_harness:
+        return []
+    harness = harness or session_harness
+    return [r for r in records
+            if (start is None or datetime.fromisoformat(r['ts']) >= start)
+            and (end is None or datetime.fromisoformat(r['ts']) < end)
+            and (harness is None or r['harness'] == harness)
+            and (project is None or r.get('project_id') == project)
+            and (raw_session is None or r.get('session') == raw_session)
+            and (turn is None or r.get('turn_id') == turn)
+            and all(value is None or r.get(key) == value for key, value in filters.items())]
+
+
+def _hits(history,records,events=None,assigned=None):
     """Limit hits over the whole history's records (a report's filters never shrink the window a hit is explained from)."""
     from tokenatlas import limits, pricing
-    return limits.limit_hits(records,history.limit_events() if events is None else events,pricing.load_prices())  # no shortcut: a full window with no reached type is a hit too
+    return limits.limit_hits(records,history.limit_events() if events is None else events,pricing.load_prices(),assigned=assigned)  # no shortcut: a full window with no reached type is a hit too
 
 
 def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=None):
@@ -396,6 +436,13 @@ def _main(argv=None):
     collect.add_argument('--sync-timeout',type=int,default=600,help='Seconds for the whole remote sync before its process group is killed (default 600).')
     collect.add_argument('--no-report',action='store_true',help='Do not build the report.')
     collect.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='Report language.')
+    schedule=commands.add_parser('schedule',help='Install, inspect or remove the platform scheduler for collect.')
+    schedule.add_argument('--every',default='30m',metavar='DURATION',help='Run interval, for example 30m, 1h or 1d (default 30m).')
+    schedule.add_argument('--remote',action='append',default=[],metavar='TAG:HOST',help='Remote machine to sync (repeatable).')
+    schedule.add_argument('--dry-run',action='store_true',help='Print exact scheduler files and commands without writing or executing them.')
+    schedule_action=schedule.add_mutually_exclusive_group()
+    schedule_action.add_argument('--status',action='store_true',help='Show the installed TokenAtlas schedule and last log run.')
+    schedule_action.add_argument('--remove',action='store_true',help='Remove only scheduler entries owned by TokenAtlas.')
     status=commands.add_parser('statusline',help='Claude Code statusline: one line from the stdin payload and the totals cache refresh writes (no network); --setup prints the settings snippet; quota readings are recorded by default (--no-record-quota or TOKENATLAS_NO_QUOTA=1 turns it off).')
     status.add_argument('--setup',action='store_true')
     status.add_argument('--record-quota',action='store_true')
@@ -419,12 +466,57 @@ def _main(argv=None):
     forget=quota.add_parser('forget',help='Delete readings and budgets (all, or one harness and/or window).')
     forget.add_argument('--harness',choices=('claude','codex'))
     forget.add_argument('--window',choices=('5h','7d'))
+    plan=commands.add_parser('plan',help='Set the plan label used for report summaries; no provider account data is read.')
+    plan_sub=plan.add_subparsers(dest='plan_action',required=True)
+    plan_set=plan_sub.add_parser('set',help='Set a manually known plan label.')
+    plan_set.add_argument('--harness',choices=('claude',),required=True)
+    plan_set.add_argument('name')
+    plan_remove=plan_sub.add_parser('remove',help='Remove a manually configured plan label.')
+    plan_remove.add_argument('--harness',choices=('claude',),required=True)
+    plan_sub.add_parser('show',help='Show configured plan labels.')
+    profile=commands.add_parser('profile',help='Configure report-only local provider labels.')
+    profile_sub=profile.add_subparsers(dest='profile_action',required=True)
+    provider=profile_sub.add_parser('provider',help='Manage local provider names.')
+    provider_sub=provider.add_subparsers(dest='provider_action',required=True)
+    provider_add=provider_sub.add_parser('add',help='Add a local provider name.')
+    provider_add.add_argument('name')
+    provider_remove=provider_sub.add_parser('remove',help='Remove a local provider name.')
+    provider_remove.add_argument('name')
+    provider_sub.add_parser('show',help='Show configured local provider names.')
     commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
     args=parser.parse_args(argv)
+    if args.command=='schedule':
+        try:
+            from tokenatlas import schedule as _schedule
+            return _schedule.run(args)
+        except (OSError,ValueError) as exc:
+            parser.exit(2,f'usage: {terminal_safe(exc)}\n')
     if args.command=='show':  # before default_db(): show never touches the history, not even its one-time directory move
         try:return _show(Path(args.html or (args.db.expanduser().parent if args.db else _state_base()/'tokenatlas')/'report.html').expanduser())
         except (OSError,ValueError) as exc:parser.exit(2,f'usage: {terminal_safe(exc)}\n')
     if args.db is None:args.db=default_db()
+    if args.command in ('plan','profile'):
+        from tokenatlas import usage_profiles
+        data=usage_profiles.load(args.db)
+        if args.command=='plan':
+            if args.plan_action=='set':
+                if not usage_profiles._valid_name(args.name):
+                    parser.exit(2, 'usage: plan name must be 1–120 printable characters\n')
+                data.setdefault('plans',{})[args.harness]=args.name
+                data=usage_profiles.save(args.db,data)
+            elif args.plan_action=='remove':
+                data.get('plans',{}).pop(args.harness,None);data=usage_profiles.save(args.db,data)
+            print(json.dumps(data,indent=2,sort_keys=True));return 0
+        if args.profile_action=='provider':
+            if args.provider_action=='add':
+                if not usage_profiles._valid_name(args.name):
+                    parser.exit(2, 'usage: provider name must be 1–120 printable characters\n')
+                data.setdefault('local_providers',[]).append(args.name)
+                data=usage_profiles.save(args.db,data)
+            elif args.provider_action=='remove':
+                data['local_providers']=[x for x in data.get('local_providers',[]) if x.lower()!=args.name.strip().lower()]
+                data=usage_profiles.save(args.db,data)
+            print(json.dumps(data,indent=2,sort_keys=True));return 0
     slow=args.command in ('refresh','open','report','top','insights','session','rate','import','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead' and args.refresh
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout
@@ -464,7 +556,23 @@ def _main(argv=None):
                 if args.quota=='show' and args.db.expanduser().is_file():
                     with History(args.db) as history:  # the automatic budgets are computed from the history (#116)
                         history.connection.execute('BEGIN')
-                        return budget.run(args,args.db,None,pricing.load_prices,_printing(done),lambda keep:_auto_budgets(history,args.db,pricing.load_prices(),keep=keep),lambda auto,manual:_over_cap(history,args.db,auto,manual)) or 0
+                        cache={}
+                        def automatic(keep):
+                            if 'records' not in cache:cache['records']=history.records()
+                            if 'table' not in cache:cache['table']=pricing.load_prices()
+                            records,table=cache['records'],cache['table']
+                            if 'assigned' not in cache:cache['assigned']=prompts.assign_prompts(records)
+                            assigned=cache['assigned']
+                            if 'hits' not in cache:cache['hits']=_hits(history,records,assigned=assigned)
+                            if 'snapshots' not in cache:cache['snapshots']=quota_share.snapshots_from_records(records,assigned=assigned,claude=_claude_quota(args.db))
+                            hits,snapshots=cache['hits'],cache['snapshots']
+                            return budget.auto_budgets(records,hits,snapshots,table,keep)
+                        def over_cap(auto,manual):
+                            records=cache['records'];table=cache['table'];assigned=cache['assigned']
+                            memo={};cost_of=insights.memo_cost(table,memo)
+                            shares=quota_share.compute(records,table,cost_of=cost_of,assigned=assigned,claude=_claude_quota(args.db))[1]
+                            return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate','range')})
+                        return budget.run(args,args.db,None,lambda:cache['table'] if 'table' in cache else pricing.load_prices(),_printing(done),automatic,over_cap) or 0
                 return budget.run(args,args.db,None,pricing.load_prices,_printing(done)) or 0
             if not args.db.expanduser().is_file():raise ValueError('history database does not exist; run refresh first')
             with History(args.db) as history:
@@ -514,18 +622,25 @@ def _main(argv=None):
                 history.connection.execute('BEGIN')
                 with progress.step('Check saved report'):
                     source_status=history.doctor()
+                    profile=_usage_profile(args.db)
                     spec=_spec('redacted' if args.shared else 'local',DEFAULT_TIMEZONE,'day',{},args.lang)
-                    budgets=_budgets(args.db,pricing.load_prices(),history.records)
-                    if budgets:spec['budgets']=budgets  # a new calibration is a changed report
+                    spec['usage_profile']=profile
+                    budget_token=_budget_token(args.db)
+                    if budget_token:spec['budget_token']=budget_token
                     if not args.shared:spec['dest']=str(path.absolute())  # a private report names its file: a moved copy is rebuilt, never reused
-                    texts,ctx=(None,None) if args.shared else _visible(history,args.db)  # shared reports never read the side file
-                    state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,prompt_store.texts_hash(texts,ctx),datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
+                    store_token=None if args.shared else _store_token(args.db)
+                    state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,store_token,datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
                 if path.exists() and read_report_state(path)==state:
                     result={'html':str(path.resolve()),'skipped':True,'reason':'unchanged'}
                 else:
-                    with progress.step('Read history'):records=history.records();events=history.limit_events()
-                    with progress.step('Limit hits'):hits_all=_hits(history,records,events)  # one read of the limit events serves the hits and the quota windows
-                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets)
+                    with progress.step('Read history'):
+                        records=history.records();events=history.limit_events()
+                    assigned=prompts.assign_prompts(records)
+                    table=pricing.load_prices()
+                    texts,ctx=_visible(history,args.db,records,assigned=assigned,table=table) if not args.shared else (None,None)
+                    budgets=_budgets(args.db,table,lambda:records)
+                    with progress.step('Limit hits'):hits_all=_hits(history,records,events,assigned)  # one read of the limit events serves the hits and the quota windows
+                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned,profile=profile)
                     payload['initial_granularity']='day'
                     if not args.shared:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db,always=True))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
@@ -548,7 +663,7 @@ def _main(argv=None):
                         result=_with_problems(results[0] if len(results)==1 else aggregate(results),problems);shown.failed=result['status']!='ok'
                 with progress.step('Update statusline cache'):statusline.refresh_cache(history)
             elif args.command=='top':
-                from tokenatlas import budget
+                from tokenatlas import budget, insights
                 history.connection.execute('BEGIN')
                 store=prompt_store.store_path(args.db)
                 if args.forget_text:
@@ -557,22 +672,27 @@ def _main(argv=None):
                     print(json.dumps({'forgotten':str(store)}));return 0
                 table=pricing.load_prices(args.prices)
                 with progress.step('Read history'):everything=history.records()  # rank over the whole history; the filters only choose which rows contribute
-                kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths()) if args.keep_text else None
+                assigned=prompts.assign_prompts(everything)
                 filtered=any(x is not None for x in (start,end,args.harness,args.project))
-                keep={prompts.ident(r) for r in history.records(start,end,args.harness,args.project)} if filtered else None
-                with progress.step('Rank turns'):result=prompts.top_prompts(everything,table,args.limit,args.by,keep)
-                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table)  # windows come from the whole history; the CLI filters then pick the hits
+                selected=_select_records(everything,start,end,args.harness,args.project) if filtered else everything
+                keep={prompts.ident(r) for r in selected} if filtered else None
+                with progress.step('Rank turns'):
+                    global_ranked=prompts.top_prompts(everything,table,args.limit,args.by,assigned=assigned)
+                    result=global_ranked if not filtered else prompts.top_prompts(everything,table,args.limit,args.by,keep,assigned=assigned)
+                kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths(),ranked=global_ranked,assigned=assigned,revision=history.revision,history_token=history.revision_token,prices=budget.table_id(table)) if args.keep_text else None
+                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table,assigned=assigned)  # windows come from the whole history; the CLI filters then pick the hits
                 all_hits=hits
-                if filtered:hits=limits.scope_hits(hits,history.records(start,end,args.harness,args.project),args.harness,start,end,args.project,universe=everything)
+                if filtered:hits=limits.scope_hits(hits,selected,args.harness,start,end,args.project,universe=everything,assigned=assigned)
                 limits.mark_turns(result['prompts'],hits)
-                with progress.step('Quota shares'):snaps,shares=quota_share.compute(everything,table,only={(p['harness'],p['session'],p['turn_id']) for p in result['prompts']},claude=_claude_quota(args.db))
+                memo={};cost_of=insights.memo_cost(table,memo)
+                with progress.step('Quota shares'):snaps,shares=quota_share.compute(everything,table,cost_of=cost_of,only={(p['harness'],p['session'],p['turn_id']) for p in result['prompts']},claude=_claude_quota(args.db),assigned=assigned)
                 quota_share.mark_turns(result['prompts'],shares)
                 derived=budget.load_derived(budget.path_for(args.db),table=table,records_fn=lambda:everything)
                 if any((p.get('quota_share') or {}).get('label') not in ('observed','estimate','range') for p in result['prompts']):  # automatic budgets only matter for a turn without its own share (#116)
                     derived=budget.combine(derived,_auto_budgets(history,args.db,table,everything,all_hits,snaps or None)[0])
                 if derived:  # only where there is no observed or estimated share; the turn's whole identified cost, whatever the filters keep
-                    memo={};budget.mark_turns(result['prompts'],derived,budget.turn_costs(everything,prompts.assign_prompts(everything),insights.memo_cost(table,memo),table))
-                texts,ctx=prompt_store.visible_all(store,everything,table)  # only the global top k: never text or context outside it
+                    budget.mark_turns(result['prompts'],derived,budget.turn_costs(everything,assigned,cost_of,table))
+                texts,ctx=prompt_store.visible_all(store,everything,table,ranked=global_ranked,ranked_choice=(args.limit,args.by))  # only the global top k: never text or context outside it
                 if kept:result['text_store']=kept
                 done()
                 if not args.json:
@@ -586,8 +706,9 @@ def _main(argv=None):
                 history.connection.execute('BEGIN')
                 table=pricing.load_prices(args.prices);memo={}
                 with progress.step('Read history'):everything=history.records()
-                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table)
-                with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
+                assigned=prompts.assign_prompts(everything)
+                with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table,assigned=assigned)
+                with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,assigned=assigned,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
                 with progress.step('Cost facts'):result=insights.cost_facts(everything,table,start,end,hits=hits,quota=shares,memo=memo)
                 done()
                 if not args.json:
@@ -609,12 +730,14 @@ def _main(argv=None):
                 if args.html:
                     with progress.step('Check saved report'):
                         path=_output_path(args.html,args.db)
+                        profile=_usage_profile(args.db)
                         spec=_spec('local' if args.private else 'redacted',args.timezone,args.granularity,vars(args),args.lang)
-                        budgets=_budgets(args.db,pricing.load_prices(),history.records)
-                        if budgets:spec['budgets']=budgets
+                        spec['usage_profile']=profile
+                        budget_token=_budget_token(args.db)
+                        if budget_token:spec['budget_token']=budget_token
                         if args.private:spec['dest']=str(path.absolute())  # as in open: a private report names its file
-                        texts,ctx=_visible(history,args.db) if args.private else (None,None)
-                        state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,prompt_store.texts_hash(texts,ctx),datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
+                        store_token=None if not args.private else _store_token(args.db)
+                        state=report_state(history.revision,history.machine,spec,coverage_key(source_status),history.revision_token,store_token,datetime.now(ZoneInfo('UTC')).date().isoformat(),_quota_token(args.db))
                     if path.exists() and (args.if_changed or max_age is not None):
                         found=read_report_state(path)
                         age=time.time()-path.stat().st_mtime
@@ -627,9 +750,14 @@ def _main(argv=None):
                             print(f'Report: {path.absolute()} (unchanged)',file=sys.stderr)
                             return 0
                 with progress.step('Read history'):
-                    records=history.records(start,end,args.harness,args.project,args.session,args.turn)
-                    records=[row for row in records if all(getattr(args,key) is None or row[key]==getattr(args,key)
-                        for key in ('model','effort','provider','agent'))]
+                    filters={key:getattr(args,key) for key in ('model','effort','provider','agent')}
+                    if args.html:
+                        universe=history.records()
+                        records=_select_records(universe,start,end,args.harness,args.project,args.session,args.turn,**filters)
+                    else:
+                        records=history.records(start,end,args.harness,args.project,args.session,args.turn)
+                        records=[row for row in records if all(value is None or row.get(key) == value for key,value in filters.items())]
+                        universe=records
                 # The HTML path prints only a short receipt, so skip the (costly) JSON summary there.
                 if args.html:result={}
                 else:
@@ -639,12 +767,14 @@ def _main(argv=None):
                 if args.records:result['records']=records
                 if args.html:
                     filtered=any(getattr(args,key) is not None for key in ('start','end','harness','project','session','turn','model','effort','provider','agent'))
-                    universe=records  # the whole history: hits and their turns are computed over it
-                    if filtered:
-                        with progress.step('Read whole history'):universe=history.records()
-                    texts,ctx=_visible(history,args.db,universe) if args.private else (None,None)
-                    with progress.step('Limit hits'):events=history.limit_events();hits_all=_hits(history,universe,events)
-                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe),universe=universe if filtered else None,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets)
+                    assigned=prompts.assign_prompts(records)
+                    whole_assigned=prompts.assign_prompts(universe) if filtered else assigned
+                    table=pricing.load_prices()
+                    texts,ctx=_visible(history,args.db,universe,assigned=whole_assigned,table=table) if args.private else (None,None)
+                    budgets=_budgets(args.db,table,lambda:universe)
+                    with progress.step('Limit hits'):events=history.limit_events();hits_all=_hits(history,universe,events,whole_assigned)
+                    scoped=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe,assigned=whole_assigned)
+                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile)
                     payload['initial_granularity']=args.granularity
                     if args.private:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))

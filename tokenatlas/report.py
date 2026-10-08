@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from tokenatlas import __version__, progress
-from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share
+from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share, usage_profiles
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
 
@@ -41,7 +41,7 @@ def public_model_checker(*tables):
 # Part of every report's identity (report_state), so a cached report built under an older redaction policy is never reused or throttled
 # (`open`, `report --if-changed`, `--max-age`). Bump it with ANY change to what a shared report reveals or how it pseudonymizes.
 # 1: model names are shown only when exact packaged public identifiers (#133).
-REDACTION_REVISION = 1
+REDACTION_REVISION = 2
 INSIGHT_DAYS = 30
 MAX_QUOTA_WINDOWS = 12
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -109,8 +109,84 @@ def report_state(revision, machine, spec, coverage, token=None, texts_hash=None,
     return tuple(hashlib.sha256(text.encode()).hexdigest()[:32] for text in (identity + template, data))
 
 
+def _usage_code(kind, value):
+    if not value:
+        return None
+    digest = hashlib.sha256(str(value).encode('utf-8', 'replace')).hexdigest()
+    return f'{kind} {int(digest[:6], 16) % 1000 + 1:03d}'
+
+
+def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context, redact, profile):
+    """Filter-following metadata for the work and client cards.
+
+    Context and prompt text are already limited by prompt_store to its global
+    top-k entries. This function only associates that retained material with
+    report rows; it never reads source logs or extracts new text.
+    """
+    profile = profile or {}
+    configured = profile.get('local_providers') or []
+    clients = [usage_profiles.client_key(r.get('harness'), r.get('origin')) for r in records]
+    local_rows = [i for i, r in enumerate(records) if usage_profiles.is_local_provider(r.get('provider'), configured)]
+    safe_plan = lambda value, kind: value if not redact or value in usage_profiles.KNOWN_PLAN_NAMES else f'{kind} plan'
+    plans, seen = [], set()
+    for i, record in enumerate(records):
+        quota = record.get('quota') or {}
+        raw = quota.get('plan_type') if record.get('harness') == 'codex' else None
+        if not raw:
+            continue
+        plan = safe_plan(str(raw), 'Codex')
+        key = ('codex', plan, 'snapshot')
+        if key not in seen:
+            plans.append(dict(harness='codex', plan=plan, source='snapshot', rows=[]))
+            seen.add(key)
+        next(x for x in plans if (x['harness'], x['plan'], x['source']) == key)['rows'].append(i)
+    manual = (profile.get('plans') or {}).get('claude')
+    if manual:
+        plans.append(dict(harness='claude', plan=safe_plan(manual, 'Claude'), source='manual',
+                          rows=[i for i, r in enumerate(records) if r.get('harness') == 'claude']))
+
+    covered = {h: {i for p in plans if p['harness'] == h for i in p['rows']} for h in ('claude', 'codex')}
+    for harness in ('claude', 'codex'):
+        missing = [i for i, r in enumerate(records) if r.get('harness') == harness and i not in covered[harness]]
+        if missing:
+            plans.append(dict(harness=harness, plan='unknown', source='unknown', rows=missing))
+
+    groups = {}
+    for i, (record, row, found) in enumerate(zip(records, rows, assigned)):
+        key = tuple(found[:3]) if found else None
+        context = (prompt_context or {}).get(key) if key else None
+        context = context if isinstance(context, dict) else {}
+        raw_repo, raw_branch = context.get('repository'), context.get('branch')
+        repo = raw_repo if not redact else _usage_code('repository', raw_repo)
+        branch = raw_branch if not redact else _usage_code('branch', raw_branch)
+        project = row.get('project_label') or UNKNOWN_PROJECT
+        group_key = (project, repo or UNKNOWN_PROJECT, branch or UNKNOWN_PROJECT)
+        group = groups.setdefault(group_key, dict(project=project, repository=repo, branch=branch, rows=[], turns=[], unknown=0))
+        group['rows'].append(i)
+        turn_key = key
+        if key is None:
+            group['unknown'] += 1
+            continue
+        turn_map = group.setdefault('_turn_map', {})
+        if turn_key not in turn_map:
+            text = (prompt_texts or {}).get(key) if key else None
+            raw_title = context.get('title')
+            title = raw_title or text or branch or raw_branch
+            title = _usage_code('title', title) if redact else title
+            # Keep a retained initiating prompt alongside a distinct stored
+            # session title. Both values already come from the prompt store's
+            # top-k boundary; this does not read source transcripts.
+            prompt = text if text and raw_title and text != raw_title else None
+            turn_map[turn_key] = dict(rows=[], title=title, prompt=prompt)
+            group['turns'].append(turn_map[turn_key])
+        turn_map[turn_key]['rows'].append(i)
+    for group in groups.values():
+        group.pop('_turn_map', None)
+    return dict(source_keys=clients, local_rows=local_rows, plans=plans, groups=list(groups.values()))
+
+
 def build_report(records, source_status, timezone_name='Europe/Stockholm', redact=True, prompt_texts=None, table=None, lang='auto',
-                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None):
+                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None, assigned=None, whole_assigned=None, profile=None):
     """prompt_texts ({(harness, session, turn_id): text or None} from prompt_store) and prompt_context ({key: turn_context dict}) are for
     prompt_inputs ({key: input count or None}) are for private reports only (any of them with redact=True raises);
     credit_table is the ChatGPT credit rate card behind `credit_classes` and the credits fact (None = packaged credits.json); table is the price table behind the `price_classes` unit prices (None = packaged prices). `insights` holds the cost facts (insights.py) for the
@@ -153,10 +229,11 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         else:
             public = isinstance(value, str) and value in PUBLIC_NAMES[kind]
         return value if public else alias(kind, str(value))
-    assigned = prompts.assign_prompts(records)
+    assigned = prompts.assign_prompts(records) if assigned is None else assigned
+    whole_assigned_arg = whole_assigned
     whole, whole_assigned = records, assigned  # the history quota shares are computed over: account-wide counters need every request
     if universe is not None:  # a filtered report: the cards use the whole history's assignment, as the limit hits do
-        whole, whole_assigned = universe, prompts.assign_prompts(universe)
+        whole, whole_assigned = universe, whole_assigned_arg if whole_assigned_arg is not None else prompts.assign_prompts(universe)
         full = {prompts.ident(r): a for r, a in zip(universe, whole_assigned)}
         assigned = [full.get(prompts.ident(r), a) for r, a in zip(records, assigned)]
     with progress.step('Build report rows'):
@@ -200,7 +277,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                                        first_event=group[0]['ts'], last_event=group[-1]['ts']))
     now = now or datetime.now(timezone.utc)
     display = lambda provider, model: metadata('model', model, {'provider': provider})
-    memo = {}
+    memo = {'assigned': {id(r): a for r, a in zip(whole, whole_assigned)}}
     cost_of = insights.memo_cost(table, memo)
     # one captured `now` is the exclusive end of the 30-day window: later-dated observations are not 'the last 30 days'
     with progress.step('Quota shares and cost insights'):
@@ -215,11 +292,16 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         mult, weighted = energy.multiplier(record.get('provider'), record.get('model'))
         if weighted:
             weights.setdefault(row['provider'], {})[row['model']] = mult
+    usage = _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context, redact, profile)
+    # Shared reports deliberately omit work context; the client summary uses
+    # fixed labels and aggregate row associations only.
+    if redact:
+        usage['groups'] = []
     report = dict(version=2, generated_at=now.isoformat(),
                   timezone=timezone_name, lang=lang, privacy='redacted' if redact else 'local',
                   prices_retrieved=table.get('retrieved_on'),
                   columns=encode_columns(rows), coverage=coverage,
-                  energy=dict(per_1k=energy.PER_1K, uncertainty=energy.UNCERTAINTY, tier_multipliers=energy.TIERS, multipliers=weights), insights=dict(days=INSIGHT_DAYS, big_turn=insights.BIG_TURN, windows=windows))
+                  energy=dict(per_1k=energy.PER_1K, uncertainty=energy.UNCERTAINTY, tier_multipliers=energy.TIERS, multipliers=weights), insights=dict(days=INSIGHT_DAYS, big_turn=insights.BIG_TURN, windows=windows), usage=usage)
     if prompt_texts is not None:
         report['prompt_texts'] = {shown[tuple(k)]: t for k, t in prompt_texts.items() if t and tuple(k) in shown}
     if prompt_context is not None:

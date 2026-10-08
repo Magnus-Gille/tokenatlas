@@ -62,6 +62,24 @@ function edited(html, fn) {
     return a + zlib.gzipSync(Buffer.from(JSON.stringify(data), 'utf8')).toString('base64') + c;
   });
 }
+// Expand the columnar smoke payload without adding prompt text or private
+// context. This exercises the report's client-side aggregation at the scale
+// used by the unit-size guard, while keeping the fixture deterministic.
+function withLargeRows(html, n = 20000) {
+  return edited(html, data => {
+    const c = data.columns, repeat = (a, fill = null) => Array.from({length: n}, (_, i) => a.length ? a[i % a.length] : fill);
+    for (const key of Object.keys(c.idx || {})) c.idx[key] = repeat(c.idx[key], 0);
+    for (const key of Object.keys(c.tokens || {})) c.tokens[key] = repeat(c.tokens[key], 0);
+    let absolute = 0;
+    const times = c.ts.map(delta => absolute += delta);
+    let previous = 0;
+    c.ts = repeat(times, 0).map(value => { const delta = value - previous; previous = value; return delta; });
+    for (const key of ['id', 'prompt', 'price', 'credit', 'cw1h', 'complete', 'interrupted', 'id_synthetic']) c[key] = repeat(c[key] || [], null);
+    c.n = n;
+    data.usage = {source_keys: Array(n).fill('claude_cli'), local_rows: [], plans: [], groups: []};
+    delete data.prompt_texts; delete data.prompt_context; delete data.prompt_resume;
+  });
+}
 const stockholm = iso => new Intl.DateTimeFormat('en-CA', {timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit'}).format(Date.parse(iso));
 function withLimitHit(html) {
   return html.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+\/=]+)(<\/script>)/, (_, a, b64, c) => {
@@ -549,6 +567,33 @@ async function ready(page, errors, what = 'report') {
         assert.equal(d.length,10);assert.ok(d.every(x=>x!=='none'),'table header visible on desktop: '+d);
         await p2.setViewportSize({width:1440,height:1080});
       }
+      {
+        // Report feature cards (#79/#146): private retained context supplies
+        // both the session title and retained prompt, while client shares and
+        // work groups follow the same selected rows as the existing cards.
+        await p2.click('[data-lang="'+T.lang+'"]');
+        await p2.click('#reset');
+        const retained=await p2.evaluate(()=>{const d=UsageReport.data,keys=Object.keys(d.prompt_texts||{}),k=keys.find(x=>d.prompt_context&&d.prompt_context[x]);return k?{title:d.prompt_context[k].title,prompt:d.prompt_texts[k]}:null});
+        assert.ok(retained&&retained.title&&retained.prompt,'fixture has an intersecting retained prompt/context entry');
+        assert.ok(await p2.evaluate(()=>Object.keys(UsageReport.data.prompt_texts||{}).length<=10&&Object.keys(UsageReport.data.prompt_context||{}).length<=10),'only the retained top-k text/context entries are embedded');
+        assert.ok(await p2.locator('#work').isVisible());
+        const usageText=await p2.locator('#usage-body').innerText();assert.ok(usageText.includes(T.lang==='sv'?'Kostnadsandel':'Cost share')&&usageText.includes(T.lang==='sv'?'Samtal':'Calls'),'usage card shows call and cost shares');
+        const workText=await p2.locator('#work').innerText();assert.ok(workText.includes(retained.title),'work card keeps the session title');assert.ok(workText.includes(retained.prompt),'work card keeps the retained prompt');
+        const base=await p2.evaluate(()=>{const selected=UsageReport.getSelected(),index=new Map(UsageReport.all.map((r,i)=>[r,i])),chosen=new Set(selected.map(r=>index.get(r))),cost=r=>!r.id_synthetic&&r.cost!=null?r.cost:null,U=UsageReport.data.usage||{},grouped=(U.groups||[]).reduce((sum,g)=>sum+g.rows.filter(i=>chosen.has(i)).reduce((n,i)=>n+(cost(UsageReport.all[i])||0),0),0),knownTurns=(U.groups||[]).reduce((n,g)=>n+g.turns.filter(t=>t.rows.some(i=>chosen.has(i))).length,0),unknown=(U.groups||[]).reduce((n,g)=>n+g.rows.filter(i=>chosen.has(i)&&!new Set(g.turns.flatMap(t=>t.rows)).has(i)).length,0),total=selected.reduce((n,r)=>n+(cost(r)||0),0);return{selected:selected.length,known:UsageReport.aggregate(selected).known_tokens,grouped,total,knownTurns,unknown,usageRows:document.querySelectorAll('#usage-body .usage-table tbody tr').length||document.querySelectorAll('#usage-body .usage-table tr').length-1}});
+        assert.ok(Math.abs(base.grouped-base.total)<1e-9,'work groups reconcile to selected priced cost');assert.ok(base.knownTurns>0&&base.unknown>=0,'known turns and unknown requests are tracked separately');
+        const project=await p2.locator('#project_id option').nth(1).getAttribute('value');assert.ok(project);await p2.selectOption('#project_id',project);
+        const narrowed=await p2.evaluate(()=>{const selected=UsageReport.getSelected(),index=new Map(UsageReport.all.map((r,i)=>[r,i])),chosen=new Set(selected.map(r=>index.get(r))),cost=r=>!r.id_synthetic&&r.cost!=null?r.cost:null,total=selected.reduce((n,r)=>n+(cost(r)||0),0),grouped=(UsageReport.data.usage.groups||[]).reduce((sum,g)=>sum+g.rows.filter(i=>chosen.has(i)).reduce((n,i)=>n+(cost(UsageReport.all[i])||0),0),0);return{selected:selected.length,known:UsageReport.aggregate(selected).known_tokens,total,grouped,workVisible:!document.getElementById('work').classList.contains('hidden')}});assert.ok(narrowed.selected<base.selected&&narrowed.known<=base.known&&narrowed.workVisible,'project filter updates feature cards');assert.ok(Math.abs(narrowed.grouped-narrowed.total)<1e-9,'filtered work groups reconcile to filtered cost');
+        await p2.click('#reset');await p2.click('[data-gran="hour"]');await p2.locator('#chart .bar').first().click();assert.ok(await p2.evaluate(()=>UsageReport.getSelected().length>0),'zoom retains a selected period');assert.ok(await p2.locator('#usage').isVisible());const zoom=await p2.evaluate(()=>{const selected=UsageReport.getSelected(),index=new Map(UsageReport.all.map((r,i)=>[r,i])),chosen=new Set(selected.map(r=>index.get(r))),cost=r=>!r.id_synthetic&&r.cost!=null?r.cost:null,total=selected.reduce((n,r)=>n+(cost(r)||0),0),grouped=(UsageReport.data.usage.groups||[]).reduce((sum,g)=>sum+g.rows.filter(i=>chosen.has(i)).reduce((n,i)=>n+(cost(UsageReport.all[i])||0),0),0);return{total,grouped}});assert.ok(Math.abs(zoom.grouped-zoom.total)<1e-9,'zoomed work groups reconcile to zoomed cost');await p2.click('#reset');
+        const lower=await newPage({locale:T.locale},edited(fixture,d=>{const i=d.columns.price.findIndex(x=>x!=null);d.columns.price[0]=i<0?null:d.columns.price[i];d.columns.complete[0]=0;d.columns.id_synthetic[0]=0}));
+        const lowerText=norm(await lower.page.locator('#usage-body, #work-body').allInnerTexts().then(xs=>xs.join(' ')));assert.ok(lowerText.includes('≥')&&!/\$0(?:\.00|,00)/.test(lowerText),'incomplete priced work is a lower bound, never zero');assert.deepEqual(lower.errors,[]);await lower.context.close();
+        const unknownClient=await newPage({locale:T.locale},edited(fixture,d=>{d.usage.source_keys=Array(d.columns.n).fill('claude_cli');d.usage.source_keys[0]='unknown';d.columns.price[0]=null}));const unknownClientRow=await unknownClient.page.locator('#usage-body tr').filter({hasText:T.lang==='sv'?'Okänd klient':'Unknown client'}).first().innerText();assert.match(unknownClientRow,/kostnad okänd|cost unknown/i);assert.ok(!/\$0(?:\.00|,00)/.test(unknownClientRow));assert.deepEqual(unknownClient.errors,[]);await unknownClient.context.close();
+        const noCost=await newPage({locale:T.locale},edited(fixture,d=>{for(const g of d.usage.groups||[])for(const i of g.rows)d.columns.price[i]=null}));const noCostText=norm(await noCost.page.locator('#work-body').innerText());assert.ok(/n\/a|kostnad okänd|cost unknown/i.test(noCostText)&&!/\$0(?:\.00|,00)/.test(noCostText),'unknown work cost is n/a, never zero');assert.deepEqual(noCost.errors,[]);await noCost.context.close();
+        const unknown=await newPage({locale:T.locale},edited(fixture,d=>{for(const g of d.usage.groups||[])for(const turn of g.turns)turn.rows=turn.rows.filter(i=>i>=2)}));const unknownText=await unknown.page.locator('#work-body').innerText();assert.match(unknownText,T.lang==='sv'?/saknar lagrad turn-koppling/:/no retained turn link/,'unknown requests are disclosed separately from known turns');assert.deepEqual(unknown.errors,[]);await unknown.context.close();
+        const hostile=await newPage({locale:T.locale},edited(fixture,d=>{for(const g of d.usage.groups||[]){g.project='<img src=x onerror=alert(1)>';g.branch='<svg>';for(const turn of g.turns)turn.title='<b>hostile</b>'}}));const hostileText=await hostile.page.locator('#work-body').innerText();assert.ok(hostileText.includes('<img src=x onerror=alert(1)>')&&hostileText.includes('<b>hostile</b>'));assert.equal(await hostile.page.locator('#work-body img, #work-body svg, #work-body b').count(),0,'hostile values are textContent only');assert.deepEqual(hostile.errors,[]);await hostile.context.close();
+        const plans=await newPage({locale:T.locale},edited(fixture,d=>{d.usage.plans=[{harness:'claude',plan:'max-5x',source:'manual',rows:[0]},{harness:'codex',plan:'pro',source:'snapshot',rows:[1]},{harness:'claude',plan:'unknown',source:'observed',rows:[2]}]}));const planText=await plans.page.locator('#usage-body').innerText();assert.ok(planText.includes('Max 5×')&&planText.includes('Pro')&&planText.includes(T.lang==='sv'?'abonnemang okänt':'plan unknown'),'manual, observed and unknown plans are shown');assert.ok(planText.includes(T.lang==='sv'?'manuellt angivet':'manually configured')&&planText.includes(T.lang==='sv'?'observerat':'observed'),'plan provenance is explained');assert.deepEqual(plans.errors,[]);await plans.context.close();
+        const local=await newPage({locale:T.locale},edited(fixture,d=>{d.usage.source_keys=Array(d.columns.n).fill('opencode');d.usage.local_rows=[0]}));const localText=await local.page.locator('#usage-body').innerText();assert.ok(localText.includes('OpenCode')&&/local provider|lokal provider/i.test(localText),'local inference is separate from the observed client');assert.deepEqual(local.errors,[]);await local.context.close();
+        await p2.setViewportSize({width:390,height:844});assert.ok(await p2.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'feature cards do not overflow on mobile');await p2.setViewportSize({width:1440,height:1080});
+      }
       assert.deepEqual(errors2,[]);await c2.close();
     }
     if(sharedFixture){
@@ -568,6 +613,21 @@ async function ready(page, errors, what = 'report') {
   try {
     await suite(L.sv);
     await suite(L.en);
+    // The feature cards aggregate the same row objects as the existing report.  Keep a
+    // large synthetic payload here to catch accidental per-row scans in the browser
+    // renderer (the browser test is intentionally skipped when no Playwright runtime
+    // is configured, like the rest of this file).
+    {
+      const started=Date.now();
+      const large=await newPage({locale:'en-US'},withLargeRows(smoke,20000));
+      const elapsed=Date.now()-started;
+      const state=await large.page.evaluate(()=>({n:UsageReport.all.length,selected:UsageReport.getSelected().length,usage:document.getElementById('usage')?.innerText||'',work:document.getElementById('work')?.innerText||''}));
+      assert.equal(state.n,20000,'large payload keeps all rows');
+      assert.equal(state.selected,20000,'large payload selects all rows');
+      assert.ok(state.usage&&state.work,'feature cards render for the large payload');
+      assert.ok(elapsed<30000,'20k-row aggregation completes within 30s: '+elapsed+'ms');
+      assert.deepEqual(large.errors,[]);await large.context.close();
+    }
     // Toggle: click EN then SV live, without a reload; <html lang>, labels and number formats follow.
     {
       const {context,page,errors}=await newPage({locale:'sv-SE'},smoke);

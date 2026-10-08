@@ -39,6 +39,10 @@ class DemoTests(unittest.TestCase):
             self.assertGreater(summary['claude_quota_snapshots'], 10)
             self.assertGreater(summary['quota_share_labels']['observed'], 0)
             self.assertEqual({t['harness'] for t in top}, {'claude', 'codex', 'pi', 'opencode'})
+            self.assertEqual(summary['report_features'], {
+                'local_provider': 'ollama', 'manual_claude_plan': 'max-5x',
+                'retained_top_k_only': True, 'unknown_project_or_branch': True,
+            })
 
     def test_demo_report_embeds_realistic_prompt_text_for_top_turns(self):
         def build(seed):
@@ -50,6 +54,15 @@ class DemoTests(unittest.TestCase):
             match = re.search(r'<script id="report-data" type="application/octet-stream\+base64">([A-Za-z0-9+/=]*)</script>', page)
             return json.loads(gzip.decompress(base64.b64decode(match.group(1))).decode('ascii'))
         payload = build(7)
+        self.assertTrue(payload['usage']['local_rows'], 'demo includes local-provider rows')
+        manual = [p for p in payload['usage']['plans']
+                   if p['harness'] == 'claude' and p['plan'] == 'max-5x' and p['source'] == 'manual']
+        self.assertEqual(len(manual), 1)
+        self.assertTrue(manual[0]['rows'])
+        self.assertTrue(payload['usage']['groups'], 'demo includes project/branch groups')
+        self.assertTrue(any(g.get('branch') is None or g.get('repository') is None
+                            for g in payload['usage']['groups']),
+                        'demo includes an unknown project or branch')
         texts = [t for t in payload['prompt_texts'].values() if t]
         self.assertEqual(len(texts), 10)
         self.assertEqual(len(set(texts)), len(texts), 'top-turn prompts repeat')

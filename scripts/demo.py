@@ -398,6 +398,9 @@ def opencode_db(path, rng, script):
     specs = [('oc-webshop-1', None, 'shop', utc(9, 8, 5), 14, 'openai', 'gpt-5.6-terra', 'build', 5),
              ('oc-webshop-1-explore', 'oc-webshop-1', 'shop', utc(9, 8, 20), 8, 'openai', 'gpt-5.6-terra', 'explore', 5),
              ('oc-docs-1', None, 'docs', utc(19, 11, 30), 10, 'opencode', 'big-pickle', 'build', 5),
+             # Local inference keeps the demo's client origin (OpenCode) while
+             # exercising the separate local-provider classification in reports.
+             ('oc-docs-local', None, 'docs', utc(20, 11, 30), 6, 'ollama', 'qwen3:8b', 'build', 3),
              # One long agentic turn on a larger model: a costly OpenCode turn.
              ('oc-shop-long', None, 'shop', utc(13, 9, 0), 48, 'openai', 'gpt-6-sol', 'build', 48)]
     for sid, parent, key, t0, n, provider, model, agent, turn_len in specs:
@@ -682,6 +685,9 @@ def main(argv=None):
         session_text = cli(env, db, 'session', ORCH, '--outcomes', str(outc))
         session_json = json.loads(cli(env, db, 'session', ORCH, '--outcomes', str(outc), '--json'))
         cli(env, db, 'top', '--keep-text')
+        # A manually configured Claude plan is deliberately explicit in the
+        # demo, since imported history does not provide a documented plan field.
+        cli(env, db, 'plan', 'set', '--harness', 'claude', 'max-5x')
         report = outdir / 'demo-report.html'
         report_args = ['report', '--html', str(report)] + ([] if args.shared else ['--private'])
         cli(env, db, *report_args)
@@ -724,6 +730,8 @@ def main(argv=None):
                                      for q in quota_share.windows(snapshots)],
                    'quota_share_labels': {k: sum(1 for x in shares.values() if x['label'] == k) for k in ('observed', 'estimate', 'unknown')},
                    'claude_quota_snapshots': len(quota_file.read_text().splitlines()),
+                   'report_features': {'manual_claude_plan': 'max-5x', 'local_provider': 'ollama',
+                                      'unknown_project_or_branch': True, 'retained_top_k_only': True},
                    'report': str(report)}
         (outdir / 'demo-summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
         if not args.no_screens:
