@@ -5,6 +5,11 @@ The fixture contains only generated counters and metadata.  It never reads a
 user history or writes outside the path supplied on the command line.
 """
 import argparse
+import contextlib
+import io
+import os
+import time
+from unittest.mock import patch
 import json
 import sys
 from datetime import datetime, timezone
@@ -88,15 +93,44 @@ def create(path, count):
         print(json.dumps({'database': str(path), 'observations': rows, 'revision': database.revision}, sort_keys=True))
 
 
+def measure_collect(path):
+    """Warm the actual CLI, then measure an unchanged regular collect in an empty fake home."""
+    from tokenatlas.__main__ import main as cli
+    path = Path(path).resolve()
+    home = path.parent / 'home'; home.mkdir(exist_ok=True)
+    env = {'HOME':str(home), 'USERPROFILE':str(home), 'PATH':os.defpath,
+           'XDG_STATE_HOME':str(home/'state'), 'XDG_CONFIG_HOME':str(home/'config'),
+           'XDG_DATA_HOME':str(home/'data'), 'CLAUDE_CONFIG_DIR':str(home/'claude'),
+           'CODEX_HOME':str(home/'codex'), 'PI_CODING_AGENT_DIR':str(home/'pi')}
+    result = {}
+    with patch.dict(os.environ, env, clear=True):
+        for name, args in [('retain', ['top','--keep-text','-n','10','--json']), ('warm_collect',['collect']), ('unchanged_collect',['collect'])]:
+            report = path.with_name('report.html')
+            before = report.stat().st_mtime_ns if report.exists() else None
+            out, err = io.StringIO(), io.StringIO()
+            started, wall = time.process_time(), time.monotonic()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli(['--db',str(path),*args])
+            if code: raise RuntimeError(f'{name} failed: {code}: {err.getvalue()}')
+            result[name] = {'cpu_seconds':round(time.process_time()-started,6), 'wall_seconds':round(time.monotonic()-wall,6)}
+            if name=='unchanged_collect':
+                result[name]['report_unchanged'] = before == report.stat().st_mtime_ns
+                result[name]['top_skipped'] = 'top: skipped: history revision' in out.getvalue()
+                path.with_name('unchanged-collect.log').write_text(out.getvalue()+err.getvalue())
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path', type=Path)
+    parser.add_argument('--measure-collect', action='store_true', help='warm and measure a real unchanged collect after creating the fixture')
     parser.add_argument('--observations', type=int, default=400000)
     parser.add_argument('--source', type=Path, help='TokenAtlas source tree (default: this checkout)')
     args = parser.parse_args(argv)
     if args.observations < 1:
         parser.error('--observations must be positive')
     create(args.path, args.observations)
+    if args.measure_collect: print(json.dumps(measure_collect(args.path), sort_keys=True))
 
 
 if __name__ == '__main__':

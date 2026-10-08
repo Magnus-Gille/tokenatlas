@@ -475,15 +475,15 @@ def _install(interval: int, remotes: list[str], backend: str, platform: str, dry
         if done.returncode == 0:
             done = _probe(["systemctl", "--user", "restart", f"{SYSTEMD_NAME}.timer"])
         if done.returncode:
+            restored = []
+            if not was_enabled:
+                restored.append(_probe(["systemctl", "--user", "disable", "--now", timer.name]))
             for path in (service, timer):
                 if path in previous:
                     _atomic_write(path, previous[path])
                 else:
                     path.unlink(missing_ok=True)
             _probe(["systemctl", "--user", "daemon-reload"])
-            restored = []
-            if not was_enabled:
-                restored.append(_probe(["systemctl", "--user", "disable", "--now", timer.name]))
             if was_active:
                 restored.append(_probe(["systemctl", "--user", "restart", timer.name]))
             if any(item.returncode for item in restored):
@@ -661,7 +661,7 @@ def _remove(platform: str, dry_run: bool) -> dict:
                     _checked(result["commands"][0])
                 path.unlink()
             result["removed"] = [str(path)]
-        return result
+        return _remove_cron(result, dry_run)
     if platform == "windows":
         script, _ = _windows_paths()
         if script.exists() and _owned(script):
@@ -690,6 +690,10 @@ def _remove(platform: str, dry_run: bool) -> dict:
             for path in owned_units: path.unlink()
             _checked(result["commands"][1])
         result["removed"] = [str(path) for path in owned_units]
+    return _remove_cron(result, dry_run)
+
+
+def _remove_cron(result, dry_run):
     try:
         text, exists = _crontab()
     except ScheduleUnavailable:
@@ -699,7 +703,7 @@ def _remove(platform: str, dry_run: bool) -> dict:
         result["commands"].append(["crontab", "-"])
         result["removed"].append("crontab")
         if not dry_run:
-            updated = "".join(line for line in re.findall(r"[^\n]*\n|[^\n]+$", text) if line.rstrip("\r\n") not in owned)
+            updated = "".join(line for line in re.findall(r"[^\n]*\n|[^\n]+$", text) if not line.rstrip("\r\n").endswith(f"# {MARKER}"))
             command = shutil.which("crontab") or "crontab"
             done = _run([command, "-"], input_text=updated)
             if done.returncode:
@@ -728,7 +732,7 @@ def run(args) -> int:
     if platform != "windows" and backend != "cron":
         try:
             cron, _ = _crontab()
-        except ScheduleError:
+        except ScheduleUnavailable:
             cron = ""
         if _cron_owned_lines(cron):
             raise ScheduleError("a managed cron schedule exists; run schedule --remove before changing backend")

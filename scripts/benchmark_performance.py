@@ -6,6 +6,7 @@ and hashes only.  A previous JSON result can be supplied with ``--compare`` to
 calculate before/after ratios without retaining any records.
 """
 import argparse
+import gc
 import hashlib
 import inspect
 import json
@@ -96,6 +97,8 @@ def run(records):
     snapshots = timed('snapshots', lambda: call_with_supported(quota_share.snapshots_from_records, records, assigned=assigned), out)
     timed('quota_shares', lambda: quota_share.turn_shares(records, snapshots, table, cost_of), out)
     facts = timed('cost_facts', lambda: insights.cost_facts(records, table, memo=cost_memo, credit_table=ctable), out)
+    del cost_memo, cost_of, snapshots
+    gc.collect()  # release completed step caches before the independent report measurement
     payload = timed('report', lambda: call_with_supported(
         report.build_report, records, {}, redact=True, table=table, credit_table=ctable,
         assigned=assigned, whole_assigned=assigned, quota=False,

@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tokenatlas import prompt_text, prompts, provenance, turn_context
+from tokenatlas import __version__, prompt_text, prompts, provenance, turn_context
 
 FILE = 'top-prompts.json'
 SELECTION_VERSION = 1
@@ -132,7 +132,7 @@ def _state(path):
     except (ValueError, TypeError, AttributeError):
         return None
     if not isinstance(value, dict):return None
-    return {key:value.get(key) for key in ('history_revision','history_token','machine','prices','selection_version')}
+    return {key:value.get(key) for key in ('history_revision','history_token','machine','prices','selection_version','app_version')}
 
 
 def _selection_token(entries, k, by):
@@ -159,7 +159,7 @@ def up_to_date(path, revision, history_token=None, machine=None, prices=None):
     try:stored_semantics = json.loads(raw).get('selection_token') if raw else None
     except (ValueError, TypeError, AttributeError):stored_semantics = None
     return all(state.get(key) == value for key, value in (('history_token', history_token), ('machine', machine), ('prices', prices)) if value is not None) \
-        and state.get('selection_version') == SELECTION_VERSION and stored_semantics == _selection_token(entries, k, by)
+        and state.get('app_version') == __version__ and state.get('selection_version') == SELECTION_VERSION and stored_semantics == _selection_token(entries, k, by)
 
 
 def load(path):
@@ -260,11 +260,11 @@ def update(path,records,table,machine,k=5,by='cost',extract=prompt_text.extract_
                         'captured_at':known['captured_at'] if known else datetime.now(timezone.utc).isoformat(timespec='seconds'),
                         'text':text if need_text else known['text'],'context':ctx if need_ctx else known.get('context')});added+=1
     evicted=len(set(old)-{(e['harness'],e['session'],e['turn_id']) for e in entries})
-    body={'version':2,'k':k,'by':by,'entries':[{**e,'context':e.get('context')} for e in entries]}
+    body={'version':2,'k':k,'by':by,'entries':[{**e,'context':_norm_context(e.get('context'))} for e in entries]}
     body['selection_token'] = _selection_token(body['entries'], k, by)
     if revision is not None:
         body.update(history_revision=revision, history_token=history_token, machine=machine,
-                    prices=prices, selection_version=SELECTION_VERSION)
+                    prices=prices, selection_version=SELECTION_VERSION, app_version=__version__)
     data=json.dumps(body,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()+b'\n'
     if data!=old_raw or bad:_write(path,data)
     return {'kept':kept,'added':added,'evicted':evicted,'path':str(path)}

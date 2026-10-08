@@ -8,6 +8,31 @@ from tokenatlas import pricing, prompt_store
 
 
 class PerformanceCacheTest(unittest.TestCase):
+    def test_precomputed_assignments_survive_report_sorting(self):
+        from datetime import datetime, timezone
+        from tokenatlas import report, prompts
+        from test_report import observation
+        records = [observation('z', session='sz', turn_id='tz'), observation('a', session='sa', turn_id='ta')]
+        self.assertEqual(records[0]['ts'], records[1]['ts'])
+        now = datetime(2026,10,8,tzinfo=timezone.utc)
+        texts = {(r['harness'],r['session'],r['turn_id']):r['id'] for r in records}
+        expected = report.build_report(records, {}, redact=False, now=now, quota=False, prompt_texts=texts)
+        actual = report.build_report(records, {}, redact=False, now=now, quota=False, prompt_texts=texts, assigned=prompts.assign_prompts(records))
+        self.assertEqual(actual, expected)
+
+    def test_precomputed_assignments_survive_limit_hit_sorting(self):
+        from tokenatlas import limits, prompts
+        from test_limits import session_rows, write, TABLE
+        with tempfile.TemporaryDirectory() as directory:
+            source = write(directory, session_rows())
+            from tokenatlas.history import History
+            with History(Path(directory)/'fixture.sqlite3') as history:
+                history.refresh('claude', Path(directory))
+                records, events = list(reversed(history.records())), history.limit_events()
+            expected = limits.limit_hits(records, events, TABLE)
+            self.assertTrue(expected)
+            self.assertEqual(limits.limit_hits(records, events, TABLE, assigned=prompts.assign_prompts(records)), expected)
+
     def test_price_model_cache_rechecks_mutated_aliases(self):
         table = pricing.load_prices()
         model = next((entry for entry in table['models'] if entry.get('aliases')), None)
@@ -62,6 +87,8 @@ class PerformanceCacheTest(unittest.TestCase):
                                     history_token='revision-token', prices='table-token')
             self.assertTrue(prompt_store.up_to_date(path, 7, 'revision-token', 'm-test', 'table-token'))
             self.assertFalse(prompt_store.up_to_date(path, 8, 'revision-token', 'm-test', 'table-token'))
+            with patch.object(prompt_store, '__version__', 'future-version'):
+                self.assertFalse(prompt_store.up_to_date(path, 7, 'revision-token', 'm-test', 'table-token'))
             data = json.loads(path.read_text())
             data['k'] = 4
             path.write_text(json.dumps(data))

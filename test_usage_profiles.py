@@ -1,4 +1,6 @@
 import json
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -28,6 +30,17 @@ class UsageProfileTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 usage_profiles.save(db, {"plans": {"claude": "max-5x"}})
             self.assertIsNone(usage_profiles._valid_name("bad\nname"))
+
+    def test_cli_profile_failure_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db=Path(directory)/'history.sqlite3';path=usage_profiles.path_for(db)
+            path.write_text('not json');path.chmod(0o600)
+            stderr=io.StringIO()
+            with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
+                __main__.main(['--db',str(db),'plan','set','--harness','claude','max-5x'])
+            self.assertEqual(error.exception.code,2)
+            self.assertIn('usage:',stderr.getvalue())
+            self.assertEqual(path.read_text(),'not json')
 
     def test_unknown_origin_is_not_presented_as_cli(self):
         self.assertEqual(usage_profiles.client_key("claude", "new-origin"), "unknown")

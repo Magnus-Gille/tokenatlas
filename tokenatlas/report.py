@@ -41,6 +41,7 @@ def public_model_checker(*tables):
 # Part of every report's identity (report_state), so a cached report built under an older redaction policy is never reused or throttled
 # (`open`, `report --if-changed`, `--max-age`). Bump it with ANY change to what a shared report reveals or how it pseudonymizes.
 # 1: model names are shown only when exact packaged public identifiers (#133).
+# 2: public client labels, local-inference counts and public plan tiers are allowed (#146); work context remains private.
 REDACTION_REVISION = 2
 INSIGHT_DAYS = 30
 MAX_QUOTA_WINDOWS = 12
@@ -200,7 +201,10 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     table = table or pricing.load_prices()
     credit_table = credit_table or credit_rates.packaged()
     zone = ZoneInfo(timezone_name)
+    assignment_by_row = None if assigned is None else {id(r): a for r, a in zip(records, assigned)}
     records = sorted(records, key=lambda r: (r['ts'], r['harness'], r['id']))
+    if assignment_by_row is not None:assigned = [assignment_by_row[id(r)] for r in records]
+    del assignment_by_row
     is_public_model = public_model_checker(pricing.load_prices(), credit_rates.packaged()) if redact else None  # the packaged tables, never a caller-supplied one: they decide what is public
     aliases = {}
     def alias(kind, value):

@@ -182,6 +182,36 @@ class ScheduleTest(unittest.TestCase):
         with patch.dict(os.environ, {'XDG_STATE_HOME':'relative-state'}):
             self.assertEqual(schedule._resolved_db(), (Path('relative-state')/'tokenatlas/history.sqlite3').absolute())
 
+    def test_backend_check_does_not_treat_cron_read_errors_as_absence(self):
+        with patch.object(schedule, '_platform', return_value='linux'), patch.object(schedule, '_backend', return_value='systemd'), patch.object(schedule, '_crontab', side_effect=schedule.ScheduleError('denied')), patch.object(schedule, '_install') as install:
+            with self.assertRaisesRegex(schedule.ScheduleError, 'denied'):
+                schedule.run(self.args(dry_run=True))
+        install.assert_not_called()
+
+    def test_remove_crlf_owned_cron_keeps_other_bytes_on_both_unix_platforms(self):
+        other='1 * * * * echo untouched\r\n'
+        current=other+'*/30 * * * * tokenatlas collect # tokenatlas schedule\r\n'
+        for platform in ('linux','darwin'):
+            writes=[]
+            with patch.object(schedule, '_crontab', return_value=(current, True)), patch.object(schedule, '_run', side_effect=lambda cmd, **kw: writes.append(kw.get('input_text')) or subprocess.CompletedProcess(cmd,0,'','')):
+                result=schedule._remove(platform,False)
+            self.assertEqual(writes,[other])
+            self.assertIn('crontab',result['removed'])
+
+    def test_fresh_systemd_rollback_disables_before_removing_units(self):
+        service,timer,_=schedule._systemd_paths()
+        calls=[]
+        def command(argv, **kwargs):
+            calls.append(argv)
+            if 'disable' in argv:
+                self.assertTrue(timer.exists(), 'disable requires the installed unit to exist')
+            return subprocess.CompletedProcess(argv,1 if 'restart' in argv else 0,'','restart failure')
+        with patch.object(schedule,'_check_systemd_paths'),patch.object(schedule,'_run',side_effect=command):
+            with self.assertRaisesRegex(schedule.ScheduleError,'restart'):
+                schedule._install(1800,[],'systemd','linux',False)
+        self.assertTrue(any('disable' in c for c in calls))
+        self.assertFalse(service.exists());self.assertFalse(timer.exists())
+
     def test_parse_and_reject_remote(self):
         self.assertEqual(schedule.parse_every("30m"), 1800)
         self.assertEqual(schedule.parse_every("1h"), 3600)
