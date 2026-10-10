@@ -88,7 +88,7 @@ class UpgradeTests(unittest.TestCase):
         for manager in ('uv','pipx'):
             install = upgrade.Installation(manager,self.prefix,self.python,self.install.launcher,Path('/tools')/manager)
             cmd = upgrade.command(install,'1.20.0')
-            self.assertEqual(cmd[0], '/tools/'+manager)
+            self.assertEqual(cmd[0], str(Path('/tools')/manager))
             self.assertIn('tokenatlas==1.20.0', cmd)
             self.assertNotIn('sudo', cmd)
 

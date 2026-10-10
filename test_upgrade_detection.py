@@ -128,7 +128,7 @@ class DetectionFixture(unittest.TestCase):
             if exposed_matches:
                 os.link(self.launcher, exposed)
             else:
-                exposed.touch()
+                exposed.write_bytes(b"different launcher bytes")
         return executable
 
     def _replace_patch(self, target, name, value):

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
@@ -75,7 +76,7 @@ def build_wheels(work):
             metadata_name = next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))
             metadata_text = archive.read(metadata_name).decode("utf-8")
         for version in VERSIONS:
-            if f"Version: {version}\n" in metadata_text:
+            if f"Version: {version}" in metadata_text.splitlines():
                 built[version] = wheel
     if set(built) != set(VERSIONS):
         raise AssertionError(f"expected synthetic wheels for {VERSIONS}; found {sorted(built)}")
@@ -182,6 +183,15 @@ def manager_environment(work, env, manager):
 
 
 class UpgradeArtifactTests(unittest.TestCase):
+    def test_build_wheels_recognizes_crlf_metadata(self):
+        def fake_build(command, cwd):
+            version=re.search(r'__version__ = "([^\"]+)"', (Path(command[-1])/'tokenatlas/__init__.py').read_text()).group(1)
+            wheel=Path(command[-2])/f'tokenatlas-{version}-py3-none-any.whl'
+            with zipfile.ZipFile(wheel,'w') as archive:
+                archive.writestr(f'tokenatlas-{version}.dist-info/METADATA', f'Name: tokenatlas\r\nVersion: {version}\r\n')
+        with tempfile.TemporaryDirectory() as tmp, patch(__name__+'.run',side_effect=fake_build):
+            self.assertEqual(len(list(build_wheels(Path(tmp)).glob('tokenatlas-*.whl'))),2)
+
     @unittest.skipUnless(BUILD_TOOLS_AVAILABLE, "release smoke requires setuptools>=77 and wheel")
     def test_real_environment_upgrade_and_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:
