@@ -143,6 +143,11 @@ def restricted_environment(work, manager_paths, decoys):
         "UV_CACHE_DIR": str(work / "uv-cache"),
     }
     if os.name == "nt":
+        env["USERPROFILE"] = str(home)
+        for key, folder in (("APPDATA", "Roaming"), ("LOCALAPPDATA", "Local")):
+            path = home / "AppData" / folder
+            path.mkdir(parents=True, exist_ok=True)
+            env[key] = str(path)
         for key in ("SYSTEMROOT", "WINDIR", "PATHEXT"):
             if key in os.environ:
                 env[key] = os.environ[key]

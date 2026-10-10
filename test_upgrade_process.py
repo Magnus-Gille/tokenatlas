@@ -30,10 +30,11 @@ class WindowsJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             marker=Path(tmp)/'started'
             code='from pathlib import Path; Path('+repr(str(marker))+').touch()'
-            with patch.object(upgrade_process._Job,'assign',side_effect=OSError('assignment denied')):
+            with patch.object(upgrade_process._Job,'assign',side_effect=OSError('assignment denied')), patch.object(upgrade_process.subprocess,'Popen',wraps=subprocess.Popen) as launch:
                 with self.assertRaises(OSError):
                     upgrade_process.execute_windows([sys.executable,'-c',code],dict(os.environ),tmp,10)
             self.assertFalse(marker.exists())
+            self.assertEqual(launch.call_args.args[0][1:4],['-I','-S','-c'])
 
     def test_supervisor_death_kills_installer_tree(self):
         with tempfile.TemporaryDirectory() as tmp:

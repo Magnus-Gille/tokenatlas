@@ -104,7 +104,7 @@ def execute_windows(argv, env, cwd, timeout):
             if hasattr(signal,name):
                 sig = getattr(signal,name)
                 handlers[sig] = signal.signal(sig,interrupted)
-        proc = subprocess.Popen([str(python),'-I','-c',_HELPER,json.dumps(list(map(str,argv)))],
+        proc = subprocess.Popen([str(python),'-I','-S','-c',_HELPER,json.dumps(list(map(str,argv)))],
                                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                                 text=True,errors='replace',env=env,cwd=cwd,
                                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)

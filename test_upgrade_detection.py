@@ -20,14 +20,16 @@ class DetectionFixture(unittest.TestCase):
         self.base.mkdir()
         self.base_python = self.base / "python"
         self.base_python.touch()
+        self.scripts = "Scripts" if os.name == "nt" else "bin"
+        self.launcher_name = "tokenatlas.exe" if os.name == "nt" else "tokenatlas"
         self.prefix = self.root / "env"
         self._make_prefix(self.prefix)
         self.tools = self.root / "tools"
         self.tools.mkdir()
         self.bin = self.root / "manager-bin"
         self.bin.mkdir()
-        self.python = self.prefix / "bin" / "python"
-        self.launcher = self.prefix / "bin" / "tokenatlas"
+        self.python = self.prefix / self.scripts / "python"
+        self.launcher = self.prefix / self.scripts / self.launcher_name
         self.module = self.prefix / "lib" / "python3.13" / "site-packages" / "tokenatlas" / "upgrade.py"
         self.distribution = Mock()
         self.distribution.version = upgrade.__version__
@@ -39,10 +41,10 @@ class DetectionFixture(unittest.TestCase):
         self.which_missing = set()
 
     def _make_prefix(self, prefix):
-        (prefix / "bin").mkdir(parents=True)
+        (prefix / self.scripts).mkdir(parents=True)
         (prefix / "pyvenv.cfg").write_text("home = isolated-fixture\n")
-        (prefix / "bin" / "python").touch()
-        (prefix / "bin" / "tokenatlas").touch()
+        (prefix / self.scripts / "python").touch()
+        (prefix / self.scripts / self.launcher_name).touch()
         (prefix / "lib" / "python3.13" / "site-packages" / "tokenatlas").mkdir(parents=True)
         (prefix / "lib" / "python3.13" / "site-packages" / "tokenatlas" / "upgrade.py").touch()
 
@@ -92,8 +94,8 @@ class DetectionFixture(unittest.TestCase):
             self.root / "uv-tools" / "tokenatlas" if manager == "uv" else self.root / "env"
         )
         self._make_prefix(self.prefix)
-        self.python = self.prefix / "bin" / "python"
-        self.launcher = self.prefix / "bin" / "tokenatlas"
+        self.python = self.prefix / self.scripts / "python"
+        self.launcher = self.prefix / self.scripts / self.launcher_name
         self.module = self.prefix / "lib" / "python3.13" / "site-packages" / "tokenatlas" / "upgrade.py"
         # Replace the fixture's initially patched paths with this manager's paths.
         self._replace_patch(upgrade.sys, "prefix", str(self.prefix))
@@ -191,7 +193,14 @@ class DetectRefusalTests(DetectionFixture):
         stdlib=self.prefix/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'
         stdlib.mkdir(parents=True,exist_ok=True)
         (stdlib/'EXTERNALLY-MANAGED').touch()
-        self.assert_unsupported('externally managed')
+        with patch.object(upgrade.sysconfig,'get_path',return_value=str(stdlib)):
+            self.assert_unsupported('externally managed')
+
+    def test_windows_local_platstdlib_marker_is_refused(self):
+        stdlib=self.prefix/'Lib';stdlib.mkdir(exist_ok=True)
+        (stdlib/'EXTERNALLY-MANAGED').touch()
+        with patch.object(upgrade.sysconfig,'get_path',side_effect=lambda name: str(stdlib if name=='platstdlib' else self.base)):
+            self.assert_unsupported('externally managed')
 
     def test_externally_managed_base_does_not_disqualify_actual_venv(self):
         stdlib=self.root/'base-stdlib';stdlib.mkdir()

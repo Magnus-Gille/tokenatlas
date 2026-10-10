@@ -124,11 +124,10 @@ def detect():
         raise Unsupported('the active environment has no unambiguous TokenAtlas launcher')
     # A global external-management marker does not disqualify an actual venv;
     # an explicit marker inside this environment does.
-    stdlib = Path(sysconfig.get_path('stdlib'))
-    local_stdlib = prefix/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'
-    if ((prefix/'EXTERNALLY-MANAGED').exists() or
-        (local_stdlib/'EXTERNALLY-MANAGED').exists() or
-        (_inside(stdlib,prefix) and (stdlib/'EXTERNALLY-MANAGED').exists())):
+    libraries = [Path(sysconfig.get_path(name)) for name in ('stdlib','platstdlib')]
+    if ((prefix/'EXTERNALLY-MANAGED').exists() or any(
+        _inside(path,prefix) and (path/'EXTERNALLY-MANAGED').exists() for path in libraries
+    )):
         raise Unsupported('this environment is externally managed; use its owner to update it')
     pipx = (prefix/'pipx_metadata.json').is_file()
     uv = (prefix/'uv-receipt.toml').is_file()
