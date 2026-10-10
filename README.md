@@ -751,6 +751,13 @@ exports and mobile overflow.
 
 ## Demo data and screenshots
 
+The report includes navigable 7/30-day token analytics, period comparisons,
+session and weekly drilldowns, and request/linked-turn activity. See
+[Token analytics](docs/analytics.md) for metric definitions and coverage limits.
+
+The analytics browser regression runs alongside the offline report suite:
+`PLAYWRIGHT_MODULE=/path/to/@playwright/test node test_analytics_browser.cjs /absolute/report.html`.
+
 `scripts/demo.py` regenerates the product-page screenshots from entirely fictional data:
 
 ```

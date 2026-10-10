@@ -25,6 +25,8 @@ PUBLIC_NAMES = dict(
     harness=frozenset('claude codex pi opencode'.split()),
     thread_kind=frozenset('main subagent automation'.split()),
     turn_confidence=frozenset('observed derived absent'.split()),
+    speed=frozenset('standard fast'.split()),
+    service_tier=frozenset('standard fast flex'.split()),
 )
 CONSERVATIVE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._: -]{0,120}')
 
@@ -43,7 +45,8 @@ def public_model_checker(*tables):
 # 1: model names are shown only when exact packaged public identifiers (#133).
 # 2: public client labels, local-inference counts and public plan tiers are allowed (#146); work context remains private.
 # 3: compact public cloud-reference rate cards are allowed for explicit local what-if comparisons.
-REDACTION_REVISION = 3
+# 4: canonical public speed and service-tier values are included in request analytics metadata.
+REDACTION_REVISION = 4
 INSIGHT_DAYS = 30
 MAX_QUOTA_WINDOWS = 12
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -308,10 +311,65 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     # fixed labels and aggregate row associations only.
     if redact:
         usage['groups'] = []
+    request_meta_dict, request_meta_idx = {'speed': [], 'service_tier': []}, {'speed': [], 'service_tier': []}
+    request_meta_lookup = {'speed': {}, 'service_tier': {}}
+    for record in records:
+        tariff = record.get('tariff') if isinstance(record.get('tariff'), dict) else {}
+        for field in ('speed', 'service_tier'):
+            value = tariff.get(field)
+            if not isinstance(value, str) or not value:
+                request_meta_idx[field].append(None)
+                continue
+            if redact and value not in PUBLIC_NAMES[field]:
+                value = None
+            if value is None:
+                request_meta_idx[field].append(None)
+                continue
+            index = request_meta_lookup[field].get(value)
+            if index is None:
+                request_meta_dict[field].append(value)
+                index = len(request_meta_dict[field]) - 1
+                request_meta_lookup[field][value] = index
+            request_meta_idx[field].append(index)
+
+    # This is the earliest retained usage observation assigned to a prompt, not necessarily user-input time.
+    observed_starts = {}
+    observed_start_instants = {}
+    for record, found in zip(records, assigned):
+        key = tuple(found[:3]) if found else None
+        ordinal = shown.get(key) if key else None
+        if ordinal is None:
+            continue
+        instant = datetime.fromisoformat(record['ts'])
+        if ordinal not in observed_start_instants or instant < observed_start_instants[ordinal]:
+            observed_start_instants[ordinal] = instant
+            observed_starts[str(ordinal)] = instant.astimezone(zone).date().isoformat()
+
+    activity_dimensions = ('shell', 'edits', 'web', 'subagents')
+    retained_contexts = [
+        context for key, context in (prompt_context or {}).items()
+        if not redact and context and tuple(key) in shown
+    ]
+    turns_with_activity = sum(
+        1 for context in retained_contexts
+        if isinstance(context.get('activity'), dict)
+        and any(isinstance(context['activity'].get(field), int)
+                and not isinstance(context['activity'].get(field), bool)
+                for field in activity_dimensions)
+    )
+    analytics_metadata = dict(
+        request_meta=dict(dict=request_meta_dict, idx=request_meta_idx),
+        observed_turn_start_dates=observed_starts,
+        activity_coverage=dict(
+            source='opt_in_top_k_turn_context', retained_context_turns=len(retained_contexts),
+            turns_with_activity=turns_with_activity, dimensions=list(activity_dimensions),
+            full_tool_events=False, skills=False,
+        ),
+    )
     report = dict(version=2, generated_at=now.isoformat(),
                   timezone=timezone_name, lang=lang, privacy='redacted' if redact else 'local',
                   prices_retrieved=table.get('retrieved_on'),
-                  columns=encode_columns(rows), coverage=coverage,
+                  columns=encode_columns(rows), coverage=coverage, analytics_metadata=analytics_metadata,
                   energy=dict(per_1k=energy.PER_1K, uncertainty=energy.UNCERTAINTY, tier_multipliers=energy.TIERS, multipliers=weights), insights=dict(days=INSIGHT_DAYS, big_turn=insights.BIG_TURN, windows=windows), usage=usage)
     if prompt_texts is not None:
         report['prompt_texts'] = {shown[tuple(k)]: t for k, t in prompt_texts.items() if t and tuple(k) in shown}

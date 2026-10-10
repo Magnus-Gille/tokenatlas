@@ -20,12 +20,25 @@
 @media(max-width:640px){.glance{padding:15px}.glance-list{font-size:15px;padding-left:18px}.glossary{padding:12px 15px}}
 .usage-table{width:100%;table-layout:fixed;border-collapse:collapse}.usage-table th,.usage-table td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left}.usage-table td:nth-child(n+2),.usage-table th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}.work-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.work-card{border:1px solid var(--line);border-radius:10px;padding:15px}.work-card h3{overflow-wrap:anywhere}.work-card p{margin:5px 0}.work-turn{border-top:1px solid var(--line);padding:9px 0;font-size:12px}.usage-note{margin-top:12px}
 @media screen and (max-width:640px){.usage-table th,.usage-table td{white-space:normal;overflow-wrap:anywhere;word-break:break-word;padding:8px 4px}}
+
+.analytics-controls{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.analytics-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:14px 0 24px}.analytics-kpi{border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}.analytics-kpi strong{display:block;font-size:22px;letter-spacing:-.5px;overflow-wrap:anywhere}.analytics-kpi span{display:block;color:var(--muted);font-size:11px}.analytics-kpi small{display:block;margin-top:7px;color:var(--muted);font-size:11px}.analytics-chart-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0}.analytics-chart-head label{min-width:150px}.analytics-legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin:10px 0;font-size:11px}.analytics-legend span{display:inline-flex;align-items:center;gap:5px}.analytics-legend i{width:9px;height:9px;border-radius:2px}.analytics-chart{width:100%;overflow:auto}.analytics-chart svg{width:100%;min-width:620px;height:270px;display:block}.analytics-chart text{font:10px -apple-system,BlinkMacSystemFont,sans-serif;fill:var(--muted)}.analytics-day{border-top:1px solid var(--line);padding:8px 0}.analytics-day summary,.analytics-row summary{cursor:pointer;font-size:12px}.analytics-day ul,.analytics-row ul{margin:7px 0;padding-left:20px;font-size:11px;color:var(--muted)}.analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:20px 0}.analytics-grid>div{min-width:0}.analytics-grid h3,#analytics>div>h3{margin:10px 0}.analytics-row{border-top:1px solid var(--line);padding:8px 0}.analytics-meta{color:var(--muted);font-size:11px}.analytics-empty{padding:14px 0;color:var(--muted);font-size:12px}
+@media(max-width:900px){.analytics-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.analytics-grid{grid-template-columns:1fr}}@media(max-width:600px){.analytics-controls{justify-content:flex-start;margin-top:10px}.analytics-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.analytics-kpi{padding:11px}.analytics-kpi strong{font-size:19px}.analytics-chart-head{align-items:start;flex-direction:column}}
 </style></head><body><div class="shell"><header><div class="brand"><span>↗</span>TokenAtlas</div><nav class="toplinks"><a href="#overview" data-t="n_ov"></a><a href="#sessions" data-t="n_se"></a><a href="#coverage" data-t="n_co"></a></nav><div class="hdr-right"><div class="segments langtoggle" role="group" data-t-aria-label="lang"><button data-lang="sv">SV</button><button data-lang="en">EN</button></div><div class="badge"><span class="dot"></span><span data-t="badge"></span></div></div></header>
 <main><section class="hero" id="overview"><div><div class="eyebrow" data-t="hero_e"></div><h1 data-t="hero_title"></h1><p data-t="hero_p"></p></div><div class="actions"><button id="export-json">JSON ↓</button><button id="export-csv">CSV ↓</button><button id="print" data-t="print"></button></div></section>
 <section class="filters" data-t-aria-label="flt"><div class="filter-grid"><label><span data-t="f_from"></span><input id="from" type="date"></label><label><span data-t="f_to"></span><input id="to" type="date"></label><label><span data-t="f_harness"></span><select id="harness"></select></label><label><span data-t="f_project"></span><select id="project_id"></select></label><label><span data-t="f_model"></span><select id="model"></select></label><label><span data-t="f_effort"></span><select id="effort"></select></label></div><details class="advanced"><summary data-t="more_f"></summary><div class="filter-grid"><label><span data-t="f_provider"></span><select id="provider"></select></label><label><span data-t="f_session"></span><select id="session"></select></label><label><span data-t="f_agent"></span><select id="agent"></select></label><label><span data-t="f_thread"></span><select id="thread_kind"></select></label><label><span data-t="f_search"></span><input id="search" type="search" data-t-placeholder="search_ph"></label></div></details><div class="filter-footer"><span id="selection" class="small muted" aria-live="polite"></span><button class="linkbutton" id="reset" data-t="reset"></button></div></section>
 <section class="glance" id="glance" aria-live="polite"><div class="eyebrow" data-t="glance_e"></div><ul id="glance-text" class="glance-list"></ul></section>
 <details class="glossary" id="glossary"><summary data-t="gl_title"></summary><dl id="glossary-list"></dl></details>
 <div class="kpis" aria-live="polite"><div class="kpi"><div class="label" id="total-label"></div><div class="value count" id="total">—</div><div class="small muted" id="total-note"></div></div><div class="kpi"><div class="label" data-t="tok_input"></div><div class="value" id="fresh">—</div><div class="small muted" id="fresh-note" data-t="fresh_note"></div></div><div class="kpi"><div class="label" data-t="tok_cw"></div><div class="value" id="cache-write">—</div><div class="small muted" id="cache-write-note" data-t="cw_note"></div></div><div class="kpi"><div class="label" data-t="tok_cr"></div><div class="value" id="cache">—</div><div class="small muted" id="cache-note">—</div></div><div class="kpi"><div class="label" data-t="tok_out"></div><div class="value count" id="output">—</div><div class="small muted" id="reasoning"></div></div></div>
+<section id="analytics" class="panel section" aria-labelledby="analytics-title">
+<div class="panel-top"><div><div class="eyebrow" data-t="analytics_e"></div><h2 id="analytics-title" data-t="analytics_title"></h2><p class="small muted" data-t="analytics_intro"></p><p id="analytics-freshness" class="small muted"></p><p id="analytics-period" class="small muted"></p><p id="analytics-comparison-period" class="small muted"></p></div>
+<div class="analytics-controls"><div class="segments" role="group" data-t-aria-label="analytics_window"><button type="button" data-analytics-days="7" data-t="analytics_7d"></button><button type="button" class="active" data-analytics-days="30" data-t="analytics_30d"></button></div><div class="segments" role="group" data-t-aria-label="analytics_nav"><button type="button" id="analytics-prev" data-t="analytics_prev"></button><button type="button" id="analytics-next" data-t="analytics_next"></button></div></div></div>
+<div class="analytics-kpis" id="analytics-kpis"></div>
+<div class="analytics-chart-head"><h3 data-t="analytics_history"></h3><label><span data-t="analytics_group"></span><select id="analytics-group"><option value="token_class" data-t="analytics_token_class"></option><option value="model" data-t="analytics_model"></option><option value="thread_kind" data-t="analytics_thread"></option><option value="origin" data-t="analytics_surface"></option><option value="harness" data-t="analytics_harness"></option><option value="effort" data-t="analytics_effort"></option></select></label></div>
+<div class="analytics-legend" id="analytics-legend"></div><div id="analytics-chart" aria-live="polite"></div><details id="analytics-daily-details"><summary data-t="analytics_daily_details"></summary><div id="analytics-day-list"></div></details>
+<div class="analytics-grid"><div><h3 data-t="analytics_sessions"></h3><div id="analytics-sessions"></div></div><div><h3 data-t="analytics_weeks"></h3><div id="analytics-weeks"></div></div></div>
+<div class="analytics-grid"><div><h3 data-t="analytics_requests"></h3><div id="analytics-requests"></div></div><div><h3 data-t="analytics_turns"></h3><div id="analytics-turns"></div></div></div>
+<div><h3 data-t="analytics_activity"></h3><p class="small muted" data-t="analytics_activity_scope"></p><p id="analytics-activity-coverage" class="small muted"></p><div id="analytics-activity"></div></div>
+</section>
 <section id="prompts" class="panel section"><div class="panel-top"><div><div class="eyebrow" data-t="e4"></div><h2 data-t="p4_title"></h2><p class="small muted" data-t="p4_p"></p><p class="small muted" id="p4-priv"></p></div></div><div id="top-prompts"></div></section>
 <section id="limit-hits" class="panel section hidden"><div class="panel-top"><div><div class="eyebrow" data-t="lh_e"></div><h2 data-t="lh_title"></h2><p class="small muted" data-t="lh_p"></p><p class="small muted" data-t="lh_cover"></p><p class="small muted" data-t="lh_scope"></p></div></div><div id="limit-list"></div><div id="quota-calibration" class="hidden"><h3 class="qw-title" data-t="qc_title"></h3><p class="small muted" data-t="qc_p"></p><ul id="qc-list" class="small"></ul></div><div id="quota-windows" class="hidden"><h3 class="qw-title" data-t="qw_title"></h3><p class="small muted" data-t="qw_p"></p><p class="small muted" data-t="qw_scope"></p><div class="table-wrap"><table id="qw-table"></table></div><p class="small muted hidden" id="qw-note" data-t="qw_note"></p></div></section>
 <section id="cost-facts" class="panel section"><div class="panel-top"><div><div class="eyebrow" data-t="ins_e"></div><h2 data-t="ins_title"></h2><p class="small muted" data-t="ins_p"></p><p class="small muted" id="ins-period"></p></div><div class="segments" data-t-aria-label="ins_win"><button data-win="30d" class="active" data-t="ins_w30"></button><button data-win="all" data-t="ins_wall"></button></div></div><div id="ins-body" class="ins-grid"></div></section>
@@ -54,7 +67,7 @@ function applyStatic(){document.documentElement.lang=LANG;document.title=t('titl
 // Stream the bytes straight into DecompressionStream: WebKit reads a Blob or Response body as a resource load,
 // which the page's connect-src 'none' CSP refuses (NotReadableError).
 async function decode(id){const b=atob(document.getElementById(id).textContent.trim()),bytes=new Uint8Array(b.length);for(let i=0;i<b.length;i++)bytes[i]=b.charCodeAt(i);const reader=new ReadableStream({start(c){c.enqueue(bytes);c.close()}}).pipeThrough(new DecompressionStream('gzip')).getReader(),text=new TextDecoder(),parts=[];for(;;){const{done,value}=await reader.read();if(done)break;parts.push(text.decode(value,{stream:true}))}parts.push(text.decode());return JSON.parse(parts.join(''))}
-function expand(D){const c=D.columns,n=c.n,pad=(v,l=2)=>String(v).padStart(l,'0'),out=new Array(n),dd=Object.fromEntries(Object.entries(c.dict).map(([k,d])=>[k,k==='off'?d:k==='warnings'?d.map(x=>x&&x.split('\x1f').map(loc).join('\x1f')):d.map(loc)])),val=(k,i)=>dd[k][c.idx[k][i]],offs=c.dict.off.map(o=>(o<0?'-':'+')+pad(Math.trunc(Math.abs(o)/60))+':'+pad(Math.abs(o)%60));let ms=0;for(let i=0;i<n;i++){ms+=c.ts[i];const oi=c.idx.off[i],local=new Date(ms+dd.off[oi]*60000).toISOString(),u=new Date(ms).toISOString(),w=val('warnings',i),r={};for(const k of ['harness','provider','model','effort','thread_kind','origin','turn_confidence','session','parent_session','turn_id','agent'])r[k]=val(k,i);r.id=c.id[i]==null?null:c.id_prefix?c.id_prefix+pad(c.id[i],3):c.id[i];r.ts=u.slice(0,19)+(ms%1000?u.slice(19,23):'')+'+00:00';r.date=local.slice(0,10);r.hour=local.slice(0,13)+':00:00'+offs[oi];r.minute=local.slice(0,16)+':00'+offs[oi];r.project_id=val('project_id',i);r.project_label=val('project_label',i);r.prompt=c.prompt[i];r.tokens=Object.fromEntries(Object.keys(c.tokens).map(k=>[k,c.tokens[k][i]]));const pc=c.price[i],t=r.tokens,h=c.cw1h[i],v=pc==null?null:c.price_classes[pc];r.cost=v&&(t.fresh_input||0)*v[0]+((t.cache_write||0)-h)*v[1]+h*v[2]+(t.cache_read||0)*v[3]+(t.output||0)*v[4];const cc=c.credit[i]==null?null:c.credit_classes[c.credit[i]];r.credits=cc&&((t.fresh_input||0)*cc[0]+(t.cache_read||0)*cc[1]+(t.output||0)*cc[2])/1e6;r.complete=!!c.complete[i];r.id_synthetic=!!c.id_synthetic[i];r.interrupted=!!(c.interrupted&&c.interrupted[i]);r.warnings=w?w.split('\x1f'):[];out[i]=r}return out}
+function expand(D){const c=D.columns,n=c.n,meta=D.analytics_metadata&&D.analytics_metadata.request_meta,pad=(v,l=2)=>String(v).padStart(l,'0'),out=new Array(n),dd=Object.fromEntries(Object.entries(c.dict).map(([k,d])=>[k,k==='off'?d:k==='warnings'?d.map(x=>x&&x.split('\x1f').map(loc).join('\x1f')):d.map(loc)])),val=(k,i)=>dd[k][c.idx[k][i]],offs=c.dict.off.map(o=>(o<0?'-':'+')+pad(Math.trunc(Math.abs(o)/60))+':'+pad(Math.abs(o)%60));let ms=0;for(let i=0;i<n;i++){ms+=c.ts[i];const oi=c.idx.off[i],local=new Date(ms+dd.off[oi]*60000).toISOString(),u=new Date(ms).toISOString(),w=val('warnings',i),r={};for(const k of ['harness','provider','model','effort','thread_kind','origin','turn_confidence','session','parent_session','turn_id','agent'])r[k]=val(k,i);r.id=c.id[i]==null?null:c.id_prefix?c.id_prefix+pad(c.id[i],3):c.id[i];r.ts=u.slice(0,19)+(ms%1000?u.slice(19,23):'')+'+00:00';r.date=local.slice(0,10);r.hour=local.slice(0,13)+':00:00'+offs[oi];r.minute=local.slice(0,16)+':00'+offs[oi];r.project_id=val('project_id',i);r.project_label=val('project_label',i);r.prompt=c.prompt[i];r.tokens=Object.fromEntries(Object.keys(c.tokens).map(k=>[k,c.tokens[k][i]]));const pc=c.price[i],t=r.tokens,h=c.cw1h[i],v=pc==null?null:c.price_classes[pc];r.cost=v&&(t.fresh_input||0)*v[0]+((t.cache_write||0)-h)*v[1]+h*v[2]+(t.cache_read||0)*v[3]+(t.output||0)*v[4];const cc=c.credit[i]==null?null:c.credit_classes[c.credit[i]];r.credits=cc&&((t.fresh_input||0)*cc[0]+(t.cache_read||0)*cc[1]+(t.output||0)*cc[2])/1e6;r.complete=!!c.complete[i];r.id_synthetic=!!c.id_synthetic[i];r.interrupted=!!(c.interrupted&&c.interrupted[i]);r.warnings=w?w.split('\x1f'):[];if(meta)for(const k of ['speed','service_tier']){const ix=meta.idx[k]&&meta.idx[k][i],dict=meta.dict[k]||[];r[k]=ix==null?null:(dict[ix]??null)}else{r.speed=null;r.service_tier=null}out[i]=r}return out}
 function fail(e){const box=document.createElement('div');box.className='notice';box.setAttribute('role','alert');box.textContent=FAIL[pick()].replace('{e}',e&&e.message||e);document.querySelector('main').prepend(box);throw e}
 function main(DATA){
 const FIELDS=['cache_read','fresh_input','cache_write','output'], COLORS=['#67aaa0','#8872c8','#dfb65d','#d98963'], lab=j=>t(['tok_cr','tok_input','tok_cw','tok_out'][j]), LEGEND_ORDER=[1,2,0,3];
@@ -63,7 +76,7 @@ const fmt=n=>nf.format(n), dec=(x,d)=>x.toLocaleString(locale,{minimumFractionDi
 // sv: mdr/milj.; en: B/M/K (1000.0K becomes 1.0M).
 const short=n=>{if(LANG==='sv')return n>=1e9?dec(n/1e9,1)+' mdr':n>=1e6?dec(n/1e6,1)+' milj.':fmt(Math.round(n));for(let i=0;i<3;i++){const[u,s]=SUF[i],r=Math.round(n/u*10)/10;if(n>=u)return r>=1000&&i>0?dec(1,1)+SUF[i-1][1]:dec(r,1)+s}return fmt(Math.round(n))}, pct=x=>dec(x,1)+(LANG==='sv'?' %':'%'), label=v=>v===null||v===undefined||v===''?unknown:String(v), value=r=>FIELDS.reduce((n,k)=>n+(r.tokens[k]??0),0);
 const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n};
-const state={win:'30d',gran:DATA.initial_granularity||'day',rank:'project_id',zoom:null,limit:30,cloudReference:''};let selected=[];const LH=new Map;for(const h of DATA.limit_hits||[])if(h.prompt!=null&&!LH.has(h.prompt))LH.set(h.prompt,h);
+const state={win:'30d',gran:DATA.initial_granularity||'day',rank:'project_id',zoom:null,limit:30,cloudReference:'',analyticsDays:30,analyticsEnd:null};let selected=[];const LH=new Map;for(const h of DATA.limit_hits||[])if(h.prompt!=null&&!LH.has(h.prompt))LH.set(h.prompt,h);
 const QS=DATA.quota_shares||{},PR=DATA.prompt_requests||{},partialTurn=(id,n)=>Object.prototype.hasOwnProperty.call(PR,id)&&n<PR[id],qsAgent=h=>h==='claude'?'Claude':TOOLS[h]||label(h),qsWin=(m,h)=>t(m===300?'qs_w_5h':m===10080?'qs_w_week':'qs_w_other',{n:m,agent:qsAgent(h)}),qf=x=>Math.floor(x+1e-6),qc=x=>Math.ceil(x-1e-6),qsBounded=s=>s.label==='range'||(s.label==='estimate'&&s.lower!=null&&s.upper!=null&&qc(s.upper)-qf(s.lower)>=1),qsBare=s=>{const l=qf(s.lower);if(s.upper==null)return t('qs_atleast',{n:l});const u=qc(s.upper),r=s.upper<1-1e-6?t('qw_lt1'):l===u?t('qw_pct',{n:u}):l<1?t('qs_rng_lt1',{up:u}):t('qs_rng',{lo:l,up:u}),n=Math.round(s.percent);return s.label==='estimate'&&s.percent!=null&&n>=1&&u-l>=1?t('qs_pt_short',{n,r}):r},qsPlain=s=>{const l=qf(s.lower);if(s.upper==null)return t('qs_pl_atleast',{n:l});const u=qc(s.upper),r=s.upper<1-1e-6?t('qs_pl_lt1'):l===u?t('qw_pct',{n:u}):l<1?t('qs_pl_max',{up:u}):t('qs_pl_range',{lo:l,up:u}),n=Math.round(s.percent);return s.label==='estimate'&&s.percent!=null&&n>=1&&u-l>=1?t('qs_pl_pt',{n,r}):r},qsText=(s,whole)=>{const w=qsWin(s.minutes,s.harness)+(whole?' '+t('qs_whole'):''),est=s.label==='estimate';if(s.label==='auto-calibrated'&&s.unfit)return t('qs_auto_unfit');if(s.label==='unknown'||(s.percent==null&&s.label!=='range'))return t('qs_na',{w});if(qsBounded(s)){if(s.upper==null&&qf(s.lower)<1)return t('qs_na',{w});return t('qs_range',{r:qsPlain(s),w,sh:s.shared_with?t('qs_with',{n:s.shared_with}):''})}const n=Math.round(s.percent);if(s.label==='auto-calibrated'){const src=[s.hits?t(s.hits===1?'qs_ev_hit1':'qs_ev_hits',{n:s.hits}):'',s.readings?t(s.readings===1?'qs_ev_read1':'qs_ev_reads',{n:s.readings}):''].filter(Boolean).join(t('qs_ev_and'));if(s.lower_bound){const f=Math.floor(s.percent);return f>=1?t('qs_auto_lb',{n:f,w,src}):t('qs_auto_unknown',{w,src})}return n<1?t('qs_auto_lt1',{w,src}):t('qs_auto',{n,w,src})}if(s.label==='calibrated'){if(s.lower_bound){const f=Math.floor(s.percent);return f>=1?t('qs_cal_lb',{n:f,w}):t('qs_cal_unknown',{w})}return n<1?t('qs_lt1_cal',{w}):t('qs_cal',{n,w})}return n<1?t(est?'qs_lt1_est':'qs_lt1',{w}):t(est?'qs_est':'qs_obs',{n,w})};
 const limitName=h=>h.window_minutes===300?t('lh_5h'):h.window_minutes===10080?t('lh_week'):t('lh_other',{name:h.reached||'?'}),limitBadge=h=>h.window_minutes===300?t('lh_badge_5h'):h.window_minutes===10080?t('lh_badge_week'):t('lh_badge_other',{name:h.reached||'?'});
 const filterKeys=['harness','project_id','model','effort','provider','session','agent','thread_kind'];
@@ -73,16 +86,549 @@ function groupBy(rows,key){const m=new Map;for(const r of rows){const k=label(r[
 function cacheComparison(rows,key){const groups=groupBy(rows,key),comparable=groups.filter(g=>g.name!==unknown&&g.cache_ratio!==null),input=g=>g.fields.fresh_input+g.fields.cache_read+g.fields.cache_write,item=g=>({name:g.name,cache_ratio:g.cache_ratio,observations:g.observations,input_tokens:input(g)});const high=[...comparable].sort((a,b)=>b.cache_ratio-a.cache_ratio||input(b)-input(a)||a.name.localeCompare(b.name)),low=[...comparable].sort((a,b)=>a.cache_ratio-b.cache_ratio||input(b)-input(a)||a.name.localeCompare(b.name));return {total_groups:groups.length,compared_groups:comparable.length,unknown_groups:groups.length-comparable.length,compared_input_tokens:comparable.reduce((sum,g)=>sum+input(g),0),best:comparable.length>=2?item(high[0]):null,worst:comparable.length>=2?item(low[0]):null}}
 function groupBuckets(rows,gran){return groupBy(rows,gran==='day'?'date':gran).sort((a,b)=>gran==='day'?a.name.localeCompare(b.name):Date.parse(a.name)-Date.parse(b.name))}
 function displayTime(t){return t.length===10?t:t.slice(0,16).replace('T',' ')+' UTC'+t.slice(-6)}
+// These analytics helpers stay independent of the DOM so the browser smoke test can
+// verify windows, grouping and denominators against the same row semantics as render.
+function analyticsRows(rows,start,end){return rows.filter(r=>r.date>=start&&r.date<=end)}
+function analyticsSeries(rows, dimension) {
+const days = new Map();
+for (const row of rows) {
+if (row.id_synthetic) continue;
+let groups = days.get(row.date);
+if (!groups) { groups = new Map(); days.set(row.date, groups); }
+if (dimension === 'token_class') {
+for (let i = 0; i < FIELDS.length; i++) {
+const key = FIELDS[i];
+const name = lab(i);
+let item = groups.get(name);
+if (!item) { item = {name, fields: Object.fromEntries(FIELDS.map(field => [field, 0])), total: 0, requests: 0, complete: true}; groups.set(name, item); }
+const amount = row.tokens[key] ?? 0;
+item.fields[key] += amount;
+item.total += amount;
+item.requests++;
+if (!row.complete || row.tokens[key] == null) item.complete = false;
+}
+continue;
+}
+const name = label(row[dimension]);
+let item = groups.get(name);
+if (!item) { item = {name, fields: Object.fromEntries(FIELDS.map(key => [key, 0])), total: 0, requests: 0, complete: true}; groups.set(name, item); }
+item.requests++;
+if (!row.complete) item.complete = false;
+for (const key of FIELDS) {
+item.fields[key] += row.tokens[key] ?? 0;
+if (row.tokens[key] == null) item.complete = false;
+}
+item.total += value(row);
+}
+return [...days].sort(([a], [b]) => a.localeCompare(b)).map(([date, groups]) => {
+const items = [...groups.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+return {date, groups: items, total: items.reduce((sum, group) => sum + group.total, 0)};
+});
+}
+function analyticsEfficiency(rows) {
+const identified = rows.filter(row => !row.id_synthetic);
+const totals = aggregate(identified);
+const linked = identified.filter(row => row.prompt != null);
+const turnIds = new Set(linked.map(row => String(row.prompt)));
+const linkedTokens = linked.reduce((sum, row) => sum + value(row), 0);
+const requests = identified.length;
+return {
+tokens: totals.known_tokens,
+requests,
+linkedTurns: turnIds.size,
+linkedTokens,
+tokensPerRequest: requests ? totals.known_tokens / requests : null,
+tokensPerTurn: turnIds.size ? linkedTokens / turnIds.size : null,
+cacheReuse: rows.some(row => row.id_synthetic) ? null : totals.cache_ratio,
+complete: totals.complete && !rows.some(row => row.id_synthetic),
+ambiguous: rows.filter(row => row.id_synthetic).length,
+incomplete: identified.filter(row => !row.complete).length
+};
+}
+function analyticsWeek(date) {
+const day = new Date(date + 'T00:00:00Z');
+day.setUTCDate(day.getUTCDate() + 4 - (day.getUTCDay() || 7));
+const year = day.getUTCFullYear();
+const yearStart = new Date(Date.UTC(year, 0, 1));
+const week = Math.ceil((((day - yearStart) / 86400000) + 1) / 7);
+return year + '-W' + String(week).padStart(2, '0');
+}
+function analyticsWeekly(rows) {
+const buckets = new Map();
+for (const row of rows) {
+if (row.id_synthetic) continue;
+const week = analyticsWeek(row.date);
+if (!buckets.has(week)) buckets.set(week, []);
+buckets.get(week).push(row);
+}
+return [...buckets].sort(([a], [b]) => b.localeCompare(a)).map(([week, records]) => ({week, records, ...aggregate(records)}));
+}
+function analyticsTimeline(rows, key) {
+return groupBy(rows.filter(row => !row.id_synthetic), key);
+}
+function renderAnalytics() {
+const filters = getFilters();
+const nonDate = {...filters, from: '', to: ''};
+const eligible = filterRecords(ALL, nonDate, state.zoom);
+// Calendar navigation stays anchored to the report, even when one model has sparse usage.
+const dates = filterRecords(ALL, {}, state.zoom).map(row => row.date).sort();
+const filteredDates = dates.filter(date => (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to));
+const latest = filteredDates[filteredDates.length - 1] || null;
+let end = latest;
+if (end && state.analyticsEnd && state.analyticsEnd >= (filters.from || dates[0]) && state.analyticsEnd < end) end = state.analyticsEnd;
+const days = state.analyticsDays || 30;
+const rawStart = end ? new Date(Date.parse(end + 'T00:00:00Z') - (days - 1) * 86400000).toISOString().slice(0, 10) : null;
+const start = rawStart && filters.from && rawStart < filters.from ? filters.from : rawStart;
+const current = end ? analyticsRows(eligible, start, end).filter(row => (!filters.from || row.date >= filters.from) && (!filters.to || row.date <= filters.to)) : [];
+const comparisonDays = start && end ? Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 86400000) + 1 : days;
+const priorEnd = start && !state.zoom ? new Date(Date.parse(start + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10) : null;
+const priorStart = priorEnd ? new Date(Date.parse(priorEnd + 'T00:00:00Z') - (comparisonDays - 1) * 86400000).toISOString().slice(0, 10) : null;
+const prior = priorEnd ? analyticsRows(eligible, priorStart, priorEnd) : [];
+const period = $('analytics-period');
+$('analytics-freshness').textContent = t('analytics_asof', {latest: ALL.reduce((latest, row) => row.date > latest ? row.date : latest, '') || unknown, generated: new Date(DATA.generated_at).toISOString().slice(0, 16).replace('T', ' ')});
+period.textContent = end ? t('analytics_range', {from: start, to: end, tz: DATA.timezone}) : t('analytics_empty');
+period.dataset.start = start || '';
+period.dataset.end = end || '';
+$('analytics-comparison-period').textContent = state.zoom ? t('analytics_zoom_comparison') : priorEnd ? t('analytics_prior_range', {from: priorStart, to: priorEnd}) : t('analytics_no_compare');
+$('analytics-next').disabled = !end || end >= latest;
+const earliest = filters.from || dates[0];
+$('analytics-prev').disabled = !end || !dates.some(date => date < start && (!earliest || date >= earliest));
+$('analytics-next').setAttribute('aria-label', t('analytics_next'));
+$('analytics-prev').setAttribute('aria-label', t('analytics_prev'));
+document.querySelectorAll('[data-analytics-days]').forEach(button => {const active = Number(button.dataset.analyticsDays) === days; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));});
+const now = analyticsEfficiency(current);
+const before = analyticsEfficiency(prior);
+const cards = $('analytics-kpis');
+cards.replaceChildren();
+const comparison = (currentValue, priorValue) => {
+if (state.zoom || currentValue === null || priorValue === null) return t('analytics_no_compare');
+if (!now.complete || !before.complete) return t('analytics_known_compare');
+if (priorValue === 0) return currentValue === 0 ? t('analytics_unchanged') : t('analytics_from_zero');
+const change = (currentValue - priorValue) / priorValue * 100;
+const direction = change > 0 ? t('analytics_higher') : change < 0 ? t('analytics_lower') : t('analytics_unchanged');
+return t('analytics_change', {sign: change > 0 ? '+' : '', pct: pct(Math.abs(change)), direction});
+};
+const addCard = (title, amount, note) => {
+const card = el('div', undefined, 'analytics-kpi');
+card.append(el('span', title), el('strong', amount), el('small', note));
+cards.append(card);
+};
+const lowerBound = now.incomplete > 0 ? '≥ ' : '';
+addCard(t('analytics_total'), lowerBound + short(now.tokens), comparison(now.tokens, before.tokens));
+addCard(t('analytics_per_request'), now.tokensPerRequest === null ? unknown : lowerBound + short(now.tokensPerRequest), t('analytics_denominator', {n: fmt(now.requests)}) + ' · ' + comparison(now.tokensPerRequest, before.tokensPerRequest));
+addCard(t('analytics_per_turn'), now.tokensPerTurn === null ? unknown : lowerBound + short(now.tokensPerTurn), t('analytics_turn_denominator', {n: fmt(now.linkedTurns)}) + ' · ' + comparison(now.tokensPerTurn, before.tokensPerTurn));
+addCard(t('analytics_cache'), now.cacheReuse === null ? unknown : pct(now.cacheReuse * 100), t('analytics_cache_def') + ' · ' + comparison(now.cacheReuse, before.cacheReuse));
+addCard(t('analytics_completeness'), t(now.complete ? 'analytics_complete' : 'analytics_partial'), t('analytics_coverage', {incomplete: fmt(now.incomplete), ambiguous: fmt(now.ambiguous)}));
+renderAnalyticsChart(current, $('analytics-group').value, start, end);
+renderAnalyticsSessions(current);
+renderAnalyticsWeeks(current);
+renderAnalyticsTimelines(current, start, end);
+renderAnalyticsActivity(current, eligible, start, end);
+}
+function renderAnalyticsChart(rows, dimension, start, end) {
+const host = $('analytics-chart');
+const legend = $('analytics-legend');
+const detailHost = $('analytics-day-list');
+host.replaceChildren();
+legend.replaceChildren();
+detailHost.replaceChildren();
+const observed = analyticsSeries(rows, dimension);
+const byDate = new Map(observed.map(day => [day.date, day]));
+const series = [];
+if (start && end) for (let ms = Date.parse(start + 'T00:00:00Z'); ms <= Date.parse(end + 'T00:00:00Z'); ms += 86400000) {
+  const date = new Date(ms).toISOString().slice(0, 10);
+  series.push(byDate.get(date) || {date, groups: [], total: 0});
+}
+if (!series.length) {
+host.append(el('div', t('analytics_empty'), 'analytics-empty'));
+$('analytics-daily-details').classList.add('hidden');
+return;
+}
+$('analytics-daily-details').classList.remove('hidden');
+const totals = new Map();
+for (const day of series) for (const group of day.groups) totals.set(group.name, (totals.get(group.name) || 0) + group.total);
+const sortedNames = [...totals].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+const visibleNames = sortedNames.slice(0, 6).map(([name]) => name);
+const includeOther = sortedNames.length > visibleNames.length;
+const otherName = t('analytics_other');
+const otherKey = Symbol('remaining groups');
+const colorList = ['#8872c8', '#67aaa0', '#dfb65d', '#d98963', '#537a67', '#aa8d63', '#778ba8'];
+const tokenClassColors = new Map(FIELDS.map((key, index) => [lab(index), COLORS[index]]));
+const colors = new Map(visibleNames.map((name, index) => [name, dimension === 'token_class' ? tokenClassColors.get(name) : colorList[index % colorList.length]]));
+if (includeOther) colors.set(otherKey, '#a8aaa3');
+const grand = sortedNames.reduce((sum, [, amount]) => sum + amount, 0);
+for (const [name, amount] of sortedNames.slice(0, 6)) {
+const item = el('span');
+const swatch = el('i');
+swatch.style.background = colors.get(name);
+item.append(swatch, el('span', name + ' · ' + short(amount) + ' · ' + (grand ? pct(amount / grand * 100) : '—')));
+legend.append(item);
+}
+if (includeOther) {
+const amount = sortedNames.slice(6).reduce((sum, [, value]) => sum + value, 0);
+const item = el('span');
+const swatch = el('i');
+swatch.style.background = colors.get(otherKey);
+item.append(swatch, el('span', otherName + ' · ' + short(amount) + ' · ' + (grand ? pct(amount / grand * 100) : '—')));
+legend.append(item);
+}
+const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+svg.setAttribute('viewBox', '0 0 960 270');
+svg.setAttribute('role', 'img');
+svg.setAttribute('aria-label', t('analytics_chart_aria'));
+const make = (tag, attrs, text) => {
+const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+if (text !== undefined) node.textContent = text;
+svg.append(node);
+return node;
+};
+const max = Math.max(1, ...series.map(day => day.total));
+const left = 72, top = 18, height = 190, width = 850, slot = width / series.length;
+for (let i = 0; i <= 4; i++) {
+const amount = max * i / 4;
+const y = top + height - height * i / 4;
+make('line', {x1: left, y1: y, x2: left + width, y2: y, stroke: '#e8e9e1'});
+make('text', {x: left - 8, y: y + 4, 'text-anchor': 'end'}, fmt(Math.round(amount)));
+}
+series.forEach((day, index) => {
+const grouped = new Map();
+for (const group of day.groups) {
+const name = visibleNames.includes(group.name) ? group.name : otherKey;
+grouped.set(name, (grouped.get(name) || 0) + group.total);
+}
+const barWidth = Math.min(34, slot * 0.62);
+let y = top + height;
+for (const name of [...colors.keys()]) {
+const amount = grouped.get(name) || 0;
+const barHeight = amount / max * height;
+if (!barHeight) continue;
+y -= barHeight;
+make('rect', {x: left + index * slot + (slot - barWidth) / 2, y, width: barWidth, height: barHeight, fill: colors.get(name), rx: 2});
+}
+if (index % Math.max(1, Math.ceil(series.length / 12)) === 0 || index === series.length - 1) {
+make('text', {x: left + index * slot + slot / 2, y: top + height + 22, 'text-anchor': 'middle'}, day.date.slice(5));
+}
+const details = el('details', undefined, 'analytics-day');
+const entries = day.groups.map(group => group.name + ': ' + fmt(group.total) + ' tokens · ' + t('analytics_requests_count', {n: fmt(group.requests)})).join(' · ');
+details.append(el('summary', t('analytics_day_summary', {date: day.date, total: fmt(day.total)})), el('p', entries, 'analytics-meta'));
+const table = el('table');
+const head = el('tr');
+head.append(el('th', t('analytics_group_label')));
+for (let i = 0; i < FIELDS.length; i++) head.append(el('th', lab(i)));
+table.append(head);
+for (const group of day.groups) {
+const row = el('tr');
+row.append(el('td', group.name));
+for (const key of FIELDS) row.append(el('td', fmt(group.fields[key])));
+table.append(row);
+}
+const wrap = el('div', undefined, 'table-wrap');
+wrap.append(table);
+details.append(wrap);
+detailHost.append(details);
+});
+const chartWrap = el('div', undefined, 'analytics-chart');
+chartWrap.append(svg);
+host.append(chartWrap, el('p', t('analytics_group_note', {dimension: ({token_class: t('analytics_token_class'), model: t('analytics_model'), thread_kind: t('analytics_thread'), origin: t('analytics_surface'), harness: t('analytics_harness'), effort: t('analytics_effort')})[dimension]}), 'analytics-meta'), el('p', t('analytics_gaps'), 'analytics-meta'));
+}
+function analyticsTokenAmount(amount, complete) { return (complete ? '' : '≥ ') + fmt(amount); }
+function renderAnalyticsSessions(rows) {
+const box = $('analytics-sessions');
+box.replaceChildren();
+const withKeys = rows.filter(row => !row.id_synthetic).map(row => ({...row, session_key: row.harness + '\x1f' + row.session}));
+const groups = groupBy(withKeys, 'session_key').slice(0, 5);
+const windowEfficiency = analyticsEfficiency(rows);
+const total = windowEfficiency.tokens;
+if (!groups.length) {
+box.append(el('p', t('analytics_empty'), 'analytics-empty'));
+return;
+}
+for (const group of groups) {
+const first = group.records[0];
+const displayName = String(first.session || '').startsWith(first.harness + ':') ? first.session : label(first.harness) + ' · ' + label(first.session);
+const share = total && windowEfficiency.complete && group.complete ? pct(group.known_tokens / total * 100) : '—';
+const detail = el('details', undefined, 'analytics-row');
+const summary = el('summary', t('analytics_session_summary', {name: displayName, tokens: analyticsTokenAmount(group.known_tokens, group.complete), share}));
+const meta = el('div', t('analytics_session_meta', {requests: fmt(group.observations), cache: group.cache_ratio === null ? unknown : pct(group.cache_ratio * 100)}), 'analytics-meta');
+detail.append(summary, meta);
+const breakdown = el('ul');
+for (const model of groupBy(group.records, 'model')) {
+for (const effort of groupBy(model.records, 'effort')) {
+const tiers = [...new Set(effort.records.map(row => [row.speed, row.service_tier].filter(Boolean).join(' / ')).filter(Boolean))];
+const tier = tiers.length ? ' · ' + tiers.join(', ') : '';
+breakdown.append(el('li', t('analytics_model_effort', {model: model.name, effort: effort.name, tokens: analyticsTokenAmount(effort.known_tokens, effort.complete), requests: fmt(effort.observations)}) + tier));
+}
+}
+for (const row of group.records.slice(0, 20)) {
+breakdown.append(el('li', t('analytics_request_line', {time: displayTime(row.minute), model: label(row.model), effort: label(row.effort), tokens: analyticsTokenAmount(value(row), row.complete), tier: [row.speed, row.service_tier].filter(Boolean).join(' / ') || unknown})));
+}
+if (group.records.length > 20) breakdown.append(el('li', t('analytics_more_requests', {n: fmt(group.records.length - 20)})));
+detail.append(breakdown);
+box.append(detail);
+}
+}
+function renderAnalyticsWeeks(rows) {
+const box = $('analytics-weeks');
+box.replaceChildren();
+const weeks = analyticsWeekly(rows);
+if (!weeks.length) {
+box.append(el('p', t('analytics_empty'), 'analytics-empty'));
+return;
+}
+for (const week of weeks) {
+const detail = el('details', undefined, 'analytics-row');
+const summary = el('summary', t('analytics_week_summary', {week: week.week, tokens: analyticsTokenAmount(week.known_tokens, week.complete), requests: fmt(week.observations)}));
+const list = el('ul');
+for (const model of groupBy(week.records, 'model')) {
+for (const effort of groupBy(model.records, 'effort')) {
+list.append(el('li', t('analytics_model_effort', {model: model.name, effort: effort.name, tokens: analyticsTokenAmount(effort.known_tokens, effort.complete), requests: fmt(effort.observations)})));
+}
+}
+detail.append(summary, list);
+box.append(detail);
+}
+}
+function renderCountTimeline(host, rows, mode, start, end) {
+host.replaceChildren();
+if (!start || !end) {
+host.append(el('p', mode === 'turns' ? t('analytics_no_linked_turns') : t('analytics_empty'), 'analytics-empty'));
+return;
+}
+const dayCounts = new Map();
+for (let timestamp = Date.parse(start + 'T00:00:00Z'); timestamp <= Date.parse(end + 'T00:00:00Z'); timestamp += 86400000) {
+const date = new Date(timestamp).toISOString().slice(0, 10);
+dayCounts.set(date, 0);
+}
+if (mode === 'requests') {
+for (const row of rows) if (!row.id_synthetic) dayCounts.set(row.date, (dayCounts.get(row.date) || 0) + 1);
+} else {
+const turns = new Map();
+const observedStarts = DATA.analytics_metadata && DATA.analytics_metadata.observed_turn_start_dates || {};
+for (const row of rows) {
+if (row.id_synthetic || row.prompt == null) continue;
+const id = String(row.prompt);
+if (!turns.has(id)) turns.set(id, row.date);
+}
+for (const [id, firstObservedDate] of turns) {
+const startDate = observedStarts[id] || firstObservedDate;
+if (dayCounts.has(startDate)) dayCounts.set(startDate, dayCounts.get(startDate) + 1);
+}
+}
+const dates = [...dayCounts];
+if (mode === 'turns' && !rows.some(row => row.prompt != null && !row.id_synthetic)) {
+host.append(el('p', t('analytics_no_linked_turns'), 'analytics-empty'));
+return;
+}
+const values = dates.map(([, count]) => count);
+const max = Math.max(1, ...values);
+const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+svg.setAttribute('viewBox', '0 0 640 150');
+svg.setAttribute('role', 'img');
+svg.setAttribute('aria-label', mode === 'turns' ? t('analytics_turn_chart') : t('analytics_request_chart'));
+const make = (tag, attrs, text) => {
+const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+if (text !== undefined) node.textContent = text;
+svg.append(node);
+return node;
+};
+for (let i = 0; i <= 3; i++) {
+const y = 112 - 90 * i / 3;
+make('line', {x1: 45, y1: y, x2: 630, y2: y, stroke: '#e8e9e1'});
+make('text', {x: 38, y: y + 4, 'text-anchor': 'end'}, fmt(Math.round(max * i / 3)));
+}
+const slot = 585 / dates.length;
+dates.forEach(([date], index) => {
+const count = values[index];
+const barHeight = count / max * 90;
+make('rect', {x: 45 + index * slot + slot * 0.2, y: 112 - barHeight, width: Math.max(1, slot * 0.6), height: barHeight, fill: mode === 'turns' ? '#67aaa0' : '#8872c8', rx: 2});
+if ((index % Math.max(1, Math.ceil(dates.length / 6)) === 0 && index < dates.length - 2) || index === dates.length - 1) make('text', {x: 45 + index * slot + slot / 2, y: 132, 'text-anchor': 'middle'}, date.slice(5));
+});
+const chart = el('div', undefined, 'analytics-chart');
+chart.append(svg);
+host.append(chart);
+}
+function renderAnalyticsTimelines(rows, start, end) {
+const requests = $('analytics-requests');
+const turns = $('analytics-turns');
+renderCountTimeline(requests, rows, 'requests', start, end);
+renderCountTimeline(turns, rows, 'turns', start, end);
+turns.append(el('p', t('analytics_turn_chart_note'), 'analytics-meta'));
+const requestDetails = el('details', undefined, 'analytics-row');
+requestDetails.append(el('summary', t('analytics_request_details')));
+const requestList = el('ul');
+for (const day of analyticsTimeline(rows, 'date')) {
+const groups = groupBy(day.records, 'model');
+const description = groups.map(group => {
+const surfaces = [...new Set(group.records.map(row => label(row.origin)))].join(', ');
+return t('analytics_timeline_group', {model: group.name, surface: surfaces, count: fmt(group.observations), tokens: analyticsTokenAmount(group.known_tokens, group.complete)});
+}).join(' · ');
+requestList.append(el('li', t('analytics_request_day', {date: day.name, requests: fmt(day.observations), tokens: analyticsTokenAmount(day.known_tokens, day.complete)}) + ' — ' + description));
+}
+requestDetails.append(requestList);
+requests.append(requestDetails);
+const linked = rows.filter(row => row.prompt != null && !row.id_synthetic);
+const turnGroups = new Map();
+for (const row of linked) {
+const id = String(row.prompt);
+if (!turnGroups.has(id)) turnGroups.set(id, []);
+turnGroups.get(id).push(row);
+}
+if (!linked.length) {
+turns.append(el('p', t('analytics_no_linked_turns'), 'analytics-empty'));
+return;
+}
+const detail = el('details', undefined, 'analytics-row');
+detail.append(el('summary', t('analytics_turn_details')));
+const turnList = el('ul');
+const startDates = DATA.analytics_metadata && DATA.analytics_metadata.observed_turn_start_dates || {};
+for (const [id, records] of [...turnGroups].sort((a, b) => a[1][0].ts.localeCompare(b[1][0])).slice(0, 20)) {
+const start = startDates[id];
+const basis = start ? t('analytics_observed_proxy') : t('analytics_first_request');
+const grouped = groupBy(records, 'model').map(group => {
+const surfaces = [...new Set(group.records.map(row => label(row.origin)))].join(', ');
+return t('analytics_timeline_group', {model: group.name, surface: surfaces, count: fmt(group.observations), tokens: analyticsTokenAmount(group.known_tokens, group.complete)});
+}).join(' · ');
+const count = records.length;
+const tokens = records.reduce((sum, row) => sum + value(row), 0);
+turnList.append(el('li', t('analytics_turn_summary', {time: start || displayTime(records[0].minute), requests: fmt(count), tokens: analyticsTokenAmount(tokens, records.every(row => row.complete)), basis}) + ' — ' + grouped));
+}
+if (turnGroups.size > 20) turnList.append(el('li', t('analytics_more_turns', {n: fmt(turnGroups.size - 20)})));
+detail.append(turnList);
+turns.append(detail);
+}
+function renderAnalyticsActivity(rows, eligible, start, end) {
+const box = $('analytics-activity');
+box.replaceChildren();
+const metadata = DATA.analytics_metadata || {};
+const coverage = metadata.activity_coverage || {};
+$('analytics-activity-coverage').textContent = coverage.retained_context_turns == null ? '' : t('analytics_activity_coverage', {retained: fmt(coverage.retained_context_turns), withActivity: fmt(coverage.turns_with_activity || 0)});
+const contexts = DATA.prompt_context || {};
+const startDates = metadata.observed_turn_start_dates || {};
+const allPromptRows = new Map();
+for (const row of ALL) {
+if (row.prompt == null) continue;
+const id = String(row.prompt);
+if (!allPromptRows.has(id)) allPromptRows.set(id, []);
+allPromptRows.get(id).push(row);
+}
+const completePromptIds = new Set();
+const eligiblePromptRows = new Map();
+for (const row of eligible) {
+if (row.prompt == null) continue;
+const id = String(row.prompt);
+if (!eligiblePromptRows.has(id)) eligiblePromptRows.set(id, []);
+eligiblePromptRows.get(id).push(row);
+}
+for (const [id, records] of eligiblePromptRows) {
+if (records.length === (allPromptRows.get(id) || []).length) completePromptIds.add(id);
+}
+const buckets = new Map();
+const retained = [];
+for (const [id, context] of Object.entries(contexts)) {
+if (!context || !context.activity || !completePromptIds.has(String(id))) continue;
+const day = startDates[id] || (eligiblePromptRows.get(String(id)) || [])[0]?.date;
+if (!day || (start && day < start) || (end && day > end)) continue;
+const activity = context.activity;
+const dimensions = ['shell', 'edits', 'web', 'subagents'];
+if (!dimensions.some(key => Number.isInteger(activity[key]) && activity[key] >= 0)) continue;
+if (!buckets.has(day)) buckets.set(day, Object.fromEntries(dimensions.map(key => [key, 0])));
+for (const key of dimensions) if (Number.isInteger(activity[key]) && activity[key] > 0) buckets.get(day)[key] += activity[key];
+retained.push({id, context, day, activity});
+}
+if (!retained.length) {
+box.append(el('p', t(eligiblePromptRows.size ? 'analytics_activity_empty_scope' : 'analytics_activity_empty'), 'analytics-empty'));
+return;
+}
+const colors = {shell: '#8872c8', edits: '#67aaa0', web: '#dfb65d', subagents: '#d98963'};
+const names = Object.fromEntries(['shell', 'edits', 'web', 'subagents'].map(key => [key, t('analytics_act_' + key)]));
+const totals = Object.fromEntries(Object.keys(colors).map(key => [key, [...buckets.values()].reduce((sum, bucket) => sum + bucket[key], 0)]));
+const grand = Object.values(totals).reduce((sum, value) => sum + value, 0);
+if (!grand) box.append(el('p', t('analytics_activity_zero'), 'analytics-meta'));
+const legend = el('div', undefined, 'analytics-legend');
+for (const key of Object.keys(colors)) {
+if (!totals[key]) continue;
+const item = el('span');
+const swatch = el('i');
+swatch.style.background = colors[key];
+item.append(swatch, el('span', names[key] + ' · ' + fmt(totals[key]) + (grand ? ' · ' + pct(totals[key] / grand * 100) : '')));
+legend.append(item);
+}
+box.append(legend);
+if (start && end) for (let ms = Date.parse(start + 'T00:00:00Z'); ms <= Date.parse(end + 'T00:00:00Z'); ms += 86400000) {
+  const date = new Date(ms).toISOString().slice(0, 10);
+  if (!buckets.has(date)) buckets.set(date, {shell: 0, edits: 0, web: 0, subagents: 0});
+}
+const days = [...buckets].sort(([a], [b]) => a.localeCompare(b));
+const maximum = Math.max(1, ...days.map(([, values]) => Object.values(values).reduce((sum, value) => sum + value, 0)));
+const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+svg.setAttribute('viewBox', '0 0 760 210');
+svg.setAttribute('role', 'img');
+svg.setAttribute('aria-label', t('analytics_activity_chart'));
+const make = (tag, attrs, text) => {
+const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+if (text !== undefined) node.textContent = text;
+svg.append(node);
+return node;
+};
+for (let i = 0; i <= 4; i++) {
+const y = 160 - 125 * i / 4;
+make('line', {x1: 55, y1: y, x2: 750, y2: y, stroke: '#e8e9e1'});
+make('text', {x: 47, y: y + 4, 'text-anchor': 'end'}, fmt(Math.round(maximum * i / 4)));
+}
+const slot = 695 / days.length;
+days.forEach(([date, values], index) => {
+let y = 160;
+for (const key of Object.keys(colors)) {
+const height = values[key] / maximum * 125;
+if (!height) continue;
+y -= height;
+make('rect', {x: 55 + index * slot + slot * 0.2, y, width: Math.max(1, slot * 0.6), height, fill: colors[key], rx: 2});
+}
+if ((index % Math.max(1, Math.ceil(days.length / 8)) === 0 && index < days.length - 2) || index === days.length - 1) make('text', {x: 55 + index * slot + slot / 2, y: 183, 'text-anchor': 'middle'}, date.slice(5));
+});
+const chart = el('div', undefined, 'analytics-chart');
+chart.append(svg);
+box.append(chart);
+const byDay = new Map(days);
+const details = el('details', undefined, 'analytics-row');
+details.append(el('summary', t('analytics_activity_turn_count', {n: fmt(retained.length)})));
+const list = el('ul');
+for (const [day, values] of byDay) {
+const text = Object.keys(colors).filter(key => values[key]).map(key => t('analytics_activity_counts', {name: names[key], count: fmt(values[key])})).join(' · ');
+list.append(el('li', day + ' · ' + text));
+}
+details.append(list);
+box.append(details);
+}
 function projectName(key){return ALL.find(r=>label(r.project_id)===key)?.project_label||unknown}
 function getFilters(){return Object.fromEntries(['from','to','search',...filterKeys].map(k=>[k,$(k).value]))}
-function setFilter(key,val){$(key).value=val;state.limit=30;render()}
-function reset(){for(const k of ['from','to','search',...filterKeys])$(k).value='';state.zoom=null;state.limit=30;render()}
+function setFilter(key,val){$(key).value=val;state.analyticsEnd=null;state.limit=30;render()}
+function reset(){for(const k of ['from','to','search',...filterKeys])$(k).value='';state.zoom=null;state.analyticsEnd=null;state.limit=30;render()}
 function populateFilters(keep){for(const key of filterKeys){const s=$(key);s.replaceChildren(el('option',t('all')));s.firstChild.value='';for(const val of [...new Set(ALL.map(r=>label(r[key])))].sort()){const o=el('option',key==='project_id'?projectName(val):val);o.value=val;s.append(o)}if(keep&&keep[key]>=0)s.value=label(ALL[keep[key]][key])}}
-for(const key of filterKeys)$(key).addEventListener('change',()=>{state.limit=30;render()});
+for(const key of filterKeys)$(key).addEventListener('change',()=>{state.analyticsEnd=null;state.limit=30;render()});
 // Filter selections survive a switch by row index.
 function setLang(l,persist){const keep=ALL&&Object.fromEntries(filterKeys.map(k=>{const v=$(k).value;return[k,v?ALL.findIndex(r=>label(r[k])===v):-1]}));LANG=l;locale=l==='sv'?'sv-SE':'en-US';nf=new Intl.NumberFormat(locale);unknown=t('unknown');applyStatic();ALL=expand(DATA);populateFilters(keep);renderCoverage();renderGlossary();render();renderInsights();if(persist)store.set(l)}
 document.querySelectorAll('button[data-lang]').forEach(b=>b.onclick=()=>setLang(b.dataset.lang,true));
-for(const key of ['from','to','search'])$(key).addEventListener('input',()=>{state.limit=30;state.zoom=null;render()});$('reset').onclick=reset;
+for(const key of ['from','to','search'])$(key).addEventListener('input',()=>{state.analyticsEnd=null;state.limit=30;state.zoom=null;render()});$('reset').onclick=reset;
+document.querySelectorAll('[data-analytics-days]').forEach(button=>button.onclick=()=>{state.analyticsDays=Number(button.dataset.analyticsDays);state.analyticsEnd=null;render()});
+function moveAnalyticsWindow(direction) {
+  const end = $('analytics-period').dataset.end;
+  if (!end) return;
+  const filters = getFilters();
+  const dates = filterRecords(ALL, {}, state.zoom).map(row => row.date).sort();
+  const permitted = dates.filter(date => (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to));
+  if (!permitted.length) return;
+  const moved = new Date(Date.parse(end + 'T00:00:00Z') + direction * state.analyticsDays * 86400000).toISOString().slice(0, 10);
+  state.analyticsEnd = moved > permitted[permitted.length - 1] ? permitted[permitted.length - 1] : moved;
+  if (filters.from && state.analyticsEnd < filters.from) state.analyticsEnd = filters.from;
+  renderAnalytics();
+}
+$('analytics-prev').onclick=()=>moveAnalyticsWindow(-1);
+$('analytics-next').onclick=()=>moveAnalyticsWindow(1);
+$('analytics-group').onchange=()=>renderAnalytics();
 document.querySelectorAll('[data-gran]').forEach(b=>b.onclick=()=>{state.gran=b.dataset.gran;render()});document.querySelectorAll('[data-rank]').forEach(b=>b.onclick=()=>{state.rank=b.dataset.rank;render()});$('zoomout').onclick=()=>{state.zoom=null;render()};$('more').onclick=()=>{state.limit+=30;renderSessions()};$('print').onclick=()=>window.print();
 function drawChart(rows){const svg=$('chart');svg.replaceChildren();const groups=groupBuckets(rows,state.gran);$('chart-empty').classList.toggle('hidden',groups.length>0);svg.classList.toggle('hidden',!groups.length);if(!groups.length){$('insight').textContent=t('no_data');$('chart-note').textContent=t('chart_note');return}const limit=350,chunk=Math.ceil(groups.length/limit),bars=[];for(let i=0;i<groups.length;i+=chunk){const slice=groups.slice(i,i+chunk),records=slice.flatMap(g=>g.records);bars.push({name:slice[0].name,end:slice[slice.length-1].name,records,...aggregate(records)})}const ns='http://www.w3.org/2000/svg',make=(tag,attrs,text)=>{const n=document.createElementNS(ns,tag);for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);if(text!==undefined)n.textContent=text;svg.append(n);return n},max=Math.max(1,...bars.map(b=>b.known_tokens)),w=800,h=195,left=70,top=15;
 for(let i=0;i<=4;i++){const y=top+h-h*i/4;make('line',{x1:left,y1:y,x2:left+w,y2:y,stroke:'#e8e9e1'});make('text',{x:left-12,y:y+4,'text-anchor':'end'},short(max*i/4))}const bw=w/bars.length;
@@ -92,7 +638,6 @@ $('chart-note').textContent=(chunk>1?t('merged',{n:groups.length,m:bars.length})
 function renderRanking(){const box=$('ranking');box.replaceChildren();const groups=groupBy(selected,state.rank),total=aggregate(selected).known_tokens,top=groups.slice(0,7);if(groups.length>7)top.push({name:t('other',{n:groups.length-7}),known_tokens:groups.slice(7).reduce((a,b)=>a+b.known_tokens,0),other:true});for(const g of top){const row=el(g.other?'div':'button',undefined,'rank-row'),line=el('div',undefined,'line'),name=state.rank==='project_id'&&!g.other?projectName(g.name):g.name;line.append(el('span',name,'name'),el('span',short(g.known_tokens)));const track=el('div',undefined,'track'),fill=el('div',undefined,'fill');fill.style.width=(total?g.known_tokens/total*100:0)+'%';track.append(fill);row.append(line,track);row.title=t('rank_tip',{n:fmt(g.known_tokens),pct:pct(total?g.known_tokens/total*100:0)});if(!g.other)row.onclick=()=>setFilter(state.rank,g.name);box.append(row)}if(!groups.length)box.append(el('p',t('rank_none'),'muted'))}
 function renderCacheComparisons(){for(const card of document.querySelectorAll('[data-cache-dimension]')){const key=card.dataset.cacheDimension,result=cacheComparison(selected,key),box=card.querySelector('.cache-result');box.replaceChildren();if(!result.best){box.append(el('p',t('cache_min'),'small muted'))}else{for(const [heading,item] of [[t('cache_hi'),result.best],[t('cache_lo'),result.worst]]){const block=el('div',undefined,'cache-extreme'),name=key==='project_id'?projectName(item.name):item.name;block.append(el('strong',heading),el('span',name),el('div',pct(item.cache_ratio*100),'cache-share'),el('span',t('cache_item',{n:fmt(item.observations),i:fmt(item.input_tokens)}),'small muted'));box.append(block)}}box.append(el('p',t('cache_sum',{a:fmt(result.compared_groups),b:fmt(result.total_groups),c:fmt(result.compared_input_tokens)})+(result.unknown_groups?t('cache_unk',{u:fmt(result.unknown_groups)}):t('cache_all')),'small muted'))}}
 function topPrompts(rows,n=10){const m=new Map;for(const r of rows){if(r.prompt==null)continue;if(!m.has(r.prompt))m.set(r.prompt,[]);m.get(r.prompt).push(r)}return [...m].map(([id,rs])=>{const priced=rs.filter(r=>r.cost!=null),own=rs.find(r=>r.thread_kind!=='subagent')||rs[0];return{id,when:rs[0].minute,harness:own.harness,project:own.project_label,models:[...new Set(rs.map(r=>r.model).filter(Boolean))].sort(),requests:rs.length,subagents:new Set(rs.filter(r=>r.thread_kind==='subagent').map(r=>r.session+'|'+r.agent)).size,tokens:rs.reduce((s,r)=>s+value(r),0),cost:priced.length?priced.reduce((s,r)=>s+r.cost,0):null,complete:priced.length===rs.length,credits:rs.every(r=>r.credits!=null)?rs.reduce((s,r)=>s+r.credits,0):null,creditsLb:rs.some(r=>!r.complete),interrupted:rs.some(r=>r.interrupted),...(LH.has(id)?{limit_hit:{reached:LH.get(id).reached,window_minutes:LH.get(id).window_minutes,at:LH.get(id).at}}:{})}}).sort((a,b)=>(a.cost===null)-(b.cost===null)||(b.cost||0)-(a.cost||0)||b.tokens-a.tokens).slice(0,n)}
-// Private turn context: every string goes in with textContent (el), never as markup; unknown parts are omitted.
 function contextBlock(c,text){const d=el('details',undefined,'tc'),row=(k,v)=>{const r=el('div',undefined,'tc-row');r.append(el('strong',t(k)),v);d.append(r)},list=a=>{const u=el('ul');a.forEach(x=>u.append(el('li',x)));return u},inp=c.inputs||{},act=c.activity||{},out=c.outcomes||{};d.append(el('summary',t('tc_more')));
 if(c.title)row('tc_title',el('span',c.title));
 if(inp.first||text)row('tc_first',el('span',inp.first||text));
@@ -212,7 +757,7 @@ function richInto(node,text,keys){node.replaceChildren();let segs=[{s:text}];for
 const re=new RegExp(TERMS.map(k=>'('+t('gl_re_'+k)+')').join('|'),'giu');for(const g of segs){const parent=g.b?node.appendChild(el('strong')):node;let at=0;for(const m of g.s.matchAll(re)){if(m.index>at)parent.append(g.s.slice(at,m.index));const k=TERMS[m.findIndex((x,j)=>j>0&&x!==undefined)-1],a=el('abbr',m[0],'term');a.title=glDef(k);parent.append(a);at=m.index+m[0].length}if(at<g.s.length)parent.append(g.s.slice(at))}}
 function renderGlance(){const ul=$('glance-text');ul.replaceChildren();for(const it of glanceItems(glanceFacts(selected))){const li=el('li');richInto(li,it.text,it.keys);ul.append(li)}}
 function renderGlossary(){const dl=$('glossary-list');dl.replaceChildren();for(const k of ['turn','call','nocall','list','int']){dl.append(el('dt',t('gl_t_'+k)),el('dd',glDef(k)))}dl.append(el('dt',t('gl_t_qs')),el('dd',t('gl_d_qs')))}
-function render(){selected=filterRecords(ALL,getFilters(),state.zoom);const a=aggregate(selected),dates=selected.map(r=>r.date).sort();const nSessions=new Set(selected.map(r=>r.session)).size,unk=k=>a.observations>0&&a.missing[k]===a.observations,unit=node=>node.append(el('span',t('tok_unit'),'unit')),setVal=(id,k)=>{$(id).textContent=unk(k)?unknown:short(a.fields[k]);if(!unk(k))unit($(id));$(id).title=unk(k)?'':t('tokens_title',{n:fmt(a.fields[k])})};$('total').textContent=short(a.known_tokens);unit($('total'));$('total').title=t('total_title',{n:fmt(a.known_tokens)});$('total-label').textContent=a.complete?t('total'):t('total_min');richInto($('total-note'),t('calls',{n:fmt(a.observations)})+' · '+t('sessions_n',{n:fmt(nSessions)}),[]);setVal('fresh','fresh_input');setVal('cache-write','cache_write');setVal('cache','cache_read');setVal('output','output');$('cache-note').textContent=a.cache_ratio===null?'—':t('cache_of',{pct:pct(a.cache_ratio*100)});$('cache-note').title=t('cache_den',{n:fmt(a.fields.fresh_input+a.fields.cache_read+a.fields.cache_write)});$('reasoning').textContent=a.missing.reasoning||a.ambiguous?t('incl_reasoning'):t('of_reasoning',{n:short(a.fields.reasoning)});$('selection').textContent=t('selection',{n:fmt(selected.length),m:fmt(ALL.length),tz:DATA.timezone})+(state.zoom?t('zoom_on'):'');$('period').textContent=dates.length?dates[0]+' — '+dates[dates.length-1]+' · '+DATA.timezone:t('no_basis',{tz:DATA.timezone});$('quality').classList.toggle('hidden',!a.incomplete&&!a.ambiguous);$('quality').textContent=(a.incomplete?t('q_inc',{n:fmt(a.incomplete)}):'')+(a.ambiguous?(a.incomplete?' ':'')+t('q_amb',{n:fmt(a.ambiguous),tok:short(a.ambiguous_tokens)}):'');$('zoomout').classList.toggle('hidden',!state.zoom);document.querySelectorAll('[data-gran]').forEach(b=>b.classList.toggle('active',b.dataset.gran===state.gran));document.querySelectorAll('[data-rank]').forEach(b=>b.classList.toggle('active',b.dataset.rank===state.rank));$('tooltip').classList.add('hidden');drawChart(selected);renderRanking();renderCacheComparisons();renderPrompts();renderGlance();renderLimitHits();renderSessions();renderEnergy()}
+function render(){selected=filterRecords(ALL,getFilters(),state.zoom);const a=aggregate(selected),dates=selected.map(r=>r.date).sort();const nSessions=new Set(selected.map(r=>r.session)).size,unk=k=>a.observations>0&&a.missing[k]===a.observations,unit=node=>node.append(el('span',t('tok_unit'),'unit')),setVal=(id,k)=>{$(id).textContent=unk(k)?unknown:short(a.fields[k]);if(!unk(k))unit($(id));$(id).title=unk(k)?'':t('tokens_title',{n:fmt(a.fields[k])})};$('total').textContent=short(a.known_tokens);unit($('total'));$('total').title=t('total_title',{n:fmt(a.known_tokens)});$('total-label').textContent=a.complete?t('total'):t('total_min');richInto($('total-note'),t('calls',{n:fmt(a.observations)})+' · '+t('sessions_n',{n:fmt(nSessions)}),[]);setVal('fresh','fresh_input');setVal('cache-write','cache_write');setVal('cache','cache_read');setVal('output','output');$('cache-note').textContent=a.cache_ratio===null?'—':t('cache_of',{pct:pct(a.cache_ratio*100)});$('cache-note').title=t('cache_den',{n:fmt(a.fields.fresh_input+a.fields.cache_read+a.fields.cache_write)});$('reasoning').textContent=a.missing.reasoning||a.ambiguous?t('incl_reasoning'):t('of_reasoning',{n:short(a.fields.reasoning)});$('selection').textContent=t('selection',{n:fmt(selected.length),m:fmt(ALL.length),tz:DATA.timezone})+(state.zoom?t('zoom_on'):'');$('period').textContent=dates.length?dates[0]+' — '+dates[dates.length-1]+' · '+DATA.timezone:t('no_basis',{tz:DATA.timezone});$('quality').classList.toggle('hidden',!a.incomplete&&!a.ambiguous);$('quality').textContent=(a.incomplete?t('q_inc',{n:fmt(a.incomplete)}):'')+(a.ambiguous?(a.incomplete?' ':'')+t('q_amb',{n:fmt(a.ambiguous),tok:short(a.ambiguous_tokens)}):'');$('zoomout').classList.toggle('hidden',!state.zoom);document.querySelectorAll('[data-gran]').forEach(b=>b.classList.toggle('active',b.dataset.gran===state.gran));document.querySelectorAll('[data-rank]').forEach(b=>b.classList.toggle('active',b.dataset.rank===state.rank));$('tooltip').classList.add('hidden');drawChart(selected);renderRanking();renderCacheComparisons();renderPrompts();renderGlance();renderLimitHits();renderAnalytics();renderSessions();renderEnergy()}
 const baseRender=render;render=()=>{baseRender();const s=usageStats();renderUsage(s);renderWork(s)};
 function download(name,content,type){const url=URL.createObjectURL(new Blob([content],{type})),a=el('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 function csvCell(v){let s=v===null||v===undefined?'':String(v);if(/^[\s]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"'}
@@ -225,6 +770,6 @@ const problems=imps.filter(i=>i.status!=='ok'||importDiag(i)>0);if(problems.leng
 const all=el('details',undefined,'import-all');all.append(el('summary',t('imp_all',{n:fmt(imps.length)})));for(const i of imps)all.append(el('p',importLine(i)));box.append(all)}
 function renderCoverage(){const sources=$('sources');sources.replaceChildren();for(const range of DATA.coverage.ranges||[]){const d=el('div',undefined,'source');d.append(el('strong',label(range.harness)),el('p',t('src_calls',{n:fmt(range.observations)})),el('p',range.first_event.slice(0,16).replace('T',' ')+' — '+range.last_event.slice(0,16).replace('T',' ')+' UTC'));const imports=(DATA.coverage.imports||[]).filter(i=>i.harness===range.harness);appendImports(d,imports,DATA.coverage.files_by_harness?DATA.coverage.files_by_harness[range.harness]||{files:0}:null);sources.append(d)}if(!(DATA.coverage.ranges||[]).length)sources.append(el('p',t('no_src'),'muted'));if((DATA.coverage.imports||[]).length)sources.append(el('p',t('diag_note'),'small muted'));sources.append(el('p',t('missing_src',{n:fmt(DATA.coverage.missing_source_files||0)}),'small muted'));$('privacy').textContent=t(DATA.privacy==='redacted'?'priv_shared':'priv_local');$('generated').textContent=t('generated',{t:DATA.generated_at.slice(0,16).replace('T',' '),tz:DATA.timezone});$('saved-at').textContent=DATA.saved_at?' · '+(DATA.reopen?t('saved_at_reopen',{path:DATA.saved_at,cmd:DATA.reopen}):t('saved_at',{path:DATA.saved_at})):''}
 {const top=$('to-top'),sync=()=>top.classList.toggle('hidden',window.scrollY<window.innerHeight*.9);addEventListener('scroll',sync,{passive:true});addEventListener('resize',sync);top.onclick=()=>window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});sync()}
-window.UsageReport={topPrompts,cr,short,get all(){return ALL},data:DATA,aggregate,cacheComparison,filterRecords,groupBuckets,csvCell,getSelected:()=>selected,energyOf,fmtE,referenceCost,glanceFacts,glanceText,glanceItems};setLang(pick(DATA.lang),false);window.reportReady=true}
+window.UsageReport={topPrompts,cr,short,analyticsRows,analyticsSeries,analyticsEfficiency,analyticsWeekly,get all(){return ALL},data:DATA,aggregate,cacheComparison,filterRecords,groupBuckets,csvCell,getSelected:()=>selected,energyOf,fmtE,referenceCost,glanceFacts,glanceText,glanceItems};setLang(pick(DATA.lang),false);window.reportReady=true}
 decode('report-i18n').then(d=>{I18N=d;return decode('report-data')}).then(main).catch(fail);
 </script></body></html>
