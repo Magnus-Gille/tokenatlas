@@ -89,7 +89,7 @@ class UsageProfileTests(unittest.TestCase):
         self.assertNotIn(('m5', 'private-secret-model'), {(ref['provider'], ref['model']) for ref in refs})
         shared = report.build_report(rows, {}, redact=True)
         shared_json = json.dumps(shared)
-        self.assertEqual(report.REDACTION_REVISION, 3)
+        self.assertEqual(report.REDACTION_REVISION, 4)
         self.assertNotIn('private-secret-model', shared_json)
         self.assertNotIn('local-model', shared_json)
         self.assertTrue(all('source_url' not in ref for ref in shared['usage']['cloud_references']))

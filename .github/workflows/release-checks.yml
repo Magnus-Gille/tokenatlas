@@ -78,3 +78,4 @@ jobs:
         run: |
           python scripts/prompts_fixture.py "${{ runner.temp }}/tokenatlas-prompts.html" "${{ runner.temp }}/tokenatlas-shared.html"
           node test_report_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html" "${{ runner.temp }}/tokenatlas-prompts.html" "${{ runner.temp }}/tokenatlas-shared.html"
+          node test_analytics_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html"
