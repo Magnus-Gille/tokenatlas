@@ -338,7 +338,8 @@ const box = $('analytics-sessions');
 box.replaceChildren();
 const withKeys = rows.filter(row => !row.id_synthetic).map(row => ({...row, session_key: row.harness + '\x1f' + row.session}));
 const groups = groupBy(withKeys, 'session_key').slice(0, 5);
-const total = analyticsEfficiency(rows).tokens;
+const windowEfficiency = analyticsEfficiency(rows);
+const total = windowEfficiency.tokens;
 if (!groups.length) {
 box.append(el('p', t('analytics_empty'), 'analytics-empty'));
 return;
@@ -346,7 +347,7 @@ return;
 for (const group of groups) {
 const first = group.records[0];
 const displayName = String(first.session || '').startsWith(first.harness + ':') ? first.session : label(first.harness) + ' · ' + label(first.session);
-const share = total ? pct(group.known_tokens / total * 100) : '—';
+const share = total && windowEfficiency.complete && group.complete ? pct(group.known_tokens / total * 100) : '—';
 const detail = el('details', undefined, 'analytics-row');
 const summary = el('summary', t('analytics_session_summary', {name: displayName, tokens: analyticsTokenAmount(group.known_tokens, group.complete), share}));
 const meta = el('div', t('analytics_session_meta', {requests: fmt(group.observations), cache: group.cache_ratio === null ? unknown : pct(group.cache_ratio * 100)}), 'analytics-meta');

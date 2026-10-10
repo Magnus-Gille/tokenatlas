@@ -193,6 +193,7 @@ async function ready(page, errors) {
       await page.locator('#from').fill('2026-10-08'); await page.locator('#to').fill('2026-10-10');
       await page.locator('#model').selectOption({label:'gpt-5'});
       assert.equal((await page.locator('#analytics-kpis .analytics-kpi strong').first().innerText()).replace(/[^\d]/g,''),'70','global date and model filters update the analytics total');
+      assert.ok(!(await page.locator('#analytics-sessions summary').allTextContents()).join(' ').includes('%'), 'incomplete session ranking suppresses exact shares');
       for (const selector of ['#analytics-sessions','#analytics-weeks','#analytics-requests','#analytics-turns']) {
         assert.ok((await page.locator(selector).textContent()).includes('≥'), selector + ' marks partial token counts as lower bounds');
       }
