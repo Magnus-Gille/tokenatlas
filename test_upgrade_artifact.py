@@ -261,6 +261,14 @@ from tokenatlas import upgrade
 from tokenatlas.__main__ import _main
 manager, executable, wheels = sys.argv[1:4]
 real_command = upgrade.command
+real_execute = upgrade._execute
+def observed_execute(*args, **kwargs):
+    result = real_execute(*args, **kwargs)
+    if result.returncode:
+        # This subprocess has a disposable, explicit environment and synthetic
+        # wheels only. Production intentionally never prints installer output.
+        print("Isolated installer diagnostics:", result.stdout, result.stderr, file=sys.stderr)
+    return result
 def local_command(installation, target):
     cmd = real_command(installation, target)
     index = cmd.index("--index-url")
@@ -268,7 +276,7 @@ def local_command(installation, target):
     if manager == "pipx":
         return cmd + ["--pip-args", shlex.join(["--no-index", "--find-links", wheels])]
     return cmd + ["--no-index", "--find-links", wheels]
-with patch.object(upgrade, "command", side_effect=local_command):
+with patch.object(upgrade, "command", side_effect=local_command), patch.object(upgrade, "_execute", side_effect=observed_execute):
     status = _main(["upgrade", "--version", sys.argv[4], "--yes"])
 raise SystemExit(status)
 '''
