@@ -5,9 +5,16 @@ from unittest.mock import patch
 from tokenatlas import upgrade_index
 
 
-def release_file(version, *, yanked=False, requires_python=None, package_type="bdist_wheel"):
+def release_file(version, *, yanked=False, requires_python=None, package_type="bdist_wheel", filename=None):
+    if filename is None:
+        if package_type == "bdist_wheel":
+            filename = f"tokenatlas-{version}-py3-none-any.whl"
+        elif package_type == "sdist":
+            filename = f"tokenatlas-{version}.tar.gz"
+        else:
+            filename = f"tokenatlas-{version}.egg"
     return {
-        "filename": f"tokenatlas-{version}-py3-none-any.whl",
+        "filename": filename,
         "packagetype": package_type,
         "yanked": yanked,
         "requires_python": requires_python,
@@ -58,12 +65,38 @@ class LatestVersionTests(unittest.TestCase):
         }))
         self.assertEqual(result, "1.10.0")
 
+    def test_skips_newer_sdist_only_release_and_uses_universal_wheel(self):
+        result = upgrade_index.latest_version(fetch_json=lambda url: index({
+            "2.0.0": [release_file("2.0.0", package_type="sdist")],
+            "1.9.0": [release_file("1.9.0")],
+        }))
+        self.assertEqual(result, "1.9.0")
+
+    def test_skips_newer_platform_specific_wheel_and_uses_universal_wheel(self):
+        result = upgrade_index.latest_version(fetch_json=lambda url: index({
+            "2.0.0": [release_file(
+                "2.0.0", filename="tokenatlas-2.0.0-cp311-cp311-manylinux_2_17_x86_64.whl",
+            )],
+            "1.9.0": [release_file("1.9.0")],
+        }))
+        self.assertEqual(result, "1.9.0")
+
+    def test_errors_when_only_sdist_or_platform_wheel_is_available(self):
+        for filename, package_type in (
+            ("tokenatlas-2.0.0.tar.gz", "sdist"),
+            ("tokenatlas-2.0.0-cp311-cp311-win_amd64.whl", "bdist_wheel"),
+        ):
+            with self.subTest(filename=filename), self.assertRaisesRegex(ValueError, "no stable TokenAtlas release"):
+                upgrade_index.latest_version(fetch_json=lambda url: index({
+                    "2.0.0": [release_file("2.0.0", filename=filename, package_type=package_type)],
+                }))
+
     def test_skips_yanked_files_and_releases_without_files(self):
         result = upgrade_index.latest_version(fetch_json=lambda url: index({
             "2.0.0": [release_file("2.0.0", yanked=True)],
             "1.9.0": [],
             "1.8.0": [release_file("1.8.0", package_type="bdist_egg")],
-            "1.7.0": [release_file("1.7.0", package_type="sdist")],
+            "1.7.0": [release_file("1.7.0")],
         }))
         self.assertEqual(result, "1.7.0")
 
@@ -117,7 +150,7 @@ class LatestVersionTests(unittest.TestCase):
             def __exit__(self, *args):
                 self.close()
 
-        data = b'{"info":{"version":"99.0.0"},"releases":{"1.2.3":[{"filename":"x.whl","packagetype":"bdist_wheel","yanked":false,"requires_python":null}]}}'
+        data = b'{"info":{"version":"99.0.0"},"releases":{"1.2.3":[{"filename":"tokenatlas-1.2.3-py3-none-any.whl","packagetype":"bdist_wheel","yanked":false,"requires_python":null}]}}'
         with patch.object(upgrade_index.urllib.request, "urlopen", return_value=FakeResponse(data)) as opened:
             self.assertEqual(upgrade_index.latest_version(), "1.2.3")
         (request,) = opened.call_args.args

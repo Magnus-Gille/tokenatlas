@@ -14,7 +14,12 @@ requested settings are recorded, runtime model/effort metadata is unavailable.
 Research/index/CLI/integration leaves: pass after conductor corrections to version
 matching, import mocking and fixture assertions. Root owns installer safety.
 
-Independent review and hosted checks precede merge. Ship-it covers publication
+The full suite passes: 1,170 tests (four platform/environment skips), plus 61
+focused upgrade tests (two Windows-only skips). Independent native review
+configured gpt-5.6-sol/xhigh identified six grounded issues, now fixed: Windows
+installer containment, lazy state-home lookup, universal-wheel eligibility,
+full-directory recovery, embedded state detection, and local external-management
+markers. Renewed review and native Windows hosted checks precede merge. Ship-it covers publication
 of the branch/PR and merge; a release triggers PyPI and needs a separate exact-SHA
 production confirmation. Installed personal TokenAtlas remains verified 1.21.0.
 Task evidence: /private/tmp/tokenatlas-upgrade-ship (no private usage fixtures).

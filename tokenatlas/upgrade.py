@@ -48,11 +48,17 @@ def _execute(argv, *, timeout=600):
     for key in ('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV'):
         env.pop(key, None)
     for key in list(env):
-        if key.startswith('PIP_') or key in ('PYTHONUSERBASE','UV_PROJECT_ENVIRONMENT'):
+        if (key.startswith('PIP_') or key == 'PYTHONUSERBASE' or
+            (key.startswith('UV_') and key not in ('UV_TOOL_DIR','UV_TOOL_BIN_DIR','UV_CACHE_DIR',
+                                                   'UV_PYTHON_INSTALL_DIR','UV_PYTHON_BIN_DIR','UV_OFFLINE'))):
             env.pop(key)
     env['PIP_CONFIG_FILE'] = os.devnull
     env['PIP_NO_INPUT'] = '1'
-    options = {'start_new_session': True,'pass_fds':inherited_fds()} if os.name != 'nt' else {'creationflags':subprocess.CREATE_NEW_PROCESS_GROUP}
+    env['UV_NO_CONFIG'] = '1'
+    if os.name == 'nt':
+        from tokenatlas.upgrade_process import execute_windows
+        return execute_windows(argv,env,tempfile.gettempdir(),timeout)
+    options = {'start_new_session': True,'pass_fds':inherited_fds()}
     proc = subprocess.Popen([str(x) for x in argv], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace',
                             env=env, cwd=tempfile.gettempdir(), **options)
@@ -67,13 +73,8 @@ def _execute(argv, *, timeout=600):
         out, err = proc.communicate(timeout=timeout)
     except (subprocess.TimeoutExpired,KeyboardInterrupt):
         # Keep the installation lock until the installer tree is stopped.
-        if os.name == 'nt':
-            taskkill = Path(os.environ['SystemRoot'])/'System32'/'taskkill.exe'
-            subprocess.run([str(taskkill),'/PID',str(proc.pid),'/T','/F'],
-                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True)
-        else:
-            try:os.killpg(proc.pid,signal.SIGKILL)
-            except ProcessLookupError:pass
+        try:os.killpg(proc.pid,signal.SIGKILL)
+        except ProcessLookupError:pass
         proc.communicate()
         raise
     finally:
@@ -123,7 +124,11 @@ def detect():
         raise Unsupported('the active environment has no unambiguous TokenAtlas launcher')
     # A global external-management marker does not disqualify an actual venv;
     # an explicit marker inside this environment does.
-    if (prefix/'EXTERNALLY-MANAGED').exists() or (Path(sysconfig.get_path('purelib'))/'EXTERNALLY-MANAGED').exists():
+    stdlib = Path(sysconfig.get_path('stdlib'))
+    local_stdlib = prefix/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'
+    if ((prefix/'EXTERNALLY-MANAGED').exists() or
+        (local_stdlib/'EXTERNALLY-MANAGED').exists() or
+        (_inside(stdlib,prefix) and (stdlib/'EXTERNALLY-MANAGED').exists())):
         raise Unsupported('this environment is externally managed; use its owner to update it')
     pipx = (prefix/'pipx_metadata.json').is_file()
     uv = (prefix/'uv-receipt.toml').is_file()
@@ -185,15 +190,28 @@ def command(installation, target):
     raise Unsupported('unknown installation manager')
 
 
+def _embedded_state(prefix):
+    names = {'history.sqlite3','report.html','remote-hosts','quota-budget.json','usage-profile.json',
+             'top-prompts.json','outcomes.jsonl','statusline.json','claude-quota.jsonl',
+             'claude-quota.last','claude-quota.lock','collect.lock','collect.log',
+             'com.tokenatlas.collect.plist','tokenatlas-collect.service','tokenatlas-collect.timer'}
+    for path in prefix.rglob('*'):
+        if path.name in names or path.name.endswith(('-wal','-shm','-journal')):
+            return True
+        if path.is_file() and not path.is_symlink():
+            with path.open('rb') as file:header=file.read(16)
+            if header.startswith((b'SQLite format 3\0',b'\x37\x7f\x06\x82',b'\x37\x7f\x06\x83',b'\xd9\xd5\x05\xf9\x20\xa1\x63\xd7')):
+                return True
+    return False
+
+
 def snapshot(installation):
     """Copy code/environment only, alongside it; never roll usage data backward."""
     # Tool managers may replace an entire environment. Usage/state does not
     # belong there, and must not be silently swept into a code-only restore.
-    state = Path(os.environ.get('XDG_STATE_HOME',Path.home()/'.local/state'))/'tokenatlas'
-    if _inside(state,installation.prefix) or any(
-        p.name in ('history.sqlite3','report.html','remote-hosts','quota-budget.json','usage-profile.json')
-        for p in installation.prefix.rglob('*')
-    ):
+    state_root = os.environ.get('XDG_STATE_HOME')
+    state = (Path(state_root) if state_root else Path.home()/'.local/state')/'tokenatlas'
+    if _inside(state,installation.prefix) or _embedded_state(installation.prefix):
         raise Unsupported('usage data/configuration is inside the tool environment; move it outside before upgrading')
     backup = Path(tempfile.mkdtemp(prefix='.tokenatlas-backup-',dir=installation.prefix.parent))
     try:
@@ -217,13 +235,27 @@ def snapshot(installation):
         if installation.exposed:
             shutil.copy2(installation.exposed,backup/'exposed-launcher',follow_symlinks=False)
             record['exposed_launcher'] = str(installation.exposed)
+            saved = backup/'exposed-launcher'
+            if installation.exposed.is_symlink():
+                record['exposed_symlink'] = os.readlink(installation.exposed)
+                if not saved.is_symlink() or os.readlink(saved) != record['exposed_symlink']:
+                    raise OSError('backup exposed symlink mismatch')
+            else:
+                digest = hashlib.sha256(installation.exposed.read_bytes()).hexdigest()
+                if hashlib.sha256(saved.read_bytes()).hexdigest() != digest:
+                    raise OSError('backup exposed executable mismatch')
+                record['exposed_sha256'] = digest
         (backup/'recovery.json').write_text(json.dumps(record,indent=2)+'\n')
         (backup/'README.txt').write_text(
             'Previous TokenAtlas environment; keep until the new version is accepted.\n'
             'Stop TokenAtlas processes before recovery. Using a Python outside this environment,\n'
-            'copy the contents of environment/ back to the exact environment path in recovery.json.\n'
+            'rename the entire damaged environment to a new unused sibling path first.\n'
+            'Then copy the entire saved environment/ directory to the now-absent exact\n'
+            'environment path in recovery.json, preserving symlinks. NEVER overlay directories: newer files must not remain.\n'
             'Its scripts refer to that original path; do not run them from this backup directory.\n'
             'If present, restore exposed-launcher to exposed_launcher from recovery.json, preserving symlinks.\n'
+            'Verify: run the recorded python with -I -c "import importlib.metadata as m, tokenatlas; print(tokenatlas.__version__, m.version(\'tokenatlas\'))".\n'
+            'Both values must equal the saved version. Run the recorded launcher and exposed_launcher with --version too.\n'
             'This is a code backup, not permission to restore usage history or newer data.\n')
     except (OSError,ValueError) as exc:
         # Partial backup is not advertised as recoverable; installation has not started.
@@ -253,7 +285,7 @@ def health(installation, target):
 
 def mutate(installation, target):
     backup = snapshot(installation)
-    print(f'Previous environment backup: {backup}',flush=True)
+    print(terminal_safe(f'Previous environment backup: {backup}'),flush=True)
     try:
         result = _execute(command(installation,target))
         if result.returncode:

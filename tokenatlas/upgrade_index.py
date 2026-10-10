@@ -128,7 +128,8 @@ def latest_version(fetch_json: Callable[[str], Any] | None = None) -> str:
                     or not isinstance(package_type, str) or not isinstance(yanked, bool)
                     or (requires_python is not None and not isinstance(requires_python, str))):
                 raise ValueError("PyPI returned invalid release file metadata.")
-            if package_type not in ("bdist_wheel", "sdist") or yanked:
+            expected_wheel = f"tokenatlas-{stable_version}-py3-none-any.whl"
+            if package_type != "bdist_wheel" or filename != expected_wheel or yanked:
                 continue
             if _python_compatible(requires_python, current):
                 usable_file = True
@@ -137,5 +138,5 @@ def latest_version(fetch_json: Callable[[str], Any] | None = None) -> str:
             candidates.append((_version_tuple(stable_version), stable_version))
 
     if not candidates:
-        raise ValueError("PyPI has no stable TokenAtlas release compatible with this Python version.")
+        raise ValueError("PyPI has no stable TokenAtlas release with a universal wheel compatible with this Python version.")
     return max(candidates)[1]

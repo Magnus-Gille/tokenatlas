@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -185,6 +186,18 @@ class DetectRefusalTests(DetectionFixture):
     def test_external_management_marker_inside_venv_is_refused(self):
         (self.prefix / "EXTERNALLY-MANAGED").touch()
         self.assert_unsupported("externally managed")
+
+    def test_stdlib_marker_inside_venv_is_refused(self):
+        stdlib=self.prefix/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'
+        stdlib.mkdir(parents=True,exist_ok=True)
+        (stdlib/'EXTERNALLY-MANAGED').touch()
+        self.assert_unsupported('externally managed')
+
+    def test_externally_managed_base_does_not_disqualify_actual_venv(self):
+        stdlib=self.root/'base-stdlib';stdlib.mkdir()
+        (stdlib/'EXTERNALLY-MANAGED').touch()
+        with patch.object(upgrade.sysconfig,'get_path',return_value=str(stdlib)):
+            self.assertEqual(self._detect().manager,'venv')
 
     def test_source_checkout_module_is_refused(self):
         with patch.object(upgrade, "__file__", str(self.root / "checkout" / "tokenatlas" / "upgrade.py")):

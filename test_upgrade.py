@@ -136,6 +136,33 @@ class UpgradeTests(unittest.TestCase):
         execute.assert_not_called()
         self.assertEqual((self.prefix/'history.sqlite3').read_text(),'do not move or overwrite')
 
+    def test_custom_database_and_private_state_are_refused(self):
+        for name,content in [('custom-data',b'SQLite format 3\0more'),
+                             ('custom-data-wal',b'wal'),('custom-data-shm',b'shm'),
+                             ('top-prompts.json',b'private'),('outcomes.jsonl',b'outcome'),
+                             ('statusline.json',b'{}'),('claude-quota.last',b'quota')]:
+            with self.subTest(name=name):
+                path=self.prefix/name;path.write_bytes(content)
+                with patch.object(upgrade,'_execute') as execute:
+                    with self.assertRaises(upgrade.Unsupported):upgrade.mutate(self.install,'1.20.0')
+                execute.assert_not_called()
+                self.assertEqual(path.read_bytes(),content)
+                path.unlink()
+
+    def test_explicit_state_root_does_not_evaluate_home_fallback(self):
+        with patch.dict(os.environ,{'XDG_STATE_HOME':str(self.root/'state')}), patch.object(Path,'home',side_effect=RuntimeError('Windows home absent')):
+            saved=upgrade.snapshot(self.install)
+        self.assertTrue((saved/'recovery.json').is_file())
+
+    def test_exposed_launcher_backup_is_verified_and_restore_is_not_overlay(self):
+        exposed=self.root/'tokenatlas';exposed.write_bytes(b'launcher')
+        install=upgrade.Installation('pipx',self.prefix,self.python,self.install.launcher,Path('/tools/pipx'),exposed)
+        saved=upgrade.snapshot(install)
+        import hashlib
+        record=json.loads((saved/'recovery.json').read_text())
+        self.assertEqual(record['exposed_sha256'],hashlib.sha256((saved/'exposed-launcher').read_bytes()).hexdigest())
+        self.assertIn('NEVER overlay', (saved/'README.txt').read_text())
+
     def test_collect_skips_while_installer_holds_lock(self):
         from tokenatlas import collect
         with installation_lock(self.prefix), patch('sys.prefix',str(self.prefix)), patch.object(collect,'_run') as collect_run:
@@ -143,11 +170,13 @@ class UpgradeTests(unittest.TestCase):
         collect_run.assert_not_called()
 
     def test_subprocess_scrubs_wrong_destination_and_checkout(self):
-        with patch.dict(os.environ,{'PIP_TARGET':'/wrong','PIP_PREFIX':'/wrong','PIP_CONFIG_FILE':'/wrong','PYTHONPATH':'/wrong'}):
+        with patch.dict(os.environ,{'PIP_TARGET':'/wrong','PIP_PREFIX':'/wrong','PIP_CONFIG_FILE':'/wrong','PYTHONPATH':'/wrong',
+                                   'UV_EXTRA_INDEX_URL':'https://wrong.invalid','UV_TOOL_DIR':'/owned-tools'}):
             result = upgrade._execute([sys.executable,'-c',
-                'import os,json; print(json.dumps({k:os.environ.get(k) for k in ["PIP_TARGET","PIP_PREFIX","PIP_CONFIG_FILE","PYTHONPATH"]}))'])
+                'import os,json; print(json.dumps({k:os.environ.get(k) for k in ["PIP_TARGET","PIP_PREFIX","PIP_CONFIG_FILE","PYTHONPATH","UV_EXTRA_INDEX_URL","UV_TOOL_DIR","UV_NO_CONFIG"]}))'])
         self.assertEqual(result.returncode,0)
-        self.assertEqual(json.loads(result.stdout),{'PIP_TARGET':None,'PIP_PREFIX':None,'PIP_CONFIG_FILE':os.devnull,'PYTHONPATH':None})
+        self.assertEqual(json.loads(result.stdout),{'PIP_TARGET':None,'PIP_PREFIX':None,'PIP_CONFIG_FILE':os.devnull,'PYTHONPATH':None,
+                                                  'UV_EXTRA_INDEX_URL':None,'UV_TOOL_DIR':'/owned-tools','UV_NO_CONFIG':'1'})
 
     def test_pip_cannot_be_shadowed_by_working_directory(self):
         (self.root/'pip.py').write_text('print("SHADOWED_PIP")')
