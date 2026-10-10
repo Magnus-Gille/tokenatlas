@@ -159,7 +159,7 @@ class DetectPositiveTests(DetectionFixture):
         self.assertEqual(installation.manager, "pipx")
         self.assertEqual(installation.manager_exe, executable)
         self.assertEqual(upgrade.command(installation, "2.4.0"), [
-            str(executable), "install", "--force", "--upgrade", "--index-url",
+            str(executable), "install", "--upgrade", "--index-url",
             "https://pypi.org/simple", "tokenatlas==2.4.0",
         ])
 

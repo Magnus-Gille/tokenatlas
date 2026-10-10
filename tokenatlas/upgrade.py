@@ -179,7 +179,7 @@ def command(installation, target):
         return [str(installation.python),'-I','-m','pip','--isolated','install','--upgrade','--no-user',
                 '--prefix',str(installation.prefix),'--index-url','https://pypi.org/simple','--only-binary=:all:',spec]
     if installation.manager == 'pipx':
-        return [str(installation.manager_exe),'install','--force','--upgrade','--index-url','https://pypi.org/simple',spec]
+        return [str(installation.manager_exe),'install','--upgrade','--index-url','https://pypi.org/simple',spec]
     if installation.manager == 'uv':
         base = Path(getattr(sys,'_base_executable',sys.executable)).resolve()
         if _inside(base,installation.prefix):
