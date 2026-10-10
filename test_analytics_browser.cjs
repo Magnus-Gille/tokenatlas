@@ -131,7 +131,8 @@ async function ready(page, errors) {
         assert.equal(series.reduce((n, day) => n + day.total, 0), facts.expected, `${dimension} grouping conserves known token total`);
       }
       assert.deepEqual(facts.efficiency, {tokens:500, requests:8, linkedTurns:7, linkedTokens:500, tokensPerRequest:62.5, tokensPerTurn:500/7, cacheReuse:null, complete:false, ambiguous:1, incomplete:1}, 'efficiency uses exact non-synthetic request and linked-turn denominators; incomplete cache ratio is unknown');
-      assert.ok(facts.weekly.length > 0, 'weekly grouping is available');
+      assert.equal(facts.weekly.reduce((sum, week) => sum + week.observations, 0),8,'weekly request counts exclude ambiguous identities');
+      assert.ok(facts.weekly.every(week => week.records.every(row => !row.id_synthetic)), 'weekly breakdowns exclude ambiguous rows');
 
       await page.locator('#analytics').scrollIntoViewIfNeeded();
       await page.locator('[data-analytics-days="7"]').click();
@@ -192,6 +193,9 @@ async function ready(page, errors) {
       await page.locator('#from').fill('2026-10-08'); await page.locator('#to').fill('2026-10-10');
       await page.locator('#model').selectOption({label:'gpt-5'});
       assert.equal((await page.locator('#analytics-kpis .analytics-kpi strong').first().innerText()).replace(/[^\d]/g,''),'70','global date and model filters update the analytics total');
+      for (const selector of ['#analytics-sessions','#analytics-weeks','#analytics-requests','#analytics-turns']) {
+        assert.ok((await page.locator(selector).textContent()).includes('≥'), selector + ' marks partial token counts as lower bounds');
+      }
       await page.locator('#reset').click();
       const zoomBars = await page.locator('#chart .bar').count();
       assert.ok(zoomBars > 0, 'the report chart has selectable bars');
@@ -203,6 +207,9 @@ async function ready(page, errors) {
       await page.locator('#reset').click();
       assert.equal(await page.evaluate(()=>UsageReport.getSelected().length),9,'filter reset restores all requests');
 
+      await page.evaluate(() => { UsageReport.data.analytics_metadata.observed_turn_start_dates['0'] = '2026-08-01'; });
+      await page.locator('#analytics-group').selectOption('token_class');
+      assert.ok((await page.locator('#analytics-turns').textContent()).includes(locale.startsWith('sv') ? 'starter utanför fönstret visas inte' : 'starts outside this window are not shown'), 'turn chart discloses cross-window starts excluded from its counts');
       const before = await page.evaluate(() => ({width:document.documentElement.scrollWidth, viewport:innerWidth}));
       await page.setViewportSize({width:390,height:844});
       const mobile = await page.evaluate(() => ({width:document.documentElement.scrollWidth, viewport:innerWidth, section:document.querySelector('#analytics').scrollWidth, client:document.querySelector('#analytics').clientWidth}));
@@ -218,6 +225,10 @@ async function ready(page, errors) {
       const swatches = await page.locator('#analytics-legend i').evaluateAll(nodes => nodes.map(node => node.style.background));
       assert.equal(swatches.length, 7, 'six named models and a remainder group');
       assert.notEqual(swatches[0], swatches[6], 'a named model never collides with the remainder colour');
+      await page.evaluate(() => Object.values(UsageReport.data.prompt_context).forEach(context => { context.activity = {shell:0,edits:0,web:0,subagents:0}; }));
+      await page.locator('#analytics-group').selectOption('token_class');
+      assert.equal(await page.locator('#analytics-activity svg').count(),1,'matching all-zero retained activity remains charted');
+      assert.ok((await page.locator('#analytics-activity').textContent()).includes(locale.startsWith('sv') ? 'är noll' : 'are zero'), 'zero activity has an explicit zero-counter state');
       assert.deepEqual(errors, []);
       await context.close();
     }

@@ -156,6 +156,7 @@ return year + '-W' + String(week).padStart(2, '0');
 function analyticsWeekly(rows) {
 const buckets = new Map();
 for (const row of rows) {
+if (row.id_synthetic) continue;
 const week = analyticsWeek(row.date);
 if (!buckets.has(week)) buckets.set(week, []);
 buckets.get(week).push(row);
@@ -331,6 +332,7 @@ const chartWrap = el('div', undefined, 'analytics-chart');
 chartWrap.append(svg);
 host.append(chartWrap, el('p', t('analytics_group_note', {dimension: ({token_class: t('analytics_token_class'), model: t('analytics_model'), thread_kind: t('analytics_thread'), origin: t('analytics_surface'), harness: t('analytics_harness'), effort: t('analytics_effort')})[dimension]}), 'analytics-meta'), el('p', t('analytics_gaps'), 'analytics-meta'));
 }
+function analyticsTokenAmount(amount, complete) { return (complete ? '' : '≥ ') + fmt(amount); }
 function renderAnalyticsSessions(rows) {
 const box = $('analytics-sessions');
 box.replaceChildren();
@@ -346,7 +348,7 @@ const first = group.records[0];
 const displayName = String(first.session || '').startsWith(first.harness + ':') ? first.session : label(first.harness) + ' · ' + label(first.session);
 const share = total ? pct(group.known_tokens / total * 100) : '—';
 const detail = el('details', undefined, 'analytics-row');
-const summary = el('summary', t('analytics_session_summary', {name: displayName, tokens: fmt(group.known_tokens), share}));
+const summary = el('summary', t('analytics_session_summary', {name: displayName, tokens: analyticsTokenAmount(group.known_tokens, group.complete), share}));
 const meta = el('div', t('analytics_session_meta', {requests: fmt(group.observations), cache: group.cache_ratio === null ? unknown : pct(group.cache_ratio * 100)}), 'analytics-meta');
 detail.append(summary, meta);
 const breakdown = el('ul');
@@ -354,11 +356,11 @@ for (const model of groupBy(group.records, 'model')) {
 for (const effort of groupBy(model.records, 'effort')) {
 const tiers = [...new Set(effort.records.map(row => [row.speed, row.service_tier].filter(Boolean).join(' / ')).filter(Boolean))];
 const tier = tiers.length ? ' · ' + tiers.join(', ') : '';
-breakdown.append(el('li', t('analytics_model_effort', {model: model.name, effort: effort.name, tokens: fmt(effort.known_tokens), requests: fmt(effort.observations)}) + tier));
+breakdown.append(el('li', t('analytics_model_effort', {model: model.name, effort: effort.name, tokens: analyticsTokenAmount(effort.known_tokens, effort.complete), requests: fmt(effort.observations)}) + tier));
 }
 }
 for (const row of group.records.slice(0, 20)) {
-breakdown.append(el('li', t('analytics_request_line', {time: displayTime(row.minute), model: label(row.model), effort: label(row.effort), tokens: fmt(value(row)), tier: [row.speed, row.service_tier].filter(Boolean).join(' / ') || unknown})));
+breakdown.append(el('li', t('analytics_request_line', {time: displayTime(row.minute), model: label(row.model), effort: label(row.effort), tokens: analyticsTokenAmount(value(row), row.complete), tier: [row.speed, row.service_tier].filter(Boolean).join(' / ') || unknown})));
 }
 if (group.records.length > 20) breakdown.append(el('li', t('analytics_more_requests', {n: fmt(group.records.length - 20)})));
 detail.append(breakdown);
@@ -375,11 +377,11 @@ return;
 }
 for (const week of weeks) {
 const detail = el('details', undefined, 'analytics-row');
-const summary = el('summary', t('analytics_week_summary', {week: week.week, tokens: fmt(week.known_tokens), requests: fmt(week.observations)}));
+const summary = el('summary', t('analytics_week_summary', {week: week.week, tokens: analyticsTokenAmount(week.known_tokens, week.complete), requests: fmt(week.observations)}));
 const list = el('ul');
 for (const model of groupBy(week.records, 'model')) {
 for (const effort of groupBy(model.records, 'effort')) {
-list.append(el('li', t('analytics_model_effort', {model: model.name, effort: effort.name, tokens: fmt(effort.known_tokens), requests: fmt(effort.observations)})));
+list.append(el('li', t('analytics_model_effort', {model: model.name, effort: effort.name, tokens: analyticsTokenAmount(effort.known_tokens, effort.complete), requests: fmt(effort.observations)})));
 }
 }
 detail.append(summary, list);
@@ -451,6 +453,7 @@ const requests = $('analytics-requests');
 const turns = $('analytics-turns');
 renderCountTimeline(requests, rows, 'requests', start, end);
 renderCountTimeline(turns, rows, 'turns', start, end);
+turns.append(el('p', t('analytics_turn_chart_note'), 'analytics-meta'));
 const requestDetails = el('details', undefined, 'analytics-row');
 requestDetails.append(el('summary', t('analytics_request_details')));
 const requestList = el('ul');
@@ -458,9 +461,9 @@ for (const day of analyticsTimeline(rows, 'date')) {
 const groups = groupBy(day.records, 'model');
 const description = groups.map(group => {
 const surfaces = [...new Set(group.records.map(row => label(row.origin)))].join(', ');
-return t('analytics_timeline_group', {model: group.name, surface: surfaces, count: fmt(group.observations), tokens: fmt(group.known_tokens)});
+return t('analytics_timeline_group', {model: group.name, surface: surfaces, count: fmt(group.observations), tokens: analyticsTokenAmount(group.known_tokens, group.complete)});
 }).join(' · ');
-requestList.append(el('li', t('analytics_request_day', {date: day.name, requests: fmt(day.observations), tokens: fmt(day.known_tokens)}) + ' — ' + description));
+requestList.append(el('li', t('analytics_request_day', {date: day.name, requests: fmt(day.observations), tokens: analyticsTokenAmount(day.known_tokens, day.complete)}) + ' — ' + description));
 }
 requestDetails.append(requestList);
 requests.append(requestDetails);
@@ -484,11 +487,11 @@ const start = startDates[id];
 const basis = start ? t('analytics_observed_proxy') : t('analytics_first_request');
 const grouped = groupBy(records, 'model').map(group => {
 const surfaces = [...new Set(group.records.map(row => label(row.origin)))].join(', ');
-return t('analytics_timeline_group', {model: group.name, surface: surfaces, count: fmt(group.observations), tokens: fmt(group.known_tokens)});
+return t('analytics_timeline_group', {model: group.name, surface: surfaces, count: fmt(group.observations), tokens: analyticsTokenAmount(group.known_tokens, group.complete)});
 }).join(' · ');
 const count = records.length;
 const tokens = records.reduce((sum, row) => sum + value(row), 0);
-turnList.append(el('li', t('analytics_turn_summary', {time: start || displayTime(records[0].minute), requests: fmt(count), tokens: fmt(tokens), basis}) + ' — ' + grouped));
+turnList.append(el('li', t('analytics_turn_summary', {time: start || displayTime(records[0].minute), requests: fmt(count), tokens: analyticsTokenAmount(tokens, records.every(row => row.complete)), basis}) + ' — ' + grouped));
 }
 if (turnGroups.size > 20) turnList.append(el('li', t('analytics_more_turns', {n: fmt(turnGroups.size - 20)})));
 detail.append(turnList);
@@ -528,7 +531,7 @@ const day = startDates[id] || (eligiblePromptRows.get(String(id)) || [])[0]?.dat
 if (!day || (start && day < start) || (end && day > end)) continue;
 const activity = context.activity;
 const dimensions = ['shell', 'edits', 'web', 'subagents'];
-if (!dimensions.some(key => Number.isInteger(activity[key]) && activity[key] > 0)) continue;
+if (!dimensions.some(key => Number.isInteger(activity[key]) && activity[key] >= 0)) continue;
 if (!buckets.has(day)) buckets.set(day, Object.fromEntries(dimensions.map(key => [key, 0])));
 for (const key of dimensions) if (Number.isInteger(activity[key]) && activity[key] > 0) buckets.get(day)[key] += activity[key];
 retained.push({id, context, day, activity});
@@ -541,6 +544,7 @@ const colors = {shell: '#8872c8', edits: '#67aaa0', web: '#dfb65d', subagents: '
 const names = Object.fromEntries(['shell', 'edits', 'web', 'subagents'].map(key => [key, t('analytics_act_' + key)]));
 const totals = Object.fromEntries(Object.keys(colors).map(key => [key, [...buckets.values()].reduce((sum, bucket) => sum + bucket[key], 0)]));
 const grand = Object.values(totals).reduce((sum, value) => sum + value, 0);
+if (!grand) box.append(el('p', t('analytics_activity_zero'), 'analytics-meta'));
 const legend = el('div', undefined, 'analytics-legend');
 for (const key of Object.keys(colors)) {
 if (!totals[key]) continue;
