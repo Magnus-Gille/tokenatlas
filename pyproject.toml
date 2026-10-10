@@ -38,7 +38,7 @@ packages = ["tokenatlas"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-tokenatlas = ["report_template.html", "report_i18n.json", "prices.json", "credits.json", "remote_sync.sh"]
+tokenatlas = ["report_template.html", "report_i18n.json", "efficiency.js", "prices.json", "credits.json", "remote_sync.sh"]
 
 [tool.setuptools.dynamic]
 version = { attr = "tokenatlas.__version__" }

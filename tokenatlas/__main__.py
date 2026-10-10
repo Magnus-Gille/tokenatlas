@@ -426,6 +426,11 @@ def _main(argv=None):
     facts.add_argument('--end',help='Exclusive ISO timestamp; offset required.')
     facts.add_argument('--prices',type=Path,help='Override the price table.')
     facts.add_argument('--json',action='store_true')
+    facts.add_argument('--timezone',default='UTC',help='Timezone label for token-efficiency evidence (ISO boundaries retain their explicit offsets).')
+    facts.add_argument('--top-turns',type=int,default=50,help='Number of linked work turns in token-concentration facts (1–10000).')
+    facts.add_argument('--context-threshold',type=int,default=200000,help='Input-token threshold for context-volume facts; a presentation choice, not a waste detector.')
+    facts.add_argument('--scenario-population',choices=('large_context_input','subagent_input'),help='Opt-in hypothetical input-reduction population; requires --reduction-percent.')
+    facts.add_argument('--reduction-percent',type=float,help='Hypothetical input reduction, 0–100; no prediction of savings.')
     overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes.')
     overhead.add_argument('--refresh',action='store_true',help='Rescan the default session roots first.')
     overhead.add_argument('--harness',choices=('claude','codex','pi','opencode'))
@@ -529,6 +534,11 @@ def _main(argv=None):
         if args.command=='top' and args.keep_text and args.forget_text:raise ValueError('--keep-text and --forget-text cannot be combined')
         if args.command=='insights':
             if args.days is not None and (args.days<1 or args.start or args.end):raise ValueError('--days must be at least 1 and cannot be combined with --start or --end')
+            ZoneInfo(args.timezone)
+            if not 1<=args.top_turns<=10000:raise ValueError('--top-turns must be between 1 and 10000')
+            if args.context_threshold<1:raise ValueError('--context-threshold must be positive')
+            if (args.scenario_population is None)!=(args.reduction_percent is None):raise ValueError('--scenario-population and --reduction-percent must be supplied together')
+            if args.reduction_percent is not None and not 0<=args.reduction_percent<=100:raise ValueError('--reduction-percent must be finite and between 0 and 100')
         if args.command in ('report','top','insights'):
             if args.command=='report':
                 max_age=parse_duration(args.max_age) if args.max_age is not None else None
@@ -706,6 +716,8 @@ def _main(argv=None):
                     for p in result['prompts']:
                         key=(p['harness'],p['session'],p['turn_id']);p['text']=texts.get(key);p['context']=ctx.get(key)
             elif args.command=='insights':
+                from tokenatlas import efficiency
+                now=datetime.now(ZoneInfo('UTC'))
                 history.connection.execute('BEGIN')
                 table=pricing.load_prices(args.prices);memo={}
                 with progress.step('Read history'):everything=history.records()
@@ -713,9 +725,38 @@ def _main(argv=None):
                 with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table,assigned=assigned)
                 with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,assigned=assigned,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
                 with progress.step('Cost facts'):result=insights.cost_facts(everything,table,start,end,hits=hits,quota=shares,memo=memo)
+                # Bind evidence to retained collection state, not export time.
+                # This keeps an unchanged history and fixed bounds reproducible.
+                imports=[json.loads(row[0]) for row in history.connection.execute('SELECT data FROM imports')]
+                observed=[prompts._t(value) for entry in imports for key in ('last_attempt','last_success') if (value:=entry.get(key))]
+                observed.extend(prompts._t(r['ts']) for r in everything)
+                snapshot=max((stamp for stamp in observed if stamp<=now),default=datetime(1970,1,1,tzinfo=ZoneInfo('UTC')))
+                efficiency_end=end or snapshot+timedelta(milliseconds=1)
+                efficiency_start=start or min((prompts._t(r['ts']) for r in everything),default=efficiency_end-timedelta(days=30))
+                if efficiency_start>=efficiency_end:
+                    if start is not None:
+                        # Preserve an explicitly future lower bound; never substitute
+                        # unrelated historical usage for the user's empty selection.
+                        efficiency_end=efficiency_start+timedelta(milliseconds=1)
+                    else:efficiency_start=efficiency_end-timedelta(days=30)
+                with progress.step('Token-efficiency facts'):
+                    result['token_efficiency']=efficiency.facts(
+                        efficiency.rows_from_records(everything,timezone=args.timezone,assigned=assigned),
+                        start=efficiency_start.isoformat(),end=efficiency_end.isoformat(),snapshot=snapshot.isoformat(),
+                        timezone=args.timezone,top_n=args.top_turns,context_threshold=args.context_threshold)
+                    if args.scenario_population:
+                        result['token_efficiency']['scenario']=efficiency.scenario(result['token_efficiency'],args.scenario_population,args.reduction_percent)
                 done()
                 if not args.json:
-                    print(insights.render_text(result));return 0
+                    print(insights.render_text(result))
+                    evidence=result['token_efficiency']
+                    print('\nToken efficiency (known tokens; not a measure of waste)')
+                    print(f"  Window: {evidence['window']['start']} to {evidence['window']['end']} ({args.timezone}); snapshot {evidence['window']['snapshot']}")
+                    for fact in evidence['facts']:
+                        print(f"  {fact['id']}: {fact['numerator']:,} / {fact['denominator']:,} tokens; complete={fact['complete']}")
+                    if evidence.get('scenario'):print('  Hypothetical input reduction (overlapping populations; not predicted savings): '+str(evidence['scenario']['hypothetical_reduction']))
+                    print('  Use --json for formulas, coverage and bounded pseudonymous contributors.')
+                    return 0
             elif args.command=='snapshot':
                 with progress.step('Write snapshot'):result=history.snapshot(args.out)
             elif args.command=='import':

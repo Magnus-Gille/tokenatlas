@@ -41,3 +41,63 @@ allowlisted public values.
 
 All calculations run locally in the standalone HTML report. No chart service,
 analytics endpoint or external script is required.
+
+## Token-efficiency facts
+
+The analytics view adds four compact investigation signals, with the same numeric
+contract in the additive `token_efficiency` object of `insights --json` (schema
+version 1). Existing cost facts keep their prior contract. The Python and offline
+JavaScript implementations are checked against the same synthetic input and exact
+JSON expectations. No model call or network request is needed.
+
+- **Concentration:** sum the known tokens of the largest N linked work turns and
+  divide by all linked work-turn tokens. Automatic review is separate; unlinked
+  requests never become a fabricated turn. Child requests retain their inherited
+  turn assignment from the full history, even when filters exclude their parent.
+- **Context volume:** input is fresh input + cache read + cache write. Requests
+  with any missing input counter are excluded from threshold membership and the
+  context distribution, with their count disclosed. The threshold is a presentation
+  choice, not a validated waste detector. The median uses complete-input requests;
+  p90 uses nearest rank, `ceil(0.9 * n) - 1` in the sorted array.
+- **Delegation:** main, subagent, automatic review and other requests are disjoint
+  groups. Subagent token share excludes automatic review from its numerator and
+  includes every identified request in the denominator. Rolled-up children are
+  counted once, not added again as a parent total.
+- **Change:** compare known token sums with an adjacent window of equal elapsed
+  duration. Rank project and turn contributors by absolute change; project usage
+  follows each observation's project, including distinct worktrees. Unknown project
+  attribution is not inferred from a turn's first request. A zero baseline has no
+  percentage change; incomplete history cannot establish a real consumption trend.
+
+Bounds are inclusive start / exclusive end. Evidence states exact timestamps,
+timezone, snapshot, partial windows, settings and coverage. The browser derives
+boundaries from the displayed local dates; CLI ISO boundaries retain their offsets.
+`--days` remains a rolling elapsed-time window. To reproduce a browser window in
+the CLI, pass its exact start/end and timezone, N and threshold. For identical
+results also use the same retained observations and selection; a later database
+snapshot can contain additional data. All-history CLI evidence starts at its first
+observation and ends one millisecond after its retained collection snapshot unless explicit bounds are supplied. The CLI snapshot is the latest retained collection attempt, successful import or observation time, excluding future timestamps (an empty history without collection metadata uses the Unix epoch). Re-exporting unchanged history with fixed bounds is deterministic. `--days` intentionally uses the current rolling window. Timestamps are normalized to millisecond precision on both surfaces.
+
+Unknown counters remain unknown; their available values contribute known sums.
+Incomplete sums are lower bounds, but shares are shares of known counts and are
+not themselves lower bounds. Ambiguous synthetic identities are excluded and
+counted separately. Reasoning is already part of output. Observed volume does not
+prove waste, lack of progress, model suitability, or outcome quality.
+
+### Agent evidence and scenarios
+
+The export is bounded to a small contributor list and uses pseudonymous project
+codes and report-local turn ordinals. It omits raw session IDs, paths, prompts,
+titles and transcript content, including when exported from a private report.
+Those references are local to the report/history selection, not durable global IDs.
+Private display labels can help the user navigate; they do not belong in the
+aggregate evidence export. Applied filters are disclosed without exporting private
+search text or metadata values.
+
+The scenario interaction starts without an assumed saving. Select a population
+(`large_context_input` or `subagent_input`) and a percentage explicitly. The result
+is `known input tokens in population * percentage / 100`; output is excluded.
+These populations can overlap, so reductions must not be added. This arithmetic
+does not predict achievable savings, quality, money, subscription quota or energy.
+There are no automatic instruction edits, stop rules, model switches or compactions.
+Action templates and rated-outcome analysis remain separate follow-up work.
