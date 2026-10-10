@@ -52,6 +52,14 @@ class UpgradeTests(unittest.TestCase):
         self.assertIn('--yes', err)
         mutate.assert_not_called()
 
+    def test_closed_confirmation_input_is_declined_before_backup(self):
+        with patch.object(upgrade,'detect',return_value=self.install), patch('sys.stdin.isatty',return_value=True), patch('builtins.input',side_effect=EOFError), patch.object(upgrade,'mutate') as mutate:
+            rc, _, err = self.invoke(SimpleNamespace(check=False,version='1.20.0',yes=False))
+        self.assertEqual(rc,2)
+        self.assertIn('confirmation',err)
+        mutate.assert_not_called()
+        self.assertEqual(list(self.prefix.parent.glob('.tokenatlas-backup-*')),[])
+
     def test_pin_bypasses_latest_and_supports_downgrade(self):
         with patch.object(upgrade, 'detect', return_value=self.install), patch.object(upgrade, 'latest_version') as latest, patch.object(upgrade,'mutate') as mutate:
             rc, _, err = self.invoke(SimpleNamespace(check=False,version='1.20.0',yes=True))

@@ -105,7 +105,7 @@ class DetectionFixture(unittest.TestCase):
 
         if manager == "pipx":
             (self.prefix / "pipx_metadata.json").write_text(json.dumps({
-                "main_package": {"package": "tokenatlas", "apps": ["tokenatlas"]},
+                "main_package": {"package": "tokenatlas", "apps": [self.launcher.name]},
             }))
             home = owner_root or self.root / "pipx-home"
             bindir = self.root / "pipx-bin"
@@ -227,6 +227,14 @@ class DetectRefusalTests(DetectionFixture):
         self.which_missing.add("pipx")
         with patch.object(upgrade.importlib.util, "find_spec", side_effect=AssertionError("pip fallback")):
             self.assert_unsupported("pipx is missing")
+
+    def test_pipx_receipt_must_name_the_platform_launcher(self):
+        self._manager('pipx')
+        metadata_path=self.prefix/'pipx_metadata.json'
+        record=json.loads(metadata_path.read_text())
+        record['main_package']['apps']=['unrelated.exe']
+        metadata_path.write_text(json.dumps(record))
+        self.assert_unsupported('pipx ownership')
 
     def test_dual_manager_receipts_are_refused(self):
         self._manager("pipx")

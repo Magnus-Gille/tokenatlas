@@ -143,7 +143,7 @@ def detect():
         home = Path(_query([executable,'environment','--value','PIPX_HOME'])).resolve()
         try:
             record = json.loads((prefix/'pipx_metadata.json').read_text())['main_package']
-            owned = record['package'] == 'tokenatlas' and not record.get('suffix') and 'tokenatlas' in record['apps']
+            owned = record['package'] == 'tokenatlas' and not record.get('suffix') and launcher.name in record['apps']
         except (ValueError, KeyError, TypeError):
             owned = False
         if not owned or prefix != home/'venvs'/'tokenatlas':
@@ -330,7 +330,11 @@ def run(args):
         if not args.yes:
             if not sys.stdin.isatty():
                 raise Unsupported('noninteractive upgrade requires --yes; use --check to inspect without changing anything')
-            if input('Back up this environment and install this version? [y/N] ').strip().lower() not in ('y','yes'):
+            try:
+                answer = input('Back up this environment and install this version? [y/N] ')
+            except EOFError as exc:
+                raise Unsupported('no confirmation received; installation was not changed; use --yes for an intentional noninteractive upgrade') from exc
+            if answer.strip().lower() not in ('y','yes'):
                 raise Unsupported('upgrade cancelled; installation was not changed')
         print(terminal_safe('Command: '+shlex.join(command(installation,target))),flush=True)
         with installation_lock(installation.prefix):
@@ -344,6 +348,6 @@ def run(args):
     except Unsupported as exc:
         print(terminal_safe(exc),file=sys.stderr)
         return 2
-    except (Failed,OSError,subprocess.SubprocessError,EOFError) as exc:
+    except (Failed,OSError,subprocess.SubprocessError) as exc:
         print(terminal_safe(exc),file=sys.stderr)
         return 1
