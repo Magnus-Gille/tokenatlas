@@ -1,3 +1,26 @@
+# Current state — 2026-10-10 (#159 candidate)
+
+TokenAtlas 1.22.0 adds an explicit package-manager-aware `upgrade` command:
+nonmutating PyPI version checks, exact versions/rollback, confirmed installation
+for verified pipx/uv tool/dedicated venv owners, verified environment backups,
+launcher/resource health checks, and a shared upgrade/collection lock. Analytics
+and user history remain local; the updater never collects or restores usage data.
+
+Acceptance evidence includes real isolated venv, pipx and uv downgrades to the
+published 1.21.0, offline synthetic-wheel upgrade/rollback with backup hashes and
+unchanged data/configuration, refusal/ownership/timeout tests, and the full suite.
+Native leaves configured gpt-6-luna/high supplied research and bounded code/tests;
+requested settings are recorded, runtime model/effort metadata is unavailable.
+Research/index/CLI/integration leaves: pass after conductor corrections to version
+matching, import mocking and fixture assertions. Root owns installer safety.
+
+Independent review and hosted checks precede merge. Ship-it covers publication
+of the branch/PR and merge; a release triggers PyPI and needs a separate exact-SHA
+production confirmation. Installed personal TokenAtlas remains verified 1.21.0.
+Task evidence: /private/tmp/tokenatlas-upgrade-ship (no private usage fixtures).
+
+---
+
 # Current state — 2026-10-10 (#157 candidate)
 
 TokenAtlas 1.21.0 adds deterministic token-efficiency facts to the offline report

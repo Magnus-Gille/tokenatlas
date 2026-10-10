@@ -464,6 +464,26 @@ pipx upgrade tokenatlas
 pipx uninstall tokenatlas
 ```
 
+### Upgrade from the CLI
+
+Starting with TokenAtlas 1.22, `tokenatlas upgrade --check` checks PyPI for the latest version without installing it. The explicit `upgrade` command is the only normal CLI operation that contacts PyPI; collection, reports, and analytics stay local. Older releases must first be upgraded with their installation tool, such as `pipx upgrade tokenatlas` or `uv tool upgrade tokenatlas`.
+
+An install or rollback is supported only when TokenAtlas is owned by `pipx`, a `uv` tool environment, or a dedicated virtual environment whose Python has `pip` enabled. The command refuses editable/source installs, system Python installs, shared environments with unrelated applications, and ambiguous ownership. `--check` remains available on unsupported installations and reports that automatic installation is unavailable. `--version VERSION` selects an exact release, including an older version for rollback:
+
+```bash
+tokenatlas upgrade --check
+tokenatlas upgrade
+tokenatlas upgrade --version 1.22.0
+```
+
+The command asks before changing the installation. Use `--yes` only when an explicit automation is meant to approve that update; it skips the interactive confirmation. You can use the manager directly as a manual fallback, for example `pipx upgrade tokenatlas`, `uv tool upgrade tokenatlas`, or, inside a dedicated virtual environment, `python -m pip install --upgrade tokenatlas`.
+
+Before changing packages, the command copies and verifies the environment in a private sibling directory named `.tokenatlas-backup-*`. It prints that path and keeps it after both success and failure. `recovery.json` records the original path, version and file hashes; `README.txt` explains restoring code to that path after stopping TokenAtlas processes. Keep the backup until you accept the update, then remove it yourself. History, configuration and schedules are preserved; upgrades never collect usage or restore old usage data. The lock coordinates TokenAtlas collect runs with TokenAtlas upgrades; it cannot coordinate separate manager commands or manual package changes. After an upgrade, rebuild an old report from saved history with `tokenatlas open --no-refresh`.
+
+Exit codes: `0` successful check, already current, or verified installation; `1` network, installation, backup or health-check failure; `2` invalid arguments, unsupported installation or missing/declined confirmation; `3` another collection or upgrade holds the environment lock. An unpinned upgrade never downgrades a version newer than PyPI's latest stable release. Installs use PyPI explicitly and ignore pip destination/config overrides to avoid updating a different environment.
+
+On Windows, a running console launcher cannot replace itself. If the command prints a `python -m tokenatlas upgrade` retry for the same environment, run that exact command from the same environment. Invoking TokenAtlas as `python -m tokenatlas upgrade` is supported directly.
+
 Uninstalling the command intentionally preserves the local history database at
 `~/.local/state/tokenatlas/history.sqlite3` (or `$XDG_STATE_HOME/tokenatlas/history.sqlite3`). Back it up
 or remove it separately according to your own data-retention policy. Running `python3 -m tokenatlas` from
