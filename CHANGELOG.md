@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-10-10
+
+### Added
+
+- Deterministic token-efficiency facts in the offline dashboard and the additive `token_efficiency` section of `insights --json`: work-turn concentration, context volume, delegation and equal-window changes. Facts include formulas, coverage and bounded pseudonymous contributors; automatic review and unlinked usage remain separate (#157).
+- Explicit input-reduction scenarios with user-selected populations and percentages, labeled as hypothetical arithmetic rather than predicted savings. No model calls, automatic workflow changes or extra transcript capture.
+
 ## [1.19.0] - 2026-10-08
 
 ### Added

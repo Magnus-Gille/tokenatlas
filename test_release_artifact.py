@@ -63,6 +63,8 @@ class ReleaseArtifactTests(unittest.TestCase):
                 names = archive.namelist()
                 self.assertIn("tokenatlas/why.py", names)
                 self.assertIn("tokenatlas/report_template.html", names)
+                self.assertIn("tokenatlas/efficiency.js", names)
+                self.assertIn("tokenatlas/efficiency.py", names)
                 self.assertIn("tokenatlas/prices.json", names)
                 self.assertIn("tokenatlas/credits.json", names)
                 self.assertNotIn("why.py", names)

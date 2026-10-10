@@ -107,7 +107,8 @@ def report_state(revision, machine, spec, coverage, token=None, texts_hash=None,
     """(identity, data) 32-hex pair. Identity: version, options, database, template and, for private reports, the embedded prompt previews; data: revision token, counter, coverage and, when given, the UTC day the rolling 30-day cost facts were computed for."""
     dump = lambda body: json.dumps(body, sort_keys=True, separators=(',', ':'))
     template = hashlib.sha256(Path(__file__).with_name('report_template.html').read_bytes()
-                              + Path(__file__).with_name('report_i18n.json').read_bytes()).hexdigest()
+                              + Path(__file__).with_name('report_i18n.json').read_bytes()
+                              + Path(__file__).with_name('efficiency.js').read_bytes()).hexdigest()
     identity = dump({'format': 2, 'redaction': REDACTION_REVISION, 'version': __version__, 'spec': spec, 'machine': machine,
                      **({'prompt_texts': texts_hash} if texts_hash else {})})
     data = dump({'token': token, 'revision': int(revision), 'coverage': coverage, **({'insights_day': day} if day else {}), **({'quota': quota} if quota else {})})
@@ -359,6 +360,10 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     )
     analytics_metadata = dict(
         request_meta=dict(dict=request_meta_dict, idx=request_meta_idx),
+        efficiency=dict(
+            auto_review=[r.get('model') == 'codex-auto-review' for r in records],
+            rolled_up=[bool(a and a[3] == 'rolled_up') for a in assigned],
+        ),
         observed_turn_start_dates=observed_starts,
         activity_coverage=dict(
             source='opt_in_top_k_turn_context', retained_context_turns=len(retained_contexts),
@@ -517,6 +522,8 @@ def render_report(report, template=None, state=None):
     if template.count('__USAGE_DATA__') != 1:
         raise ValueError('report template must contain exactly one data placeholder')
     html = template.replace('__USAGE_DATA__', pack(report))
+    if '__EFFICIENCY_JS__' in html:
+        html = html.replace('__EFFICIENCY_JS__', Path(__file__).with_name('efficiency.js').read_text(encoding='utf-8'), 1)
     if '__I18N__' in html:
         html = html.replace('__I18N__', pack(json.loads(Path(__file__).with_name('report_i18n.json').read_text(encoding='utf-8')), ascii_only=False), 1)
     if state is not None:  # right after the charset meta, so it sits within the first bytes of the file

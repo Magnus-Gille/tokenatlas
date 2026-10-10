@@ -1,3 +1,24 @@
+# Current state — 2026-10-10 (#157 candidate)
+
+TokenAtlas 1.21.0 adds deterministic token-efficiency facts to the offline report
+and the additive `insights --json` extension: concentration, context, delegation,
+and equal-window change, with bounded pseudonymous evidence and explicit scenarios.
+No automatic workflow changes or predicted savings are introduced.
+
+Verification: full Python suite, packaged install lifecycle, cross-surface parity,
+Chromium/WebKit offline suites and Swedish/English desktop/mobile visual checks.
+Independent native review configured gpt-5.6-sol/xhigh passed after two fixes:
+partial-import snapshot coverage and partial-period completeness. Runtime model
+identity/effort metadata was unavailable. Native gpt-6-luna/high leaves provided
+implementation (partial; root corrected/reworked integration) and checks (pass).
+
+Ship-it publication/merge is authorized. The 1.21.0 GitHub release triggers PyPI
+and still requires separate confirmation of the accepted exact merge SHA; the
+prior 1.20.0 approval does not cover it. Preserve the installed 1.20.0 and user
+history until an explicit upgrade. No private usage or transcripts enter fixtures.
+
+---
+
 # Current state — 2026-09-29 (after #21)
 
 `master` holds 1.2.0 (#19, `cb0e5ed`) plus #21 (`2670a94`): list-price cost per session and model,
