@@ -356,7 +356,7 @@ def _main(argv=None):
     from tokenatlas.report import build_report, coverage_key, read_report_state, render_report, report_state, write_report
     if Path(sys.argv[0]).name.lower() in ('energy-monitor','energy-monitor.exe','energy-monitor-script.py'):
         print('energy-monitor is deprecated; use tokenatlas',file=sys.stderr)
-    parser=argparse.ArgumentParser(prog='tokenatlas',description='Local observed token history; no network or LLM calls.')
+    parser=argparse.ArgumentParser(prog='tokenatlas',description='Local observed token history. Analytics are offline; only the explicit upgrade command contacts PyPI.')
     parser.add_argument('--version',action='version',version=f'%(prog)s {__version__}')
     parser.add_argument('--db',type=Path,help='History database; default $XDG_STATE_HOME/tokenatlas/history.sqlite3.')
     commands=parser.add_subparsers(dest='command',required=True)
@@ -449,6 +449,11 @@ def _main(argv=None):
     schedule_action=schedule.add_mutually_exclusive_group()
     schedule_action.add_argument('--status',action='store_true',help='Show the installed TokenAtlas schedule and last log run.')
     schedule_action.add_argument('--remove',action='store_true',help='Remove only scheduler entries owned by TokenAtlas.')
+    upgrade=commands.add_parser('upgrade',help='Check PyPI or upgrade TokenAtlas in a supported isolated installation.')
+    upgrade_action=upgrade.add_mutually_exclusive_group()
+    upgrade_action.add_argument('--check',action='store_true',help='Check the latest PyPI version without installing it.')
+    upgrade_action.add_argument('--version',metavar='VERSION',help='Install this exact version; an older version is allowed for rollback.')
+    upgrade.add_argument('--yes',action='store_true',help='Proceed without an interactive confirmation (required for automation).')
     status=commands.add_parser('statusline',help='Claude Code statusline: one line from the stdin payload and the totals cache refresh writes (no network); --setup prints the settings snippet; quota readings are recorded by default (--no-record-quota or TOKENATLAS_NO_QUOTA=1 turns it off).')
     status.add_argument('--setup',action='store_true')
     status.add_argument('--record-quota',action='store_true')
@@ -491,6 +496,11 @@ def _main(argv=None):
     provider_sub.add_parser('show',help='Show configured local provider names.')
     commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
     args=parser.parse_args(argv)
+    if args.command=='upgrade':
+        if args.db is not None:
+            parser.error('--db cannot be used with upgrade')
+        from tokenatlas import upgrade as _upgrade
+        return _upgrade.run(args)
     if args.command=='schedule':
         try:
             from tokenatlas import schedule as _schedule

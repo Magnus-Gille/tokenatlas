@@ -126,7 +126,8 @@ def _sync(script,hosts,timeout,db,lock_fd):
     # A signal never interrupts this function: it is noted, the group is stopped, and it is raised on the way out (no bytecode gap in which
     # the sync could be left running without its supervisor).
     with _deferred(),progress.suspend():  # the script prints to the inherited stdout/stderr: no live line may interleave with it
-        proc=subprocess.Popen(['bash',str(script)],env=env,start_new_session=True,pass_fds=(lock_fd,))
+        from tokenatlas.install_lock import inherited_fds
+        proc=subprocess.Popen(['bash',str(script)],env=env,start_new_session=True,pass_fds=(lock_fd,*inherited_fds()))
         deadline=time.monotonic()+timeout
         while True:
             if _DEFER['pending']:_stop_group(proc);return None
@@ -137,7 +138,11 @@ def _sync(script,hosts,timeout,db,lock_fd):
 
 
 def run(args):
-    try:return _run(args)
+    from tokenatlas.install_lock import installation_lock, Busy
+    try:
+        with installation_lock():return _run(args)
+    except Busy:log('collection or upgrade already running; skipped');return 0
+    except OSError as exc:log(f'cannot open installation lock: {terminal_safe(exc)}');return 1
     except Terminated as exc:log(f'terminated by signal {exc.sig}');return 128+exc.sig
 
 
