@@ -585,6 +585,8 @@ async function ready(page, errors, what = 'report') {
         await p2.locator('#prompts').screenshot({path:path.join(screenshotDir,'energy-report-prompts-390-'+T.lang+'.png')});
         // A narrow printed page keeps the table: the cards are a screen layout only.
         await p2.emulateMedia({media:'print'});
+        const printedPrompts=await p2.evaluate(()=>[...document.querySelectorAll('#top-prompts .prompt-text')].map(row=>{const label=row.querySelector('.prompt-label'),value=row.querySelector('.prompt-value'),a=label.getBoundingClientRect(),b=value.getBoundingClientRect();return{label:label.textContent,value:value.textContent,labelDisplay:getComputedStyle(label).display,valueDisplay:getComputedStyle(value).display,separate:b.top>=a.bottom}}));
+        assert.ok(printedPrompts.length>0&&printedPrompts.every(x=>x.labelDisplay==='block'&&x.valueDisplay==='block'&&x.separate&&x.value.length>0),'printed excerpt label and value are separated and retained: '+JSON.stringify(printedPrompts));
         assert.ok((await p2.evaluate(()=>[...document.querySelectorAll('#top-prompts th')].map(h=>getComputedStyle(h).display))).every(x=>x!=='none'),'table header kept in print at 390 px');
         await p2.emulateMedia({media:'screen'});
         await p2.setViewportSize({width:1366,height:900});

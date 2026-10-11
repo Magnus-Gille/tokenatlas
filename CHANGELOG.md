@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Fixed
+
+- Prompt excerpts in the costliest-turns dashboard are easier to read: larger high-contrast text, a clear label, and wrapping without horizontal scrolling. Turn metadata adapts to the available width; shared reports continue to omit prompt text.
+
 ## [1.21.0] - 2026-10-10
 
 ### Added
