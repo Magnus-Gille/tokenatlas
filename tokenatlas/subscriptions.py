@@ -10,7 +10,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from datetime import datetime, timezone
 
-from tokenatlas import insights, prompts
+from tokenatlas import insights, prompts, plan_metadata
 
 
 UNKNOWN = "unknown"
@@ -32,16 +32,11 @@ _LABELS = {
 
 def _plan(value):
     """Return a canonical plan string, or ``None`` when no plan is known."""
-    if isinstance(value, str):
-        value = value.strip().lower()
-        if value:
-            return value
-    return None
+    return plan_metadata.canonical(value)
 
 
 def _own_plan(record):
-    quota = record.get("quota")
-    return _plan(quota.get("plan_type")) if isinstance(quota, dict) else None
+    return plan_metadata.own_plan(record)
 
 
 def _utc(value):
@@ -125,6 +120,25 @@ def label(plan):
     return _LABELS.get(canonical, plan.strip())
 
 
+def annotate_with_events(records, events=()):
+    """Resolve requests and zero-token quota events against one dated universe.
+
+    The same exact Codex harness/session inference applies to both. Events
+    remain events: quota readings, tokens and account identity are untouched.
+    Preserve a known additive plan supplied by a larger, previously annotated
+    universe when this caller receives only a filtered subset.
+    """
+    requests, observations = list(records), list(events)
+    source = requests + observations
+    if all(row.get('plan') == (plan_metadata.plan_of(row) or UNKNOWN) for row in source):
+        return requests, observations
+    annotated = annotate(source)
+    for original, copied in zip(source, annotated):
+        if _own_plan(original) is None and (supplied := plan_metadata.plan_of(original)):
+            copied['plan'] = supplied
+    return annotated[:len(requests)], annotated[len(requests):]
+
+
 def plan_facts(records, table, assigned=None):
     """Partition observations by plan and sum complete USD list-price costs.
 
@@ -133,21 +147,23 @@ def plan_facts(records, table, assigned=None):
     counted in each relevant plan bucket.
     """
     source = list(records)
-    rows = annotate(source)
-    # A filtered report may receive rows annotated against a larger universe.
-    # Keep that additive result when no direct quota plan is present; direct
-    # quota metadata remains authoritative if a caller supplied a stale plan.
-    for source_row, annotated in zip(source, rows):
-        if _own_plan(source_row) is None:
-            supplied = _plan(source_row.get("plan"))
-            if supplied is not None:
-                annotated["plan"] = supplied
+    direct = [_own_plan(record) for record in source]
+    supplied = [_plan(record.get("plan")) for record in source]
+    if any(own is None and given is None for own, given in zip(direct, supplied)):
+        # A filtered report may receive rows annotated against a larger universe.
+        # Keep that additive result when no direct quota plan is present; direct
+        # quota metadata remains authoritative if a caller supplied a stale plan.
+        rows = annotate(source)
+        plans = [own or given or annotated["plan"]
+                 for own, given, annotated in zip(direct, supplied, rows)]
+    else:
+        rows = source
+        plans = [own or given for own, given in zip(direct, supplied)]
     assignments = prompts.assign_prompts(source) if assigned is None else assigned
     memo = {}
     groups = {}
-    for record, found in zip(rows, assignments):
+    for record, found, plan in zip(rows, assignments, plans):
         if record.get('id_synthetic'):continue  # the report and insights exclude ambiguous identities
-        plan = record["plan"]
         group = groups.setdefault(plan, {"observations": 0, "turns": set(), "cost": 0.0, "priced": 0, "unpriced": 0, "lower_bound": False})
         group["observations"] += 1
         group['lower_bound'] = group['lower_bound'] or not record.get('complete', True)

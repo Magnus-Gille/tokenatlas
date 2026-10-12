@@ -20,6 +20,11 @@ def row(ts='2026-10-10T01:00:00+00:00', **changes):
 
 
 class EfficiencyTests(unittest.TestCase):
+    def test_plan_filter_exports_presence_without_a_private_plan_value(self):
+        args = dict(start='2026-10-10T00:00:00Z', end='2026-10-10T02:00:00Z', snapshot='2026-10-10T02:00:00Z')
+        self.assertEqual(facts([row()], filters={'plan': True}, **args)['filters'], {'plan': True})
+        self.assertEqual(facts([row()], filters={'plan': 'private-plan'}, **args)['filters'], {})
+
     def get_fact(self, bundle, name):
         return next(f for f in bundle['facts'] if f['id'] == name)
 

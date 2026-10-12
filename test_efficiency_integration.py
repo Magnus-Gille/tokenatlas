@@ -45,7 +45,7 @@ class SurfaceParity(unittest.TestCase):
                     efficiency_auto_review=rng.choice([True,False]),efficiency_rolled_up=rng.choice([True,False])))
             options=dict(start='2026-10-25T00:00:00+02:00',end='2026-10-26T00:00:00+01:00',
                 snapshot=rng.choice(['2026-10-25T12:00:00Z','2026-10-27T00:00:00Z']),timezone='Europe/Stockholm',
-                top_n=rng.choice([1,2,50]),context_threshold=rng.choice([1,200000]),filters={'search':True,'zoom':False,'model':'private-model'})
+                top_n=rng.choice([1,2,50]),context_threshold=rng.choice([1,200000]),filters={'search':True,'zoom':False,'plan':True,'model':'private-model'})
             cases.append(dict(rows=rows,options=options))
         script="const e=require('./tokenatlas/efficiency.js'),c=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(JSON.stringify(c.map(x=>e.facts(x.rows,x.options))));"
         result=subprocess.run(['node','-e',script],cwd=ROOT,input=json.dumps(cases),text=True,capture_output=True)

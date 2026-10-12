@@ -803,6 +803,7 @@ class Automatic(unittest.TestCase):
         self.assertEqual(costs[('codex', 's1', 'c')][2], budget.MIXED)  # no default-limit budget fits a turn on another limit
         self.assertIsNone(budget.share(auto, 'codex', *costs[('codex', 's1', 'c')]))
 
+
     def test_a_plan_less_custom_limit_request_makes_the_turn_mixed(self):
         t = self.T
         custom = dict(rec('c', t + timedelta(minutes=1), harness='codex', turn='t', out=9_000_000), quota={'limit_id': 'codex_bengalfox', 'plan_type': None, 'reached': None, 'windows': []})
@@ -905,6 +906,67 @@ class Automatic(unittest.TestCase):
             for key in ('qs_auto', 'qs_auto_lt1', 'qs_auto_lb', 'qs_auto_unknown', 'qs_auto_title', 'qc_auto', 'qs_src_limit_hit', 'qs_src_statusline', 'qs_src_limit_hit_statusline', 'qs_ev_hit1', 'qs_ev_hits', 'qs_ev_read1', 'qs_ev_reads', 'qs_ev_and', 'qs_auto_unfit'):
                 self.assertTrue(i18n[lang][key], (lang, key))
         self.assertEqual(i18n['en']['qs_auto'], '≈ {n}% of {w} (estimated from {src})')
+
+
+class AttributionRevision(unittest.TestCase):
+    def setUp(self):
+        self.start = NOW - timedelta(days=1)
+        self.direct = rec('direct', self.start, harness='codex', plan='pro', turn='direct')
+        self.inherited = dict(rec('inherited', self.start + timedelta(hours=1), harness='codex', plan=None, turn='inherited'),
+                              quota={'limit_id': 'codex', 'plan_type': None, 'reached': None, 'windows': []}, plan='pro')
+        self.data = dict(readings=[dict(reading(0.5, 999.0, NOW, harness='codex'), plan='pro', table=budget.table_id(TABLE), excluded_requests=1)], budgets=[])
+
+    def test_same_table_legacy_codex_reading_reprices_inherited_plan_requests(self):
+        for old_revision in (None, 0):
+            with self.subTest(old_revision=old_revision):
+                legacy = dict(self.data['readings'][0])
+                if old_revision is not None:
+                    legacy['attribution_revision'] = old_revision
+                got = budget.reprice({'readings': [legacy], 'budgets': []}, TABLE, lambda: [self.direct, self.inherited])
+                self.assertEqual(len(got['readings']), 1)
+                updated = got['readings'][0]
+                self.assertEqual(updated['cost_usd'], cost_of([self.direct, self.inherited]))
+                self.assertEqual(updated['excluded_requests'], 0)
+                self.assertEqual(updated['attribution_revision'], budget.ATTRIBUTION_REVISION)
+
+    def test_current_revision_does_not_read_history(self):
+        current = dict(self.data['readings'][0], attribution_revision=budget.ATTRIBUTION_REVISION)
+        data = {'readings': [current], 'budgets': []}
+        got = budget.reprice(data, TABLE, lambda: self.fail('current calibration should not read history'))
+        self.assertEqual(got, data)
+
+    def test_stale_codex_reading_without_history_is_dropped(self):
+        got = budget.reprice(self.data, TABLE)
+        self.assertEqual(got['readings'], [])
+
+    def test_legacy_claude_reading_is_retained(self):
+        legacy = dict(reading(0.5, 10.0, NOW), table=budget.table_id(TABLE))
+        got = budget.reprice({'readings': [legacy], 'budgets': []}, TABLE)
+        self.assertEqual(got['readings'], [legacy])
+
+    def test_new_reading_is_stamped(self):
+        created = budget.make_reading([self.direct], TABLE, 'codex', '7d', '50%', at=NOW.isoformat(), now=NOW)
+        self.assertEqual(created['attribution_revision'], budget.ATTRIBUTION_REVISION)
+        claude = rec('claude', self.start, turn='claude')
+        created_claude = budget.make_reading([claude], TABLE, 'claude', '7d', '50%', at=NOW.isoformat(), now=NOW)
+        self.assertEqual(created_claude['attribution_revision'], budget.ATTRIBUTION_REVISION)
+
+    def test_quota_show_reprices_legacy_codex_without_rewriting_saved_reading(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'history.sqlite3'
+            path = budget.path_for(db)
+            budget.save(path, self.data)
+            before = path.read_bytes()
+            output = []
+            budget.run(SimpleNamespace(quota='show', keep=1000, json=True), db,
+                       lambda: [self.direct, self.inherited], lambda: TABLE, output.append)
+            result = json.loads(output[0])
+            expected = cost_of([self.direct, self.inherited])
+            self.assertEqual(result['readings'][0]['cost_usd'], expected)
+            self.assertEqual(result['derived'][0]['budget_usd'], expected / 0.5)
+            self.assertEqual(result['readings'][0]['attribution_revision'], budget.ATTRIBUTION_REVISION)
+            self.assertEqual(path.read_bytes(), before)
 
 
 class AutomaticCli(unittest.TestCase):

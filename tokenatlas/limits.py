@@ -5,7 +5,7 @@ window is only what these logs contain: usage on claude.ai, ChatGPT or other mac
 list prices in USD; a request without a complete USD price is counted as unpriced, never guessed."""
 from datetime import datetime, timedelta, timezone
 
-from tokenatlas import prompts, why
+from tokenatlas import plan_metadata, prompts, why
 
 PROVIDER = {'claude': 'anthropic', 'codex': 'openai'}
 TOP = 3
@@ -62,7 +62,7 @@ def _scope(row):
     the series the hit belongs to (limit id, plan type, root session), which quota_share matches a hit to its window instance by."""
     quota = row.get('quota') or {}
     return dict(scope={k: row.get(k) for k in ('project_id', 'project_label', 'session', 'turn_id', 'model', 'effort', 'agent', 'provider')},
-                origin=dict(limit_id=quota.get('limit_id'), plan_type=quota.get('plan_type'), session=row.get('parent_session') or row.get('session')))
+                origin=dict(limit_id=quota.get('limit_id'), plan_type=plan_metadata.plan_of(row), session=row.get('parent_session') or row.get('session')))
 
 
 def _hit_window(quota):
@@ -132,7 +132,7 @@ def limit_hits(records, events, table, assigned=None):
         if quota.get('status') == 'rejected' or not quota:
             continue  # a record without quota says nothing about a limit and leaves every series alone
         reached, session, at = quota.get('reached'), record['session'], prompts._t(record['ts'])
-        scope = (record['harness'], quota.get('limit_id'), quota.get('plan_type'))  # never across harnesses, limits or plans
+        scope = (record['harness'], quota.get('limit_id'), plan_metadata.plan_of(record))  # never across harnesses, limits or plans
         windows = _windows(quota)
         credits = bool(reached) and 'credits' in reached
         full, opened, full_w = [], set(), {}  # window series full in this observation; those it opened; their windows

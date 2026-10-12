@@ -71,13 +71,13 @@ def _record_key(record):
     return (record.get('provider'), record.get('harness'), record.get('machine'), record.get('id'), record.get('ts'))
 
 
-def _annotate_records(records, universe):
+def _annotate_records(records, universe, events=()):
     """Resolve plans over `universe`, then project those annotated copies onto `records`."""
     history = list(universe if universe is not None else records or ())
-    annotated = subscription_plans.annotate(history)
+    annotated, events = subscription_plans.annotate_with_events(history, events)
     by_key = {_record_key(record): record for record in annotated}
     selected = [by_key.get(_record_key(record), record) for record in (records or ())]
-    return selected, (annotated if universe is not None else selected)
+    return selected, (annotated if universe is not None else selected), events
 
 
 def encode_columns(rows):
@@ -234,7 +234,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     zone = ZoneInfo(timezone_name)
     original_records = list(records or ())
     original_assigned = None if assigned is None else {_record_key(record): value for record, value in zip(original_records, assigned)}
-    records, annotated_universe = _annotate_records(original_records, universe)
+    records, annotated_universe, quota_events = _annotate_records(original_records, universe, quota_events or ())
     if universe is not None:
         universe = annotated_universe
     assignment_by_row = original_assigned

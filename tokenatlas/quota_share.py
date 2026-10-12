@@ -17,7 +17,7 @@ from datetime import timedelta
 from itertools import islice
 from operator import itemgetter
 
-from tokenatlas import limits, prompts
+from tokenatlas import limits, plan_metadata, prompts
 
 WEEK, FIVE_HOURS = 10080, 300
 # Parallel sessions report their counter out of order (measured on real Codex data: thousands of small decreases inside one window), so a
@@ -202,11 +202,12 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
         valid = [w for w in limits._windows(quota) if _when(w.get('resets_at')) is not None]
         full = [w for w in valid if w['used_percent'] >= 100]
         account = quota.get('limit_id') or e['harness']
+        plan = plan_metadata.plan_of(e)
         for w in valid:
-            quiet.append(dict(ts=e['ts'], t=t, harness=e['harness'], account=account, plan_type=quota.get('plan_type'), window=(w['minutes'], w['resets_at']),
+            quiet.append(dict(ts=e['ts'], t=t, harness=e['harness'], account=account, plan_type=plan, window=(w['minutes'], w['resets_at']),
                               used_percent=w['used_percent'], reached=quota.get('reached'), turn=None, who=None, i=None, resets=w['resets_at'], due=_when(w['resets_at']), event=True, event_i=event_index,
                               root=(e['harness'], e.get('parent_session') or e.get('session')), hit=_window_hit(quota.get('reached'), full, w),
-                              key=(e['harness'], account, w['minutes'], None, quota.get('plan_type'), 0, 0)))
+                              key=(e['harness'], account, w['minutes'], None, plan, 0, 0)))
     if not carriers and not rows:
         if quiet:
             quiet.sort(key=_by_time)
@@ -232,7 +233,7 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
             valid = reading[i]
             full = [w for w, _ in valid if w['used_percent'] >= 100]
             account = quota.get('limit_id') or r['harness']
-            plan = r.get('plan') if r.get('plan') not in (None, '', 'unknown') else quota.get('plan_type')
+            plan = plan_metadata.plan_of(r)
             for w, due in valid:
                 out.append(dict(ts=r['ts'], t=t, harness=r['harness'], account=account, plan_type=plan,
                                 window=(w['minutes'], w['resets_at']), used_percent=w['used_percent'], reached=quota.get('reached'),
@@ -900,9 +901,9 @@ def as_json(share):
                 label=share['label'], before=obs and obs['before'], after=obs and obs['after'], shared_with=obs and obs['shared_with'])
 
 
-def compute(records, table, cost_of=None, only=None, claude=None, assigned=None):
+def compute(records, table, cost_of=None, only=None, claude=None, assigned=None, events=()):
     """(snapshots, {turn: largest-window share}) over all records; ([], {}) when no record carries a quota (`claude`: see snapshots_from_records)."""
-    snapshots = snapshots_from_records(records, assigned=assigned, claude=claude)
+    snapshots = snapshots_from_records(records, assigned=assigned, events=events, claude=claude)
     return (snapshots, largest(turn_shares(records, snapshots, table, cost_of, only))) if snapshots else ([], {})
 
 

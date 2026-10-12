@@ -311,7 +311,9 @@ def recording_disabled_by_env(value=None):
 def _command_state(command):
     """Classify one statusLine command: 'foreign', 'disabled', 'enabled', or 'unknown' when it is tokenatlas's but too complex to read reliably
     (shell operators or substitutions). Leading VAR=value assignments are honoured for TOKENATLAS_NO_QUOTA."""
-    if not (isinstance(command, str) and 'tokenatlas' in command and 'statusline' in command):return 'foreign'
+    invocation = _tokenatlas_invocation(command)
+    if invocation is None:return 'unknown'
+    if not invocation:return 'foreign'
     # A generated wrapper quotes the entire inner shell command as one argument.
     # Its flags/operators are unrelated to the recorder's options.
     wrapper = None
@@ -324,6 +326,8 @@ def _command_state(command):
     except ValueError:
         return 'unknown'
     prefix = command.split(' -- ', 1)[0] if wrapper is not None else command
+    if prefix.lstrip().startswith('& ') and '--wrap-shell-base64' in parsed:
+        prefix = prefix.lstrip()[2:]  # PowerShell call operator in our encoded wrapper
     if re.search(r'[;|&`<>\n]|\$\(', prefix):return 'unknown'
     try:tokens = shlex.split(command)
     except ValueError:return 'unknown'
@@ -336,6 +340,243 @@ def _command_state(command):
     if '--no-record-quota' in tokens or recording_disabled_by_env(local):return 'disabled'
     return 'enabled'
 
+
+def _normalise_command_paths(word):
+    """Normalize unquoted Windows path words without changing quote boundaries."""
+    out, quote, at, beginning, windows = [], None, 0, True, False
+    while at < len(word):
+        char = word[at]
+        if quote:
+            out.append(char)
+            at += 1
+            if quote == '"' and char == '\\' and at < len(word):
+                out.append(word[at]); at += 1
+            elif char == quote:quote = None
+            continue
+        if char in ('"', "'"):
+            quote = char; beginning = False
+            out.append(char); at += 1
+            continue
+        if beginning:
+            windows = bool(re.match('(?:[A-Za-z]:\\\\|\\\\\\\\|\\.{1,2}\\\\|%[A-Za-z_]\\w*%\\\\)', word[at:]))
+            beginning = False
+        if char == '\\':
+            if windows and at + 1 < len(word) and word[at + 1] not in '"\';&|<>() \t\r\n':
+                out.append('/'); at += 1
+            else:
+                out.append(char); at += 1
+                if at < len(word):out.append(word[at]); at += 1
+        else:
+            out.append(char); at += 1
+    return ''.join(out)
+
+
+def _ansi_quoted_word(word):
+    """Translate Bash ANSI quote spans to inert POSIX words for classification."""
+    out, quote, at = [], None, 0
+    escapes = {'a': '\a', 'b': '\b', 'e': '\x1b', 'E': '\x1b', 'f': '\f',
+               'n': '\n', 'r': '\r', 't': '\t', 'v': '\v', '\\': '\\', "'": "'", '"': '"'}
+    def decode(match):
+        value = match[1]
+        if value in escapes:return escapes[value]
+        if value[0] in 'xuU' and len(value) > 1:
+            point = int(value[1:], 16)
+            return chr(point) if point <= 0x10ffff and not 0xd800 <= point <= 0xdfff else match[0]
+        if value[0] in '01234567':return chr(int(value, 8) & 0xff)
+        return match[0]
+    while at < len(word):
+        char = word[at]
+        if quote:
+            out.append(char); at += 1
+            if quote == '"' and char == '\\' and at < len(word):
+                out.append(word[at]); at += 1
+            elif char == quote:quote = None
+            continue
+        if word[at:at + 2] == "$'":
+            end = at + 2
+            while end < len(word):
+                if word[end] == '\\':end += 2; continue
+                if word[end] == "'":break
+                end += 1
+            if end >= len(word):raise ValueError('unclosed ANSI quote')
+            body = re.sub(r'\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[0-7]{1,3}|.)', decode, word[at + 2:end])
+            out.append(shlex.quote(body)); at = end + 1; continue
+        out.append(char); at += 1
+        if char in ('"', "'"):quote = char
+        elif char == '\\' and at < len(word):out.append(word[at]); at += 1
+    return ''.join(out)
+
+
+def _command_tokens(command):
+    """Shell words plus provenance: quoted operators remain ordinary arguments."""
+    tokens, word, quote, ansi, at = [], None, None, False, 0
+    def finish(end):
+        nonlocal word
+        if word is not None:
+            values = shlex.split(_normalise_command_paths(_ansi_quoted_word(command[word:end])))
+            if len(values) != 1:raise ValueError('ambiguous shell word')
+            tokens.append((values[0], False))
+            word = None
+    while at < len(command):
+        char = command[at]
+        if quote:
+            if (quote == '"' or ansi) and char == '\\':at += 2; continue
+            if char == quote:quote, ansi = None, False
+            at += 1; continue
+        if command[at:at + 2] == "$'":
+            if word is None:word = at
+            quote, ansi = "'", True
+            at += 2; continue
+        if char in ('"', "'"):
+            if word is None:word = at
+            quote = char; at += 1; continue
+        if char == '\\':
+            if word is None:word = at
+            at += 2; continue
+        if char.isspace() or char in ';&|<>()':
+            finish(at)
+            if char == '\n':tokens.append((';', True))
+            elif not char.isspace():
+                end = at + 1
+                while end < len(command) and command[end] in ';&|<>()':end += 1
+                tokens.append((command[at:end], True)); at = end; continue
+            at += 1; continue
+        if word is None:word = at
+        at += 1
+    if quote:raise ValueError('unclosed shell quote')
+    finish(len(command))
+    return tokens
+
+
+def _statusline_operand(args):
+    args = list(args)
+    while args:
+        token = args.pop(0)
+        if token == '--db':
+            if not args:return False
+            args.pop(0)
+        elif token.startswith('--db='):continue
+        else:return token == 'statusline'
+    return False
+
+
+def _python_statusline(name, args):
+    args = list(args)
+    flags = {'-I', '-S', '-E', '-s', '-B', '-u', '-O', '-OO', '-q', '-b', '-bb', '-P', '-v', '-x', '-R', '-d', '-i'}
+    while args:
+        token = args.pop(0)
+        if token == '-m':return bool(args and args.pop(0) == 'tokenatlas' and _statusline_operand(args))
+        if token.startswith('-m') and len(token) > 2:return token[2:] == 'tokenatlas' and _statusline_operand(args)
+        if token in flags:continue
+        if name in ('py', 'py.exe') and re.fullmatch(r'-[23](?:\.\d+)?|-V:.+', token):continue
+        if token in ('-W', '-X'):
+            if not args:return False
+            args.pop(0); continue
+        if token.startswith(('-W', '-X')) and len(token) > 2:continue
+        return False  # -c, a script, stdin or an unknown option ends module selection
+    return False
+
+
+def _shell_source(name, args):
+    args = list(args)
+    while args:
+        token = args.pop(0)
+        low = token.lower()
+        if name in ('cmd', 'cmd.exe'):
+            if low == '/c':return args[0] if len(args) == 1 else ' '.join(shlex.quote(value) for value in args)
+            if low in ('/d', '/s', '/q', '/a', '/u') or low.startswith(('/e:', '/v:', '/f:')):continue
+        elif name in ('powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
+            if low in ('-command', '-c'):return args[0] if len(args) == 1 else ' '.join(args)
+            if low in ('-noprofile', '-noninteractive', '-nologo', '-sta', '-mta'):continue
+            if low in ('-executionpolicy', '-inputformat', '-outputformat') and args:args.pop(0); continue
+        else:
+            if re.fullmatch(r'-[eiluxv]*c[eiluxv]*', token):return args[0] if args else None
+            if token in ('--noprofile', '--norc') or re.fullmatch(r'-[eiluxv]+', token):continue
+        return None  # a script operand or unknown option cannot become a later -c
+    return None
+
+
+def _tokenatlas_invocation(command, depth=0):
+    """Recognise supported command positions without interpreting literal data."""
+    if not isinstance(command, str) or depth > 3:return False
+    try:tokens = _command_tokens(command)
+    except ValueError:
+        return None if re.search(r'(?i)\b(tokenatlas|energy-monitor)\b', command) and 'statusline' in command else False
+    return _invocation_tokens(tokens, depth)
+
+def _launcher_operand(name, args):
+    """Return the command operand, never search the launched command's arguments."""
+    args = list(args)
+    if name == 'uv':
+        if args[:2] == ['tool', 'run']:args = args[2:]
+        elif args[:1] == ['run']:args = args[1:]
+        else:return None
+    elif name == 'pipx':
+        if args[:1] != ['run']:return None
+        args = args[1:]
+    values = {
+        'uvx': {'--from', '--with', '--with-requirements', '--python', '--index-url', '--directory'},
+        'uv': {'--from', '--with', '--with-requirements', '--python', '--directory'},
+        'pipx': {'--spec', '--python', '--index-url', '--pip-args'},
+        'nice': {'-n', '--adjustment'},
+        'timeout': {'-k', '--kill-after', '-s', '--signal'},
+        'gtimeout': {'-k', '--kill-after', '-s', '--signal'},
+    }[name]
+    flags = {'-q', '--quiet', '-v', '--verbose', '--offline', '--no-cache', '--no-config', '--isolated',
+             '--foreground', '--preserve-status'}
+    while args and args[0].startswith('-'):
+        option = args.pop(0)
+        if option == '--':break
+        key, equals, _value = option.partition('=')
+        if key in values:
+            if not equals:
+                if not args:return None
+                args.pop(0)
+        elif option in flags or (name == 'nice' and re.fullmatch(r'-[0-9]+|-n-?[0-9]+', option)):
+            continue
+        else:return None  # unknown option arity cannot prove a command position
+    if name in ('timeout', 'gtimeout'):
+        if not args:return None
+        args.pop(0)  # duration, before the command operand
+    if not args:return None
+    if name in ('uvx', 'uv', 'pipx') and args[0].startswith('tokenatlas@'):
+        args[0] = 'tokenatlas'
+    return args
+
+
+def _invocation_tokens(tokens, depth):
+    start, redirected = True, False
+    for i, (token, operator) in enumerate(tokens):
+        if operator:
+            if '<' in token or '>' in token:redirected = True
+            else:start = True
+            continue
+        if redirected:redirected = False; continue
+        if not start:continue
+        if token.isdigit() and i + 1 < len(tokens) and tokens[i + 1][1] and any(c in tokens[i + 1][0] for c in '<>'):continue
+        if re.match(r'[A-Za-z_][A-Za-z0-9_]*=', token) or token in ('exec', 'command', 'env') or token.startswith('-'):continue
+        args, at = [], i + 1
+        while at < len(tokens):
+            value, op = tokens[at]
+            if op:
+                if '<' in value or '>' in value:at += 2; continue
+                break
+            args.append(value); at += 1
+        name = token.replace('\\', '/').rsplit('/', 1)[-1].lower()
+        if name in ('tokenatlas', 'tokenatlas.exe', 'energy-monitor', 'energy-monitor.exe') and _statusline_operand(args):return True
+        if (name.startswith('python') or name in ('py', 'py.exe')) and _python_statusline(name, args):return True
+        if name in ('uvx', 'uv', 'pipx', 'nice', 'timeout', 'gtimeout'):
+            operand = _launcher_operand(name, args)
+            if operand:
+                found = _tokenatlas_invocation(' '.join(shlex.quote(v) for v in operand), depth + 1)
+                if found is not False:return found
+        if name in ('sh', 'bash', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
+            source = _shell_source(name, args)
+            if source:
+                found = _tokenatlas_invocation(source, depth + 1)
+                if found is not False:return found
+        start = False
+    return False
 
 def recording_state():
     """'unknown' when no Claude Code settings file can be read (or the effective command is too complex to parse); 'foreign' when the effective
@@ -469,6 +710,7 @@ def _effective_statusline():
     """Read the same user settings precedence as doctor, without writing it."""
     base = settings_path()
     found = None
+    found_path = None
     for path in (base, base.with_name('settings.local.json')):
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
@@ -476,31 +718,59 @@ def _effective_statusline():
             continue
         if isinstance(data, dict) and 'statusLine' in data:
             found = data['statusLine']
+            found_path = path
     if not isinstance(found, dict) or found.get('type', 'command') != 'command' or not isinstance(found.get('command'), str) or not found['command'].strip():
         raise ValueError('no command statusLine found in Claude settings; configure your own command first')
-    return dict(found)
+    return dict(found), found_path
 
 
-def wrap_setup_text(db=None):
-    original = _effective_statusline()
-    if _command_state(original['command']) in ('enabled', 'disabled'):
+def wrap_setup_text(db=None, shell=None):
+    original, target = _effective_statusline()
+    if _command_state(original['command']) in ('enabled', 'disabled', 'unknown'):
         raise ValueError('the effective statusLine already uses TokenAtlas; keep it or restore your original command first')
+    if shell is None and os.name == 'nt':
+        raise ValueError('choose --wrap-shell bash or powershell to match the shell Claude Code uses for your statusLine command; cmd is only for an explicitly cmd-based command')
+    shell = shell or 'sh'
+    if shell == 'sh' and re.search(r'\[\[|\$\x27|(?:^|[;\n])\s*source\s|\b\w+\s*=\s*\(', original['command']):
+        raise ValueError('the command contains Bash-specific syntax; use --wrap-shell bash if Bash runs your original statusLine')
+    shell_command = _source_command(shell, original['command'])
     command = executable()
-    command = _launcher_text(command)
-    if db is not None:command += ' --db ' + _quote(str(Path(db).expanduser().absolute()))
-    if os.name == 'nt':
-        # cmd.exe expands %VAR% and metacharacters even inside several forms of
-        # quotes. Carry the source as inert base64, decode only inside TokenAtlas.
-        encoded = base64.b64encode(original['command'].encode('utf-8')).decode('ascii')
-        suffix = ' statusline --wrap --wrap-shell-base64 ' + encoded
+    if os.name == 'nt':command = command.replace('\\', '/')
+    if os.name == 'nt' and shell == 'cmd':
+        launcher = command.removesuffix(' -m tokenatlas')
+        paths = [launcher] + ([str(Path(db).expanduser().absolute())] if db is not None else [])
+        if any(re.search(r'[&|^%!<>"\r\n]', path) for path in paths):
+            raise ValueError('cmd setup requires plain launcher and database paths; cmd metacharacters cannot be quoted safely')
+    if shell == 'powershell':
+        suffix = ' -m tokenatlas'
+        prefix = command[:-len(suffix)] if command.endswith(suffix) else command
+        command = "& '" + prefix.replace("'", "''") + "'" + (suffix if command.endswith(suffix) else '')
+        quote = lambda value: "'" + value.replace('\\', '/').replace("'", "''") + "'"
     else:
-        suffix = ' statusline --wrap -- sh -c ' + _quote(original['command'])
+        if os.name == 'nt' and shell == 'cmd':
+            # Always quote paths: parentheses and short-path tildes are valid
+            # Windows filenames, even when no space makes list2cmdline quote.
+            suffix = ' -m tokenatlas'
+            command = '"' + command.removesuffix(suffix) + '"' + (suffix if command.endswith(suffix) else '')
+            quote = lambda value: '"' + value + '"'
+        else:
+            command = _launcher_text(command, windows=False)
+            quote = shlex.quote
+    if db is not None:command += ' --db ' + quote(str(Path(db).expanduser().absolute()))
+    if os.name == 'nt':
+        # Carry source as inert base64 through the shell Claude uses. Re-run it
+        # only in the explicitly selected matching shell inside our job.
+        encoded = base64.b64encode(original['command'].encode('utf-8')).decode('ascii')
+        suffix = ' statusline --wrap --wrap-shell ' + shell + ' --wrap-shell-base64 ' + encoded
+    else:
+        suffix = ' statusline --wrap -- ' + ' '.join(shlex.quote(arg) for arg in shell_command)
     wrapped = dict(original, command=command + suffix)
     snippet = json.dumps({'statusLine': wrapped}, indent=2)
     undo = json.dumps({'statusLine': original}, indent=2)
-    return (f'Add this to {settings_path()} (merge into the effective settings; this command never edits files):\n\n{snippet}\n\n'
-            f'Undo: restore the original statusLine:\n\n{undo}\n\n'
+    return (f'Add this to {target} (merge into the effective settings; this command never edits files):\n\n{snippet}\n\n'
+            f'Undo: restore the original statusLine in {target}:\n\n{undo}\n\n'
             'Quota is recorded before your command runs. Its stdin, stdout, stderr and exit code are preserved; a timeout returns 124. '
+            f'This snippet assumes {shell} runs your original command; choose --wrap-shell to match it. '
             'Managed settings can prevent statusLine changes. Check the effective command with tokenatlas doctor.')
 
 
@@ -522,6 +792,49 @@ def _system_command(name):
     count = api.GetSystemDirectoryW(buffer, len(buffer))
     if not 0 < count < len(buffer):raise ctypes.WinError(ctypes.get_last_error())
     return str(Path(buffer.value) / name)
+
+
+def _git_bash():
+    """Resolve the configured or installed Git Bash, never a cwd/PATH executable."""
+    override = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
+    if override:
+        path = Path(override)
+        if not path.is_absolute() or not path.is_file():
+            raise ValueError('CLAUDE_CODE_GIT_BASH_PATH must name the existing absolute Git Bash executable')
+        return str(path.resolve())
+    import winreg
+    roots = []
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (0, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, r'SOFTWARE\GitForWindows', 0, winreg.KEY_READ | view) as key:
+                    folder, _ = winreg.QueryValueEx(key, 'InstallPath')
+                if isinstance(folder, str) and Path(folder).is_absolute():roots.append(Path(folder))
+            except OSError:continue
+    drive = Path(_system_command('cmd.exe')).anchor
+    roots += [Path(drive) / 'Program Files' / 'Git', Path(drive) / 'Program Files (x86)' / 'Git']
+    for root in roots:
+        for relative in ('bin/bash.exe', 'usr/bin/bash.exe'):
+            path = root / relative
+            if path.is_file():return str(path.resolve())
+    raise ValueError('Git Bash was not found; use the existing CLAUDE_CODE_GIT_BASH_PATH or select the shell that runs your statusLine')
+
+
+def _source_command(shell, source):
+    """Explicit matching shell for the original command, separate from argv wrapping."""
+    if shell in ('sh', 'bash'):
+        if os.name == 'nt':
+            if shell != 'bash':raise ValueError('use bash for Git Bash on Windows')
+            executable = _git_bash()
+        else:
+            executable = '/bin/' + shell
+            if not Path(executable).is_file():raise ValueError(f'{executable} is unavailable; run your shell explicitly with --wrap -- COMMAND')
+        return [executable, '-c', source]
+    if os.name != 'nt':raise ValueError(f'{shell} setup is available only on Windows')
+    if shell == 'powershell':
+        encoded = base64.b64encode(source.encode('utf-16-le')).decode('ascii')
+        return [_system_command('WindowsPowerShell/v1.0/powershell.exe'), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]
+    return [_system_command('cmd.exe'), '/d', '/s', '/c', source]
 
 
 _WRAP_HELPER = '''import json, os, subprocess, sys
@@ -553,6 +866,16 @@ def _stop_wrapped(process, job=None):
     else:
         try:os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:pass
+        except PermissionError as exc:
+            print(f'tokenatlas statusline: cannot stop wrapped process group: {exc}', file=sys.stderr)
+
+
+def _wrapper_python():
+    """Use the base interpreter, not a Windows venv process redirector."""
+    python = Path(getattr(sys, '_base_executable', sys.executable)).resolve()
+    if sys.prefix != sys.base_prefix and python.is_relative_to(Path(sys.prefix).resolve()):
+        raise OSError('cannot identify an external Python for safe Windows statusline supervision')
+    return python
 
 
 def _run_wrapped(args, db, stdin, now):
@@ -563,7 +886,7 @@ def _run_wrapped(args, db, stdin, now):
         try:
             payload = json.loads(raw, parse_constant=lambda name: None)
             if isinstance(payload, dict):record_quota(payload, db if db is not None else default_db(), now or datetime.now(timezone.utc))
-        except (OSError, ValueError, TypeError, OverflowError):
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError):
             pass  # malformed input or unavailable recorder must not change the user's output
     job = None
     process = None
@@ -583,14 +906,15 @@ def _run_wrapped(args, db, stdin, now):
         try:
             if os.name == 'nt':
                 from tokenatlas.upgrade_process import _Job
+                python = _wrapper_python()
                 job = _Job()
                 # The helper cannot launch the command until the parent assigns
                 # its job and sends the stdin header.
-                process = subprocess.Popen([sys.executable, '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
+                process = subprocess.Popen([str(python), '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
                                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 job.assign(process)
                 options = {'argv': args.command}
-                if args.wrap_shell_base64 is not None:options['shell_source'] = args.command[-1]
+                if args.wrap_shell_base64 is not None and args.wrap_shell == 'cmd':options['shell_source'] = args.command[-1]
                 raw = json.dumps(options).encode('utf-8') + b'\n' + raw
             else:
                 process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=True)
@@ -602,7 +926,8 @@ def _run_wrapped(args, db, stdin, now):
         process.communicate(raw, timeout=args.wrap_timeout)
     except subprocess.TimeoutExpired:
         _stop_wrapped(process, job)
-        process.communicate(timeout=1)
+        try:process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:pass  # cleanup remains bounded even for an uninterruptible child
         print('tokenatlas statusline: wrapped command timeout', file=sys.stderr)
         return 124
     finally:
@@ -612,7 +937,9 @@ def _run_wrapped(args, db, stdin, now):
         try:
             if process is not None:
                 _stop_wrapped(process, job)
-                process.wait()
+                try:process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    print('tokenatlas statusline: wrapped process cleanup deadline exceeded', file=sys.stderr)
             elif job is not None:job.close()
         finally:
             for signum, handler in previous.items():signal.signal(signum, handler)
@@ -628,6 +955,7 @@ def run(argv, db=None, stdin=None, now=None):
     parser.add_argument('--no-record-quota', action='store_true', help=f'Do not append the 5-hour and weekly quota readings to {QUOTA_NAME} next to the history (also TOKENATLAS_NO_QUOTA=1).')
     parser.add_argument('--wrap', action='store_true', help='Record quota first, then run the command after -- with unchanged stdin and output.')
     parser.add_argument('--wrap-timeout', type=_wrap_timeout, default=5, metavar='SECONDS', help='Wrapped command deadline (default 5 seconds; at most 60).')
+    parser.add_argument('--wrap-shell', choices=('sh', 'bash', 'powershell', 'cmd'), help='Shell Claude uses for the original command. With --setup --wrap: sh by default on POSIX; required on Windows (Git Bash or PowerShell).')
     parser.add_argument('--wrap-shell-base64', help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     try:
@@ -647,16 +975,21 @@ def run(argv, db=None, stdin=None, now=None):
         except (ValueError, UnicodeError) as exc:
             print(f'tokenatlas statusline: invalid encoded command: {exc}', file=sys.stderr)
             return 2
-        try:shell = _system_command('cmd.exe') if os.name == 'nt' else 'sh'
-        except OSError as exc:
+        if args.wrap_shell is None:
+            print('tokenatlas statusline: encoded command requires --wrap-shell', file=sys.stderr)
+            return 2
+        try:args.command = _source_command(args.wrap_shell, source)
+        except (OSError, ValueError) as exc:
             print(f'tokenatlas statusline: cannot resolve shell: {exc}', file=sys.stderr)
             return 127
-        args.command = [shell, '/d', '/s', '/c', source] if os.name == 'nt' else [shell, '-c', source]
     if args.command and not args.wrap:
         print('TokenAtlas')
         return 0
+    if args.wrap_shell is not None and not (args.setup and args.wrap) and args.wrap_shell_base64 is None:
+        print('tokenatlas statusline: --wrap-shell requires --setup --wrap or encoded shell source', file=sys.stderr)
+        return 2
     if args.setup:
-        try:print(wrap_setup_text(db) if args.wrap else setup_text(db))
+        try:print(wrap_setup_text(db, args.wrap_shell) if args.wrap else setup_text(db))
         except ValueError as exc:
             print(f'tokenatlas statusline: {exc}', file=sys.stderr)
             return 2
