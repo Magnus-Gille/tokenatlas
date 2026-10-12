@@ -83,3 +83,4 @@ jobs:
           node test_analytics_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html"
           python -m unittest test_efficiency_integration.SurfaceParity -v
           node test_efficiency_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html"
+          node test_subscriptions_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html"

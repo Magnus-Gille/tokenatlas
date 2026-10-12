@@ -4,6 +4,24 @@ On a subscription, list-price cost is not what you pay. What limits you is the v
 rolling window. This page says what tokenatlas can observe about those limits, how it attributes them to turns, and
 how its quota numbers are worded. Research for #94, retrieved 2026-10-03.
 
+## Saved subscription readings
+
+Reports may include `quota_status`, an optional list of the latest saved raw readings. Each row has
+`harness` (`codex` or `claude`), nullable `account` and `plan_type`, `minutes` (`300` or `10080`),
+nullable `used_percent`, nullable `resets_at`, and nullable `observed_at`; timestamps are UTC ISO
+strings and percentages are between 0 and 100. The report page groups rows by harness, account and
+plan, keeps the newest reading for each window, and shows missing windows as unavailable. It never
+turns a missing or expired reading into 0% or 100%, and it does not collect live data. Readings older
+than 30 minutes are labelled as the last known value. `account` is the existing payload name for
+the reported limit ID, not a reliable identifier for a separate account. Plans and reported limits
+stay separate; old scopes remain visibly stale rather than being assumed to be current subscriptions.
+
+Choose **Subscriptions** to focus on this panel, or open the report with `#subscriptions` in its
+URL. **Back to overview** restores the full dashboard. The panel uses account-wide readings and
+does not follow the history filters. The countdown updates while the page is open; percentage
+readings change only when a new report is generated from newly collected data. After a reported
+reset passes, it shows **Awaiting a new reading**, without inventing a new allowance.
+
 ## What each agent exposes
 
 | | Claude Code | Codex |
