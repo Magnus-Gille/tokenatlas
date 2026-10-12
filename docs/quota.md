@@ -6,7 +6,9 @@ how its quota numbers are worded. Research for #94, retrieved 2026-10-03.
 
 ## Saved subscription readings
 
-Reports may include `quota_status`, an optional list of the latest saved raw readings. Each row has
+Reports may include `quota_status`, an optional list of the latest saved normalized readings. A
+Claude rejection naming a time window is retained as exhausted (100%), as normalized by the
+existing collector; no percentage is estimated from tokens or cost. Each row has
 `harness` (`codex` or `claude`), nullable `account` and `plan_type`, `minutes` (`300` or `10080`),
 nullable `used_percent`, nullable `resets_at`, and nullable `observed_at`; timestamps are UTC ISO
 strings and percentages are between 0 and 100. The report page groups rows by harness, account and

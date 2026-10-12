@@ -769,7 +769,7 @@ for(const key of filterKeys)$(key).addEventListener('change',()=>{state.analytic
 function setLang(l,persist){const keep=ALL&&Object.fromEntries(filterKeys.map(k=>{const v=$(k).value;return[k,v?ALL.findIndex(r=>label(r[k])===v):-1]}));LANG=l;locale=l==='sv'?'sv-SE':'en-US';nf=new Intl.NumberFormat(locale);unknown=t('unknown');applyStatic();ALL=expand(DATA);populateFilters(keep);renderCoverage();renderGlossary();render();renderInsights();renderSubscriptions();if(persist)store.set(l)}
 document.querySelectorAll('button[data-lang]').forEach(b=>b.onclick=()=>setLang(b.dataset.lang,true));
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>setView(button.dataset.view));
-addEventListener('hashchange',()=>setView(location.hash.slice(1)==='subscriptions'?'subscriptions':'overview',false));
+addEventListener('hashchange',()=>{const target=location.hash.slice(1);setView(target==='subscriptions'?'subscriptions':'overview',false);if(target!=='subscriptions')document.getElementById(target)?.scrollIntoView({block:'start'})});
 setInterval(()=>updateQuotaCountdowns(),1000);
 for(const key of ['from','to','search'])$(key).addEventListener('input',()=>{state.analyticsEnd=null;state.limit=30;state.zoom=null;render()});$('reset').onclick=reset;
 document.querySelectorAll('[data-analytics-days]').forEach(button=>button.onclick=()=>{state.analyticsDays=Number(button.dataset.analyticsDays);state.analyticsEnd=null;render()});

@@ -7,6 +7,7 @@ from unittest import mock
 
 from tokenatlas.quota_status import collect, redact
 from tokenatlas.report import build_report
+from test_fresh_report import Base as CliBase, payload as html_payload
 
 
 UTC = timezone.utc
@@ -134,6 +135,27 @@ class QuotaStatusTests(unittest.TestCase):
         self.assertNotIn("quota_status", payload)
         payload = build_report([], {}, now=NOW, quota=True, quota_events=[event])
         self.assertEqual(payload["quota_status"][0]["used_percent"], 42)
+
+
+class QuotaStatusCliTests(CliBase):
+    def test_report_and_open_use_newer_named_claude_rejection(self):
+        from tokenatlas import why
+        from test_limits import call, rejected, stamp, user, write
+
+        write(why.CLAUDE_PROJECTS, [user("t1", 0), call("a", 1), rejected("blocked", 5)])
+        self.assertEqual(self.run_cli("refresh", "--all")[0], 0)
+        (self.db.parent / "claude-quota.jsonl").write_text(json.dumps({
+            "ts": stamp(2), "five_hour": {
+                "used_percent": 20, "resets_at": "2026-09-03T12:00:00+00:00"}}) + "\n")
+        for command, options in (("report", ["--private"]), ("open", ["--no-refresh"])):
+            with self.subTest(command=command), mock.patch("webbrowser.open", return_value=True):
+                path = Path(self.tmp.name) / (command + ".html")
+                code, _, err = self.run_cli(command, "--html", str(path), *options)
+                self.assertEqual(code, 0, err)
+                readings = html_payload(path.read_text())["quota_status"]
+                self.assertEqual(len(readings), 1)
+                self.assertEqual(readings[0]["used_percent"], 100)
+                self.assertEqual(readings[0]["observed_at"], "2026-09-03T10:05:00+00:00")
 
 
 if __name__ == "__main__":

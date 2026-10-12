@@ -45,8 +45,11 @@ async function run() {
     window.__setQuotaNow = value => { currentNow = value; };
   };
   async function pageFor(payload, viewport={width:1440,height:1000}) {
-    const context = await browser.newContext({viewport,locale:'sv-SE',timezoneId:'Europe/Stockholm',offline:true});
+    const context = await browser.newContext({viewport,locale:'sv-SE',timezoneId:'Europe/Stockholm'});
     contexts.push(context);
+    // WebKit's simulated offline mode also rejects file: navigation. Block all
+    // network URLs while loading the local artifact, then simulate offline use.
+    await context.route('**/*', route => route.request().url().startsWith('file:') ? route.continue() : route.abort());
     await context.addInitScript(init(), {now: fixedNow});
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenatlas-subscriptions-')); tempDirs.push(dir);
     const file = path.join(dir, 'report.html');
@@ -57,6 +60,7 @@ async function run() {
     page.on('request', request => { if (/^https?:/.test(request.url())) requests.push(request.url()); });
     await page.goto(`file://${file}`);
     await ready(page, errors);
+    await context.setOffline(true);
     return {context,page,errors,requests,file};
   }
   try {
@@ -87,6 +91,13 @@ async function run() {
   assert.equal(await full.page.locator('body').evaluate(node => node.classList.contains('quota-focus')), true);
   for (const selector of ['.filters', '#analytics', '#sessions', '#coverage'])
     assert.equal(await full.page.locator(selector).isVisible(), false, `${selector} hidden in subscription view`);
+  for (const target of ['sessions', 'coverage']) {
+    await full.page.locator(`a[href="#${target}"]`).click();
+    await full.page.waitForTimeout(50);
+    const top = await full.page.locator(`#${target}`).evaluate(node => node.getBoundingClientRect().top);
+    assert.ok(top >= 0 && top < 1000, `${target} is reached from focused subscriptions (top=${top})`);
+    await full.page.locator('#subscriptions [data-view="subscriptions"]').click();
+  }
   await full.page.locator('#subscriptions [data-view="overview"]').focus();
   await full.page.keyboard.press('Enter');
   assert.equal(await full.page.locator('body').evaluate(node => node.classList.contains('quota-focus')), false);

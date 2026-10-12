@@ -3,7 +3,9 @@
 This module deliberately does not use :mod:`tokenatlas.quota_share`: quota
 shares need segmented windows and calibration, while the status card needs the
 last reading the providers actually reported.  The inputs are already local
-history records and the private Claude statusline sidecar.
+history records and the private Claude statusline sidecar. A named rejected
+Claude limit is already normalized by the collector to an exhausted (100%)
+window; it is factual exhaustion evidence, not a cost-based estimate.
 """
 from __future__ import annotations
 
