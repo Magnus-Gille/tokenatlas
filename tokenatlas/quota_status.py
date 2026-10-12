@@ -123,7 +123,23 @@ def _record_readings(found, items, now, counters=None, excluded=frozenset()):
                       observed=observed, inferred=(counters or {}).get((index, minutes)))
 
 
-def _claude_readings(found, path, now):
+def _sidecar_key(observed, session, minutes, used, resets):
+    return (observed.isoformat(), session if isinstance(session, str) else None,
+            minutes, _percent(used), _utc_iso(resets))
+
+
+def _snapshot_source(snapshot):
+    """Identify the original reading, not the request a sidecar was attached to."""
+    minutes = snapshot['key'][2]
+    if snapshot.get('source') == 'claude_sidecar':
+        return 'claude', _sidecar_key(_time(snapshot['t']), snapshot.get('source_session'),
+                                     minutes, snapshot['used_percent'], snapshot['resets'])
+    if snapshot.get('event_i') is not None:return 'event', (snapshot['event_i'], minutes)
+    if snapshot['i'] is not None:return 'record', (snapshot['i'], minutes)
+    return None, None
+
+
+def _claude_readings(found, path, now, counters=None, excluded=frozenset()):
     """Read explicit Claude five-hour and seven-day statusline windows.
 
     ``quota_share.read_claude`` requires a reset to attach a reading to a
@@ -151,9 +167,11 @@ def _claude_readings(found, path, now):
                 window = row.get(name)
                 if not isinstance(window, dict):
                     continue
+                key = _sidecar_key(observed, row.get('session'), minutes, window.get('used_percent'), window.get('resets_at'))
+                if key in excluded:continue
                 _consider(found, harness="claude", account=None, plan=None, minutes=minutes,
                           used=window.get("used_percent"), resets=window.get("resets_at"),
-                          observed=observed)
+                          observed=observed, inferred=(counters or {}).get(key))
 
 
 def collect(records=(), events=(), claude=None, now=None, snapshots=None):
@@ -167,11 +185,11 @@ def collect(records=(), events=(), claude=None, now=None, snapshots=None):
     if now is None:
         now = datetime.now(timezone.utc)
     found = {}
-    counters = {}
-    excluded = set()
+    counters = {kind: {} for kind in ('record', 'event', 'claude')}
+    excluded = {kind: set() for kind in counters}
     latest_instances = {}
     instances = {}
-    for snapshot in snapshots or ():
+    for snapshot in [*(snapshots or ()), *getattr(snapshots, 'events', ())]:
         if snapshot['t'] > now:continue
         key = snapshot['key']
         scope = (*key[:3], key[4])
@@ -183,15 +201,18 @@ def collect(records=(), events=(), claude=None, now=None, snapshots=None):
         if old is None or key[6] > old[0]:latest_instances[scope] = (key[6], instance)
     for instance, group in instances.items():
         if instance != latest_instances[instance[:-1]][1]:
-            excluded.update((s['i'], s['key'][2]) for s in group if s['i'] is not None)
+            for s in group:
+                kind, identity = _snapshot_source(s)
+                if kind is not None:excluded[kind].add(identity)
     for _, instance in latest_instances.values():
         group = instances[instance]
         if len({s['key'][5] for s in group}) > 1:
             for s in group:
-                if s['i'] is not None:counters[(s['i'], s['key'][2])] = s['key'][5] + 1
-    _record_readings(found, records, now, counters, excluded)
-    _record_readings(found, events, now)
-    _claude_readings(found, claude, now)
+                kind, identity = _snapshot_source(s)
+                if kind is not None:counters[kind][identity] = s['key'][5] + 1
+    _record_readings(found, records, now, counters['record'], excluded['record'])
+    _record_readings(found, events, now, counters['event'], excluded['event'])
+    _claude_readings(found, claude, now, counters['claude'], excluded['claude'])
     # Earlier unsplit readings are superseded by the proven current counters.
     # A newer unreadable/unassigned reading stays visible as unknown scope.
     for key, value in list(found.items()):

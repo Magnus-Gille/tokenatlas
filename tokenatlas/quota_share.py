@@ -157,6 +157,7 @@ def claude_snapshots(path, records, assigned, rows=None):
             who = tuple(a[:3]) if a else ('claude', session if j is None else records[j]['session'], None)
             out.append(dict(ts=ts, t=t, at=None if j is None else at, harness='claude', account='claude', plan_type=None, window=(minutes, due), used_percent=used, reached=None,
                             turn=who if who[2] is not None else None, who=who, i=j, resets=due, root=root, hit=False, due=prompts._t(due),
+                            source='claude_sidecar', source_session=session,
                             key=('claude', 'claude', minutes, None, None, 0, 0)))
     return out
 
@@ -184,7 +185,7 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
         harnesses.add('claude')
     out = Snapshots()
     quiet = []  # quota-only events as snapshots
-    for e in events:
+    for event_index, e in enumerate(events):
         quota = e.get('quota') or {}
         t = _when(e.get('ts'))
         if quota.get('status') != 'event' or t is None:
@@ -194,7 +195,7 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
         account = quota.get('limit_id') or e['harness']
         for w in valid:
             quiet.append(dict(ts=e['ts'], t=t, harness=e['harness'], account=account, plan_type=quota.get('plan_type'), window=(w['minutes'], w['resets_at']),
-                              used_percent=w['used_percent'], reached=quota.get('reached'), turn=None, who=None, i=None, resets=w['resets_at'], due=_when(w['resets_at']), event=True,
+                              used_percent=w['used_percent'], reached=quota.get('reached'), turn=None, who=None, i=None, resets=w['resets_at'], due=_when(w['resets_at']), event=True, event_i=event_index,
                               root=(e['harness'], e.get('parent_session') or e.get('session')), hit=_window_hit(quota.get('reached'), full, w),
                               key=(e['harness'], account, w['minutes'], None, quota.get('plan_type'), 0, 0)))
     if not carriers and not rows:

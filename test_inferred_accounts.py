@@ -1,5 +1,8 @@
 """Counter labels are scoped inference; raw status remains provider data."""
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from tokenatlas import quota_share, quota_status
 import test_quota_share as fixtures
@@ -47,5 +50,50 @@ class InferredAccounts(unittest.TestCase):
         status = quota_status.collect(rows, snapshots=snapshots, now=reset+timedelta(seconds=10))
         self.assertEqual([(r['used_percent'],r['resets_at']) for r in status], [(1,next_reset)])
         self.assertNotIn('inferred_account', status[0])
+
+    def test_old_quota_event_cannot_replace_a_current_request(self):
+        rows = self.rows()
+        reset = datetime.fromisoformat(RESET)
+        next_reset=(reset+timedelta(days=7)).isoformat()
+        rows.append(req('current',(reset+timedelta(seconds=2)).isoformat(),q=quota(week=1,resets=next_reset)))
+        old=req('old-event',(reset+timedelta(seconds=4)).isoformat(),q=dict(quota(week=99),status='event'))
+        snapshots=quota_share.snapshots_from_records(rows,events=[old])
+        self.assertTrue(snapshots.events[0].get('straggler'))
+        status=quota_status.collect(rows,events=[old],snapshots=snapshots,now=reset+timedelta(seconds=10))
+        self.assertEqual([(r['used_percent'],r['resets_at']) for r in status],[(1,next_reset)])
+
+    def test_new_instance_reported_only_as_event_replaces_stale_counters(self):
+        rows=self.rows();reset=datetime.fromisoformat(RESET);next_reset=(reset+timedelta(days=7)).isoformat()
+        event=req('new-event',(reset+timedelta(seconds=2)).isoformat(),q=dict(quota(week=1,resets=next_reset),status='event'))
+        snapshots=quota_share.snapshots_from_records(rows,events=[event])
+        status=quota_status.collect(rows,events=[event],snapshots=snapshots,now=reset+timedelta(seconds=10))
+        self.assertEqual([(r['used_percent'],r['resets_at']) for r in status],[(1,next_reset)])
+        self.assertNotIn('inferred_account',status[0])
+        unknown=req('unmapped',(reset+timedelta(seconds=4)).isoformat(),q=dict(quota(week=45,resets=None),status='event'))
+        status=quota_status.collect(rows,events=[event,unknown],snapshots=snapshots,now=reset+timedelta(seconds=10))
+        self.assertEqual([(r['used_percent'],r['resets_at']) for r in status],[(45,None)])
+
+    def test_claude_sidecar_straggler_cannot_replace_current_window(self):
+        reset=datetime.fromisoformat(RESET);next_reset=(reset+timedelta(days=7)).isoformat()
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'claude-quota.jsonl'
+            values=[(reset-timedelta(hours=1),99,RESET),(reset+timedelta(seconds=2),1,next_reset),(reset+timedelta(seconds=4),99,RESET)]
+            path.write_text(''.join(json.dumps(dict(ts=t.isoformat(),session='s',seven_day=dict(used_percent=used,resets_at=due)))+'\n' for t,used,due in values))
+            snapshots=quota_share.snapshots_from_records([],claude=path)
+            self.assertTrue(snapshots[-1].get('straggler'))
+            status=quota_status.collect(claude=path,snapshots=snapshots,now=reset+timedelta(seconds=10))
+            self.assertEqual([(r['used_percent'],r['resets_at']) for r in status],[(1,next_reset)])
+
+    def test_claude_sidecar_counters_keep_separate_latest_raw_values(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'claude-quota.jsonl'
+            values=[]
+            for i in range(20):
+                for offset,session,used in ((0,'a',10+i),(1,'b',90)):
+                    values.append(dict(ts=iso(2*i+offset),session=session,seven_day=dict(used_percent=used,resets_at=RESET)))
+            path.write_text(''.join(json.dumps(row)+'\n' for row in values))
+            snapshots=quota_share.snapshots_from_records([],claude=path)
+            status=quota_status.collect(claude=path,snapshots=snapshots,now=datetime(2026,9,4,tzinfo=timezone.utc))
+            self.assertEqual([(r.get('inferred_account'),r['used_percent']) for r in status],[(1,29),(2,90)])
 
 if __name__ == '__main__':unittest.main()
