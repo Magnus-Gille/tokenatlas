@@ -222,12 +222,13 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
             valid = reading[i]
             full = [w for w, _ in valid if w['used_percent'] >= 100]
             account = quota.get('limit_id') or r['harness']
+            plan = r.get('plan') if r.get('plan') not in (None, '', 'unknown') else quota.get('plan_type')
             for w, due in valid:
-                out.append(dict(ts=r['ts'], t=t, harness=r['harness'], account=account, plan_type=quota.get('plan_type'),
+                out.append(dict(ts=r['ts'], t=t, harness=r['harness'], account=account, plan_type=plan,
                                 window=(w['minutes'], w['resets_at']), used_percent=w['used_percent'], reached=quota.get('reached'),
                                 turn=who if who[2] is not None else None, who=who, i=i, resets=w['resets_at'], due=due, root=(r['harness'], r.get('parent_session') or r['session']),
                                 hit=_window_hit(quota.get('reached'), full, w),
-                                key=(r['harness'], account, w['minutes'], None, quota.get('plan_type'), 0, 0)))
+                                key=(r['harness'], account, w['minutes'], None, plan, 0, 0)))
     if rows:
         for s in claude_snapshots(claude, records, assigned, rows):
             out.append(s)
@@ -430,6 +431,15 @@ def windows(snapshots, last=None, records=None, cost_of=None, hits=None):
         rows_of[id(entry)], keys_of[id(entry)] = main.get(key, []), key
         out.append(entry)
     out.sort(key=lambda w: (prompts._t(w['resets_at']), w['minutes'], w['harness'], w['account'], w['plan_type'] or ''))
+    # Counter numbers are evidence local to one window instance, never account IDs.
+    split = {}
+    for entry in out:
+        key = keys_of[id(entry)]
+        split.setdefault((*key[:5], key[6]), set()).add(key[5])
+    for entry in out:
+        key = keys_of[id(entry)]
+        if len(split[(*key[:5], key[6])]) > 1:
+            entry['inferred_account'] = key[5] + 1
     if last is not None:
         groups = {}
         for w in out:

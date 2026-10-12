@@ -1,8 +1,8 @@
 """Raw, account-wide quota readings for report status cards.
 
-This module deliberately does not use :mod:`tokenatlas.quota_share`: quota
-shares need segmented windows and calibration, while the status card needs the
-last reading the providers actually reported.  The inputs are already local
+The status card needs the last reading the providers actually reported. Optional
+quota-share snapshots provide counter identity only, never percentages or reset
+values. The inputs are already local
 history records and the private Claude statusline sidecar. A named rejected
 Claude limit is already normalized by the collector to an exhausted (100%)
 window; it is factual exhaustion evidence, not a cost-based estimate.
@@ -81,20 +81,21 @@ def _scope(harness, quota):
     return account, plan
 
 
-def _consider(found, *, harness, account, plan, minutes, used, resets, observed):
+def _consider(found, *, harness, account, plan, minutes, used, resets, observed, inferred=None):
     if harness not in ("claude", "codex") or minutes not in WINDOWS or observed is None:
         return
-    key = (harness, account, plan, minutes)
+    key = (harness, account, plan, minutes, inferred)
     candidate = dict(harness=harness, account=account, plan_type=plan, minutes=minutes,
                      used_percent=_percent(used), resets_at=_utc_iso(resets),
                      observed_at=observed.isoformat())
+    if inferred is not None:candidate['inferred_account'] = inferred
     previous = found.get(key)
     if previous is None or observed >= previous[0]:
         found[key] = (observed, candidate)
 
 
-def _record_readings(found, items, now):
-    for record in items or ():
+def _record_readings(found, items, now, counters=None):
+    for index, record in enumerate(items or ()):
         if not isinstance(record, dict):
             continue
         observed = _time(record.get("ts"))
@@ -105,6 +106,8 @@ def _record_readings(found, items, now):
         if harness not in ("claude", "codex") or not isinstance(quota, dict):
             continue
         account, plan = _scope(harness, quota)
+        if record.get('plan') not in (None, '', 'unknown'):
+            plan = record['plan']
         windows = quota.get("windows")
         if not isinstance(windows, (list, tuple)):
             continue
@@ -116,7 +119,7 @@ def _record_readings(found, items, now):
                 continue
             _consider(found, harness=harness, account=account, plan=plan, minutes=minutes,
                       used=window.get("used_percent"), resets=window.get("resets_at"),
-                      observed=observed)
+                      observed=observed, inferred=(counters or {}).get((index, minutes)))
 
 
 def _claude_readings(found, path, now):
@@ -152,7 +155,7 @@ def _claude_readings(found, path, now):
                           observed=observed)
 
 
-def collect(records=(), events=(), claude=None, now=None):
+def collect(records=(), events=(), claude=None, now=None, snapshots=None):
     """Return latest raw quota rows keyed by provider scope and duration.
 
     ``records`` and ``events`` must be the account-wide universe selected by
@@ -163,11 +166,33 @@ def collect(records=(), events=(), claude=None, now=None):
     if now is None:
         now = datetime.now(timezone.utc)
     found = {}
-    _record_readings(found, records, now)
+    counters = {}
+    latest_instances = {}
+    instances = {}
+    for snapshot in snapshots or ():
+        if snapshot['t'] > now:continue
+        key = snapshot['key']
+        scope = (*key[:3], key[4])
+        instance = (*scope, key[6])
+        instances.setdefault(instance, []).append(snapshot)
+        old = latest_instances.get(scope)
+        if old is None or snapshot['t'] >= old[0]:latest_instances[scope] = (snapshot['t'], instance)
+    for _, instance in latest_instances.values():
+        group = instances[instance]
+        if len({s['key'][5] for s in group}) > 1:
+            for s in group:
+                if s['i'] is not None:counters[(s['i'], s['key'][2])] = s['key'][5] + 1
+    _record_readings(found, records, now, counters)
     _record_readings(found, events, now)
     _claude_readings(found, claude, now)
+    # Earlier unsplit readings are superseded by the proven current counters.
+    # A newer unreadable/unassigned reading stays visible as unknown scope.
+    for key, value in list(found.items()):
+        if key[4] is None:
+            split = [v[0] for k, v in found.items() if k[:4] == key[:4] and k[4] is not None]
+            if split and max(split) >= value[0]:del found[key]
     return [row for _, row in sorted(found.values(), key=lambda item: (
-        item[1]["harness"], item[1]["account"] or "", item[1]["plan_type"] or "", item[1]["minutes"]))]
+        item[1]["harness"], item[1]["account"] or "", item[1]["plan_type"] or "", item[1].get('inferred_account', 0), item[1]["minutes"]))]
 
 
 def redact(rows, shared=False, account_alias=None, plan_alias=None):

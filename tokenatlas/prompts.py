@@ -101,9 +101,12 @@ def top_prompts(records, table, k=5, by='cost', keep=None, credit_table=None, as
         first, last = min((r['ts'] for r in rows), key=_t), max((r['ts'] for r in rows), key=_t)
         head = min(own or rows, key=lambda r: _t(r['ts']))
         stopped = [r['ts'] for r in rows if 'interrupted' in (r.get('flags') or ())]  # the user stopped the turn (logged, not inferred)
+        plans = {r.get('plan') or 'unknown' for r in rows}
+        plan = next(iter(plans)) if len(plans) == 1 else 'mixed'
         prompts.append({
             'harness': harness, 'session': session, 'turn_id': turn, 'thread_kind': head['thread_kind'], 'machine': head.get('machine'),
             'project_id': head.get('project_id'), 'project_label': head.get('project_label'),
+            'plan': plan,
             'first_ts': first, 'last_ts': last, 'duration_s': (_t(last) - _t(first)).total_seconds(),
             'models': sorted({r['model'] for r in rows if r.get('model')}), 'requests': len(rows),
             'subagent_requests': len(subs), 'subagents': len({(r['session'], r.get('agent')) for r in subs}),
