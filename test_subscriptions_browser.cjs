@@ -85,7 +85,8 @@ async function run() {
     await full.page.screenshot({path:path.join(screenshotDir, 'subscriptions-desktop-sv.png'),fullPage:true});
     await full.page.locator('#subscriptions [data-view="overview"]').click();
   }
-  const before = await full.page.locator('#subscriptions-body').innerText();
+  // WebKit's innerText can add a trailing layout newline when siblings hide.
+  const before = (await full.page.locator('#subscriptions-body').innerText()).trimEnd();
   await full.page.locator('[data-view="subscriptions"]').first().focus();
   await full.page.keyboard.press('Enter');
   assert.equal(await full.page.locator('body').evaluate(node => node.classList.contains('quota-focus')), true);
@@ -110,7 +111,7 @@ async function run() {
   await full.page.locator('details.advanced > summary').click();
   await full.page.fill('#search', 'something-that-matches-nothing');
   await full.page.click('[data-view="subscriptions"]');
-  assert.equal(await full.page.locator('#subscriptions-body').innerText(), before);
+  assert.equal((await full.page.locator('#subscriptions-body').innerText()).trimEnd(), before);
   await full.page.click('[data-lang="en"]');
   assert.match(await full.page.locator('#subscriptions-title').innerText(), /Subscriptions now/);
   assert.equal(await full.page.locator('body').evaluate(node => node.classList.contains('quota-focus')), true);
