@@ -74,11 +74,15 @@ class InferredAccounts(unittest.TestCase):
         self.assertEqual([(r['used_percent'],r['resets_at']) for r in status],[(45,None)])
 
     def test_claude_sidecar_straggler_cannot_replace_current_window(self):
+        for session in ('s',None,''):
+            with self.subTest(session=session):self.claude_straggler(session)
+
+    def claude_straggler(self,session):
         reset=datetime.fromisoformat(RESET);next_reset=(reset+timedelta(days=7)).isoformat()
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'claude-quota.jsonl'
             values=[(reset-timedelta(hours=1),99,RESET),(reset+timedelta(seconds=2),1,next_reset),(reset+timedelta(seconds=4),99,RESET)]
-            path.write_text(''.join(json.dumps(dict(ts=t.isoformat(),session='s',seven_day=dict(used_percent=used,resets_at=due)))+'\n' for t,used,due in values))
+            path.write_text(''.join(json.dumps(dict(ts=t.isoformat(),seven_day=dict(used_percent=used,resets_at=due),**({'session':session} if session is not None else {})))+'\n' for t,used,due in values))
             snapshots=quota_share.snapshots_from_records([],claude=path)
             self.assertTrue(snapshots[-1].get('straggler'))
             status=quota_status.collect(claude=path,snapshots=snapshots,now=reset+timedelta(seconds=10))

@@ -77,11 +77,18 @@ ATTACH = timedelta(minutes=5)  # a Claude reading is placed at its session's lat
 CLAUDE_WINDOWS = (('five_hour', FIVE_HOURS), ('seven_day', WEEK))
 
 
+class _ClaudeRows(list):
+    """Tuple-compatible readings plus raw sessions for source matching only."""
+    def __init__(self):
+        super().__init__()
+        self.source_sessions = []
+
+
 def read_claude(path):
     """(rows, malformed) from a claude-quota.jsonl (written by `tokenatlas statusline --record-quota`): rows = [(t, ts, session, [(minutes,
     used_percent, resets_at ISO)])] (a missing session becomes a unique string per line) in file order, only lines with a valid time and at least one valid window; `malformed` counts the lines
     that are not (a torn or foreign line is skipped, never an error). A missing or unreadable file is ([], 0)."""
-    rows, bad = [], 0
+    rows, bad = _ClaudeRows(), 0
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
             for n, text in enumerate(f):
@@ -105,6 +112,7 @@ def read_claude(path):
                     bad += 1
                     continue
                 rows.append((t, row['ts'], session or f'\x00{n}', wins))  # a reading without a session is its own participant: never matched, never compared with a real id
+                rows.source_sessions.append(session)
     except OSError:
         return [], 0
     return rows, bad
@@ -140,7 +148,8 @@ def claude_snapshots(path, records, assigned, rows=None):
         found.sort(key=lambda x: x[0])
         index[session] = ([t for t, _ in found], [i for _, i in found])
     out = []
-    for t, ts, session, wins in rows:
+    source_sessions = getattr(rows, 'source_sessions', None)
+    for source_index, (t, ts, session, wins) in enumerate(rows):
         i = None
         if session in index:
             times, idx = index[session]
@@ -157,7 +166,7 @@ def claude_snapshots(path, records, assigned, rows=None):
             who = tuple(a[:3]) if a else ('claude', session if j is None else records[j]['session'], None)
             out.append(dict(ts=ts, t=t, at=None if j is None else at, harness='claude', account='claude', plan_type=None, window=(minutes, due), used_percent=used, reached=None,
                             turn=who if who[2] is not None else None, who=who, i=j, resets=due, root=root, hit=False, due=prompts._t(due),
-                            source='claude_sidecar', source_session=session,
+                            source='claude_sidecar', source_session=source_sessions[source_index] if source_sessions is not None else session,
                             key=('claude', 'claude', minutes, None, None, 0, 0)))
     return out
 
