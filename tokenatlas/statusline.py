@@ -529,7 +529,12 @@ header = sys.stdin.buffer.readline()
 if not header: raise SystemExit(2)
 argv = json.loads(header)
 raw = sys.stdin.buffer.read()
-raise SystemExit(subprocess.run(argv, input=raw).returncode)
+try:
+    result = subprocess.run(argv, input=raw)
+except OSError as exc:
+    print(f"tokenatlas statusline: cannot run command: {exc}", file=sys.stderr)
+    raise SystemExit(127)
+raise SystemExit(result.returncode)
 '''
 
 

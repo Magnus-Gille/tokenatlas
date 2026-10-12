@@ -61,6 +61,16 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_missing_executable_has_controlled_error_on_both_launch_paths(self):
+        command = str(self.root / 'missing-command')
+        native = run_cli(self.db, 'statusline', '--wrap', '--', command, input=payload_bytes())
+        helper = subprocess.run([PYTHON, '-I', '-S', '-c', statusline._WRAP_HELPER],
+                                input=json.dumps([command]).encode() + b'\n' + payload_bytes(), capture_output=True)
+        for result in (native, helper):
+            self.assertEqual(result.returncode, 127)
+            self.assertIn(b'cannot run command', result.stderr)
+            self.assertNotIn(b'Traceback', result.stderr)
+
     def test_wrap_forwards_raw_stdin_and_stdout_stderr_bytes(self):
         child = (
             "import sys; data=sys.stdin.buffer.read(); "
