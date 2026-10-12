@@ -89,11 +89,11 @@ class InferredAccounts(unittest.TestCase):
             path=Path(temp)/'claude-quota.jsonl'
             values=[]
             for i in range(20):
-                for offset,session,used in ((0,'a',10+i),(1,'b',90)):
+                for offset,session,used in ((0,'a',30+i),(1,'b',90)):
                     values.append(dict(ts=iso(2*i+offset),session=session,seven_day=dict(used_percent=used,resets_at=RESET)))
             path.write_text(''.join(json.dumps(row)+'\n' for row in values))
             snapshots=quota_share.snapshots_from_records([],claude=path)
             status=quota_status.collect(claude=path,snapshots=snapshots,now=datetime(2026,9,4,tzinfo=timezone.utc))
-            self.assertEqual([(r.get('inferred_account'),r['used_percent']) for r in status],[(1,29),(2,90)])
+            self.assertEqual([(r.get('inferred_account'),r['used_percent']) for r in status],[(1,49),(2,90)])
 
 if __name__ == '__main__':unittest.main()
