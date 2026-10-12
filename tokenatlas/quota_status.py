@@ -179,4 +179,3 @@ def redact(rows, shared=False, account_alias=None, plan_alias=None):
             value["plan_type"] = plan_alias(value["plan_type"])
         out.append(value)
     return out
-
