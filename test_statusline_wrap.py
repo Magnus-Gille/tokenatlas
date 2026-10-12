@@ -86,6 +86,14 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(done.stdout, raw)
         self.assertEqual(done.stderr, b"err\x00\xff")
 
+    def test_deeply_nested_json_cannot_prevent_raw_command_passthrough(self):
+        raw = b'[' * 2000 + b'0' + b']' * 2000
+        child = 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.exit(23)'
+        done = run_cli(self.db, 'statusline', '--wrap', '--', PYTHON, '-c', child, input=raw)
+        self.assertEqual(done.returncode, 23, done.stderr)
+        self.assertEqual(done.stdout, raw)
+        self.assertEqual(done.stderr, b'')
+
     def test_wrap_passes_through_child_exit_code_and_records_before_child(self):
         marker = self.root / "child-observed.txt"
         quota = self.db.parent / statusline.QUOTA_NAME

@@ -696,7 +696,7 @@ def _run_wrapped(args, db, stdin, now):
         try:
             payload = json.loads(raw, parse_constant=lambda name: None)
             if isinstance(payload, dict):record_quota(payload, db if db is not None else default_db(), now or datetime.now(timezone.utc))
-        except (OSError, ValueError, TypeError, OverflowError):
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError):
             pass  # malformed input or unavailable recorder must not change the user's output
     job = None
     process = None
