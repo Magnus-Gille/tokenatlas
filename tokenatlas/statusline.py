@@ -534,7 +534,7 @@ def wrap_setup_text(db=None, shell=None):
     if os.name == 'nt' and shell == 'cmd':
         launcher = command.removesuffix(' -m tokenatlas')
         paths = [launcher] + ([str(Path(db).expanduser().absolute())] if db is not None else [])
-        if any(WINDOWS_UNSAFE.search(path) for path in paths):
+        if any(re.search(r'[&|^%!<>"\r\n]', path) for path in paths):
             raise ValueError('cmd setup requires plain launcher and database paths; cmd metacharacters cannot be quoted safely')
     if shell == 'powershell':
         suffix = ' -m tokenatlas'
@@ -542,8 +542,15 @@ def wrap_setup_text(db=None, shell=None):
         command = "& '" + prefix.replace("'", "''") + "'" + (suffix if command.endswith(suffix) else '')
         quote = lambda value: "'" + value.replace('\\', '/').replace("'", "''") + "'"
     else:
-        command = _launcher_text(command, windows=os.name == 'nt' and shell == 'cmd')
-        quote = (lambda value: _quote(value, True)) if os.name == 'nt' and shell == 'cmd' else shlex.quote
+        if os.name == 'nt' and shell == 'cmd':
+            # Always quote paths: parentheses and short-path tildes are valid
+            # Windows filenames, even when no space makes list2cmdline quote.
+            suffix = ' -m tokenatlas'
+            command = '"' + command.removesuffix(suffix) + '"' + (suffix if command.endswith(suffix) else '')
+            quote = lambda value: '"' + value + '"'
+        else:
+            command = _launcher_text(command, windows=False)
+            quote = shlex.quote
     if db is not None:command += ' --db ' + quote(str(Path(db).expanduser().absolute()))
     if os.name == 'nt':
         # Carry source as inert base64 through the shell Claude uses. Re-run it

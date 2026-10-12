@@ -144,6 +144,7 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         stderr = io.StringIO()
         with mock.patch.object(statusline.subprocess, "Popen", return_value=process), \
                 mock.patch.object(statusline, "_stop_wrapped"), \
+                mock.patch('tokenatlas.upgrade_process._Job'), \
                 contextlib.redirect_stderr(stderr):
             result = statusline.run(
                 ["--no-record-quota", "--wrap", "--", "synthetic-child"],
@@ -482,6 +483,8 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
 
     @unittest.skipIf(os.name != "nt", "cmd.exe quoting is exercised on Windows")
     def test_setup_wrap_uses_inert_base64_cmd_c_on_windows(self):
+        self.db = self.root / 'state(~)+path' / 'history.sqlite3'
+        self.db.parent.mkdir()
         config = self.root / "claude"
         config.mkdir()
         original_source = 'echo "quoted ^& operator %TOKENATLAS_WRAP_MARKER%"'
@@ -531,6 +534,19 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                        env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)))
         self.assertEqual(done.returncode, 2, done.stderr)
         self.assertIn(b"choose --wrap-shell", done.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'native cmd path validation')
+    def test_cmd_setup_refuses_expanding_database_path(self):
+        config = self.root / 'claude'
+        config.mkdir()
+        (config / 'settings.json').write_text(json.dumps({
+            'statusLine': {'type': 'command', 'command': 'echo original'}
+        }))
+        done = run_cli(self.root / '%UNTRUSTED%' / 'history.sqlite3', 'statusline',
+                       '--setup', '--wrap', '--wrap-shell', 'cmd',
+                       env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)))
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn(b'cmd metacharacters', done.stderr)
 
     @unittest.skipUnless(os.name == "nt", "native Windows PowerShell")
     def test_setup_wrap_preserves_native_powershell_source(self):
