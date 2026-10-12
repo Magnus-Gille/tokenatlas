@@ -79,9 +79,9 @@ class PlanFactsTests(unittest.TestCase):
         result = plan_facts(records, TABLE)
         by_plan = {item["plan"]: item for item in result["plans"]}
         self.assertEqual(by_plan["plus"], {"plan": "plus", "label": "Plus", "observations": 3,
-                                           "turns": 3, "cost": 4.0, "priced": 2, "unpriced": 1})
+                                           "turns": 3, "cost": 4.0, "priced": 2, "unpriced": 1, "lower_bound": True})
         self.assertEqual(by_plan["team"], {"plan": "team", "label": "Business", "observations": 1,
-                                           "turns": 1, "cost": 12.0, "priced": 1, "unpriced": 0})
+                                           "turns": 1, "cost": 12.0, "priced": 1, "unpriced": 0, "lower_bound": False})
         self.assertIn("overlap", result["note"])
 
     def test_supplied_assignments_are_used(self):
@@ -110,6 +110,13 @@ class PlanFactsTests(unittest.TestCase):
         result = plan_facts([unknown], TABLE)
         self.assertIsNone(result["plans"][0]["cost"])
         self.assertEqual(result["plans"][0]["unpriced"], 1)
+
+    def test_incomplete_known_cost_is_marked_as_lower_bound_in_cli_and_json(self):
+        from tokenatlas.__main__ import _render_plan_facts
+        incomplete = dict(row('partial', '2026-01-01T00:00:00Z', plan='pro'), complete=False)
+        facts = plan_facts([incomplete], TABLE)
+        self.assertTrue(facts['plans'][0]['lower_bound'])
+        self.assertIn('priced cost ≥$', _render_plan_facts(facts))
 
 
 if __name__ == "__main__":

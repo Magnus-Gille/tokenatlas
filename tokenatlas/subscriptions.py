@@ -148,13 +148,15 @@ def plan_facts(records, table, assigned=None):
     for record, found in zip(rows, assignments):
         if record.get('id_synthetic'):continue  # the report and insights exclude ambiguous identities
         plan = record["plan"]
-        group = groups.setdefault(plan, {"observations": 0, "turns": set(), "cost": 0.0, "priced": 0, "unpriced": 0})
+        group = groups.setdefault(plan, {"observations": 0, "turns": set(), "cost": 0.0, "priced": 0, "unpriced": 0, "lower_bound": False})
         group["observations"] += 1
+        group['lower_bound'] = group['lower_bound'] or not record.get('complete', True)
         if found:
             group["turns"].add(tuple(found[:3]))
         _record, result, cost, _tier = insights.memo_row(record, table, memo)
         if cost is None:
             group["unpriced"] += 1
+            group['lower_bound'] = True
         else:
             group["priced"] += 1
             group["cost"] += cost
@@ -164,7 +166,7 @@ def plan_facts(records, table, assigned=None):
         group = groups[plan]
         plans.append({"plan": plan, "label": label(plan), "observations": group["observations"],
                       "turns": len(group["turns"]), "cost": group["cost"] if group["priced"] else None,
-                      "priced": group["priced"], "unpriced": group["unpriced"]})
+                      "priced": group["priced"], "unpriced": group["unpriced"], "lower_bound": group['lower_bound']})
     return {
         "plans": plans,
         "note": "A turn that contains requests under multiple plans is counted once in each plan bucket; plan turn counts may overlap.",

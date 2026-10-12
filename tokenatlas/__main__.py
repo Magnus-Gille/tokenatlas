@@ -184,7 +184,7 @@ def _render_plan_facts(facts):
     """Render the additive plan partition in the insights text output."""
     lines=['', 'Subscriptions by plan:']
     for plan in facts.get('plans', ()):
-        cost='n/a' if not plan['priced'] else f"${plan['cost']:.2f}"
+        cost='n/a' if not plan['priced'] else ('≥' if plan.get('lower_bound') else '') + f"${plan['cost']:.2f}"
         lines.append(f"  {plan['label']}: {plan['observations']:,} observations; {plan['turns']:,} turns; "
                      f"priced cost {cost}; unknown {plan['unpriced']:,}")
     if facts.get('note'):
