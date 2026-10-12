@@ -277,10 +277,6 @@ def _over_cap(history,db,auto,manual):
         return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate','range')})
 
 
-def _events(events):
-    """Codex quota-only observations (zero-token, status 'event'): window readings that are no requests; they only add to a window's peak and hit."""
-    return [e for e in events if (e.get('quota') or {}).get('status')=='event']
-
 
 def _claude_quota(db):
     """The Claude quota snapshot file next to the history database when it exists (recorded by default by `tokenatlas statusline`), else None."""
@@ -663,7 +659,7 @@ def _main(argv=None):
                     texts,ctx=_visible(history,args.db,records,assigned=assigned,table=table) if not args.shared else (None,None)
                     budgets=_budgets(args.db,table,lambda:records)
                     with progress.step('Limit hits'):hits_all=_hits(history,records,events,assigned)  # one read of the limit events serves the hits and the quota windows
-                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned,profile=profile)
+                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned,profile=profile)
                     payload['initial_granularity']='day'
                     if not args.shared:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db,always=True))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
@@ -828,7 +824,7 @@ def _main(argv=None):
                     budgets=_budgets(args.db,table,lambda:universe)
                     with progress.step('Limit hits'):events=history.limit_events();hits_all=_hits(history,universe,events,whole_assigned)
                     scoped=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe,assigned=whole_assigned)
-                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=_events(events),claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile)
+                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile)
                     payload['initial_granularity']=args.granularity
                     if args.private:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))

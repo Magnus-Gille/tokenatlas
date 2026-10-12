@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from tokenatlas import __version__, progress
-from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share, usage_profiles
+from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share, quota_status, usage_profiles
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
 
@@ -291,6 +291,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         coverage['ranges'].append(dict(harness=harness, observations=len(group),
                                        first_event=group[0]['ts'], last_event=group[-1]['ts']))
     now = now or datetime.now(timezone.utc)
+    status_rows = quota_status.collect(whole, quota_events or (), claude=claude_quota, now=now) if quota else None
     display = lambda provider, model: metadata('model', model, {'provider': provider})
     memo = {'assigned': {id(r): a for r, a in zip(whole, whole_assigned)}}
     cost_of = insights.memo_cost(table, memo)
@@ -376,6 +377,12 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                   prices_retrieved=table.get('retrieved_on'),
                   columns=encode_columns(rows), coverage=coverage, analytics_metadata=analytics_metadata,
                   energy=dict(per_1k=energy.PER_1K, uncertainty=energy.UNCERTAINTY, tier_multipliers=energy.TIERS, multipliers=weights), insights=dict(days=INSIGHT_DAYS, big_turn=insights.BIG_TURN, windows=windows), usage=usage)
+    if quota:
+        report['quota_status'] = quota_status.redact(
+            status_rows, shared=redact,
+            account_alias=lambda value: alias('limit', value),
+            plan_alias=lambda value: value if value in usage_profiles.KNOWN_PLAN_NAMES else alias('plan', value),
+        )
     if prompt_texts is not None:
         report['prompt_texts'] = {shown[tuple(k)]: t for k, t in prompt_texts.items() if t and tuple(k) in shown}
     if prompt_context is not None:
