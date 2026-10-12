@@ -8,6 +8,7 @@ TOKENATLAS_NO_QUOTA=1 turns that off, and `--record-quota` is accepted as a no-o
 to write never changes the status line.
 """
 import argparse
+import base64
 import contextlib
 import errno
 import json
@@ -16,6 +17,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import stat
 import sys
@@ -310,9 +312,22 @@ def _command_state(command):
     """Classify one statusLine command: 'foreign', 'disabled', 'enabled', or 'unknown' when it is tokenatlas's but too complex to read reliably
     (shell operators or substitutions). Leading VAR=value assignments are honoured for TOKENATLAS_NO_QUOTA."""
     if not (isinstance(command, str) and 'tokenatlas' in command and 'statusline' in command):return 'foreign'
-    if re.search(r'[;|&`<>\n]|\$\(', command):return 'unknown'
+    # A generated wrapper quotes the entire inner shell command as one argument.
+    # Its flags/operators are unrelated to the recorder's options.
+    wrapper = None
+    try:
+        parsed = shlex.split(command)
+        if '--wrap' in parsed and '--' in parsed:
+            boundary = parsed.index('--')
+            outer = parsed[:boundary]
+            if '--wrap' in outer:wrapper = outer
+    except ValueError:
+        return 'unknown'
+    prefix = command.split(' -- ', 1)[0] if wrapper is not None else command
+    if re.search(r'[;|&`<>\n]|\$\(', prefix):return 'unknown'
     try:tokens = shlex.split(command)
     except ValueError:return 'unknown'
+    if wrapper is not None:tokens = wrapper
     local = None
     for token in tokens:
         match = re.match(r'[A-Za-z_][A-Za-z0-9_]*=(.*)$', token, re.S)
@@ -415,6 +430,13 @@ def executable():
     return str(Path(found).resolve()) if found else f'{sys.executable} -m tokenatlas'
 
 
+def _launcher_text(command, windows=None):
+    """Quote a launcher path, or the interpreter part of a module fallback."""
+    suffix = ' -m tokenatlas'
+    if command.endswith(suffix):return _quote(command[:-len(suffix)], windows) + suffix
+    return _quote(command, windows)
+
+
 WINDOWS_UNSAFE = re.compile(r'[^\w\-.:\\/ ]')  # cmd.exe has no quoting that is safe for &, |, ^, %, ! and the like
 
 
@@ -432,7 +454,7 @@ def setup_text(db=None, command=None, windows=None):
     windows = os.name == 'nt' if windows is None else windows
     args = ([] if ' -m ' in command else [command]) + ([str(Path(db).expanduser().absolute())] if db is not None else [])
     unsafe = windows and any(WINDOWS_UNSAFE.search(a) for a in args)
-    if ' -m ' not in command:command = _quote(command, windows)
+    command = _launcher_text(command, windows)
     if db is not None:command += f' --db {_quote(str(Path(db).expanduser().absolute()), windows)}'
     snippet = json.dumps({'statusLine': {'type': 'command', 'command': f"{command} statusline"}}, indent=2)
     warning = ('Warning: a path in this command contains a character that cmd.exe treats specially (&, |, ^, %, ! ...) and that no quoting makes '
@@ -443,20 +465,207 @@ def setup_text(db=None, command=None, windows=None):
             'local only (0600), account-wide, only while a Claude Code UI session is open. To turn that off add --no-record-quota to the command or set TOKENATLAS_NO_QUOTA=1.')
 
 
+def _effective_statusline():
+    """Read the same user settings precedence as doctor, without writing it."""
+    base = settings_path()
+    found = None
+    for path in (base, base.with_name('settings.local.json')):
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and 'statusLine' in data:
+            found = data['statusLine']
+    if not isinstance(found, dict) or found.get('type', 'command') != 'command' or not isinstance(found.get('command'), str) or not found['command'].strip():
+        raise ValueError('no command statusLine found in Claude settings; configure your own command first')
+    return dict(found)
+
+
+def wrap_setup_text(db=None):
+    original = _effective_statusline()
+    if _command_state(original['command']) in ('enabled', 'disabled'):
+        raise ValueError('the effective statusLine already uses TokenAtlas; keep it or restore your original command first')
+    command = executable()
+    command = _launcher_text(command)
+    if db is not None:command += ' --db ' + _quote(str(Path(db).expanduser().absolute()))
+    if os.name == 'nt':
+        # cmd.exe expands %VAR% and metacharacters even inside several forms of
+        # quotes. Carry the source as inert base64, decode only inside TokenAtlas.
+        encoded = base64.b64encode(original['command'].encode('utf-8')).decode('ascii')
+        suffix = ' statusline --wrap --wrap-shell-base64 ' + encoded
+    else:
+        suffix = ' statusline --wrap -- sh -c ' + _quote(original['command'])
+    wrapped = dict(original, command=command + suffix)
+    snippet = json.dumps({'statusLine': wrapped}, indent=2)
+    undo = json.dumps({'statusLine': original}, indent=2)
+    return (f'Add this to {settings_path()} (merge into the effective settings; this command never edits files):\n\n{snippet}\n\n'
+            f'Undo: restore the original statusLine:\n\n{undo}\n\n'
+            'Quota is recorded before your command runs. Its stdin, stdout, stderr and exit code are preserved; a timeout returns 124. '
+            'Managed settings can prevent statusLine changes. Check the effective command with tokenatlas doctor.')
+
+
+def _wrap_timeout(value):
+    try:number = float(value)
+    except ValueError:raise argparse.ArgumentTypeError('timeout must be a positive finite number up to 60 seconds') from None
+    if not math.isfinite(number) or not 0 < number <= 60:
+        raise argparse.ArgumentTypeError('timeout must be a positive finite number up to 60 seconds')
+    return number
+
+
+def _system_command(name):
+    """Resolve Windows utilities without consulting cwd, PATH or COMSPEC."""
+    import ctypes
+    buffer = ctypes.create_unicode_buffer(32768)
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.GetSystemDirectoryW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+    api.GetSystemDirectoryW.restype = ctypes.c_uint
+    count = api.GetSystemDirectoryW(buffer, len(buffer))
+    if not 0 < count < len(buffer):raise ctypes.WinError(ctypes.get_last_error())
+    return str(Path(buffer.value) / name)
+
+
+_WRAP_HELPER = '''import json, os, subprocess, sys
+header = sys.stdin.buffer.readline()
+if not header: raise SystemExit(2)
+options = json.loads(header)
+argv = options["argv"] if isinstance(options, dict) else options
+raw = sys.stdin.buffer.read()
+try:
+    if os.name == "nt" and isinstance(options, dict) and options.get("shell_source") is not None:
+        # cmd.exe parses shell source, not CRT-escaped argv. /s strips these
+        # outer quotes, preserving every quote/metacharacter in the source.
+        line = subprocess.list2cmdline(argv[:4]) + ' "' + options["shell_source"] + '"'
+        result = subprocess.run(line, executable=argv[0], input=raw)
+    else:
+        result = subprocess.run(argv, input=raw)
+except OSError as exc:
+    print(f"tokenatlas statusline: cannot run command: {exc}", file=sys.stderr)
+    raise SystemExit(127)
+raise SystemExit(result.returncode)
+'''
+
+
+def _stop_wrapped(process, job=None):
+    """Stop only the isolated child tree created by this wrapper."""
+    if os.name == 'nt':
+        if job is not None:job.close()  # kill-on-close includes already-orphaned descendants
+        if process.poll() is None:process.kill()
+    else:
+        try:os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:pass
+
+
+def _run_wrapped(args, db, stdin, now):
+    stream = stdin if stdin is not None else getattr(sys.stdin, 'buffer', sys.stdin)
+    raw = stream.read()
+    if isinstance(raw, str):raw = raw.encode('utf-8')
+    if not args.no_record_quota and not recording_disabled_by_env():
+        try:
+            payload = json.loads(raw, parse_constant=lambda name: None)
+            if isinstance(payload, dict):record_quota(payload, db if db is not None else default_db(), now or datetime.now(timezone.utc))
+        except (OSError, ValueError, TypeError, OverflowError):
+            pass  # malformed input or unavailable recorder must not change the user's output
+    job = None
+    process = None
+    previous = {}
+    starting = True
+    pending_signal = None
+    def cancelled(signum, frame):
+        nonlocal pending_signal
+        pending_signal = signum
+        # Do not interrupt Popen before it returns the child handle. Defer the
+        # exit until the isolated process (and Windows job) can be cleaned up.
+        if not starting:raise SystemExit(128 + signum)
+    try:
+        signals = (signal.SIGTERM, signal.SIGINT) if os.name == 'nt' else (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+        for signum in signals:
+            previous[signum] = signal.signal(signum, cancelled)
+        try:
+            if os.name == 'nt':
+                from tokenatlas.upgrade_process import _Job
+                job = _Job()
+                # The helper cannot launch the command until the parent assigns
+                # its job and sends the stdin header.
+                process = subprocess.Popen([sys.executable, '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
+                                           creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                job.assign(process)
+                options = {'argv': args.command}
+                if args.wrap_shell_base64 is not None:options['shell_source'] = args.command[-1]
+                raw = json.dumps(options).encode('utf-8') + b'\n' + raw
+            else:
+                process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=True)
+        except OSError as exc:
+            print(f'tokenatlas statusline: cannot run command: {exc}', file=sys.stderr)
+            return 127
+        starting = False
+        if pending_signal is not None:raise SystemExit(128 + pending_signal)
+        process.communicate(raw, timeout=args.wrap_timeout)
+    except subprocess.TimeoutExpired:
+        _stop_wrapped(process, job)
+        process.communicate(timeout=1)
+        print('tokenatlas statusline: wrapped command timeout', file=sys.stderr)
+        return 124
+    finally:
+        # A successful direct child may leave descendants holding the output
+        # pipes. A statusline has no persistent background process contract.
+        starting = True  # finish cleanup even if another termination arrives
+        try:
+            if process is not None:
+                _stop_wrapped(process, job)
+                process.wait()
+            elif job is not None:job.close()
+        finally:
+            for signum, handler in previous.items():signal.signal(signum, handler)
+        if pending_signal is not None:raise SystemExit(128 + pending_signal)
+    return process.returncode if process.returncode >= 0 else 128 - process.returncode
+
+
 def run(argv, db=None, stdin=None, now=None):
     """Entry point: print one line and return 0, whatever happens. It records quota readings unless --no-record-quota or TOKENATLAS_NO_QUOTA=1 (record_quota); --record-quota is a no-op."""
     parser = argparse.ArgumentParser(prog='tokenatlas statusline', description='Claude Code statusline: reads its JSON payload on stdin and the cache refresh writes; no network.')
     parser.add_argument('--setup', action='store_true', help="Print the statusLine snippet for Claude Code's settings and its location, without editing it.")
     parser.add_argument('--record-quota', action='store_true', help='Accepted for compatibility; recording is on by default.')
     parser.add_argument('--no-record-quota', action='store_true', help=f'Do not append the 5-hour and weekly quota readings to {QUOTA_NAME} next to the history (also TOKENATLAS_NO_QUOTA=1).')
+    parser.add_argument('--wrap', action='store_true', help='Record quota first, then run the command after -- with unchanged stdin and output.')
+    parser.add_argument('--wrap-timeout', type=_wrap_timeout, default=5, metavar='SECONDS', help='Wrapped command deadline (default 5 seconds; at most 60).')
+    parser.add_argument('--wrap-shell-base64', help=argparse.SUPPRESS)
+    parser.add_argument('command', nargs=argparse.REMAINDER)
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:  # --help exits 0 after printing; a bad option must not break the status bar: fallback line, exit 0
+        if '--wrap' in argv:return int(exc.code or 0)
         if exc.code not in (0, None):print('TokenAtlas')
         return 0
-    if args.setup:
-        print(setup_text(db))
+    if args.command[:1] == ['--']:args.command = args.command[1:]
+    if args.wrap_shell_base64 is not None:
+        if not args.wrap or args.command or args.setup:
+            print('tokenatlas statusline: encoded shell source requires --wrap alone', file=sys.stderr)
+            return 2
+        try:
+            source = base64.b64decode(args.wrap_shell_base64, validate=True).decode('utf-8')
+            if not source.strip() or '\x00' in source:raise ValueError('invalid shell source')
+        except (ValueError, UnicodeError) as exc:
+            print(f'tokenatlas statusline: invalid encoded command: {exc}', file=sys.stderr)
+            return 2
+        try:shell = _system_command('cmd.exe') if os.name == 'nt' else 'sh'
+        except OSError as exc:
+            print(f'tokenatlas statusline: cannot resolve shell: {exc}', file=sys.stderr)
+            return 127
+        args.command = [shell, '/d', '/s', '/c', source] if os.name == 'nt' else [shell, '-c', source]
+    if args.command and not args.wrap:
+        print('TokenAtlas')
         return 0
+    if args.setup:
+        try:print(wrap_setup_text(db) if args.wrap else setup_text(db))
+        except ValueError as exc:
+            print(f'tokenatlas statusline: {exc}', file=sys.stderr)
+            return 2
+        return 0
+    if args.wrap:
+        if not args.command:
+            print('tokenatlas statusline: --wrap requires a command after --', file=sys.stderr)
+            return 2
+        return _run_wrapped(args, db, stdin, now)
     model = None
     try:
         payload = json.loads((stdin or sys.stdin).read(), parse_constant=lambda name: None)  # NaN/Infinity are missing values
