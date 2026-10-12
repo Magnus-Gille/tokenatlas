@@ -26,6 +26,7 @@ class ReportPlans(unittest.TestCase):
         selected = build_report([source[1]], {}, universe=source, redact=False, now=NOW)
         self.assertEqual(expand(selected)[0]["plan"], "business")
         self.assertEqual({r['plan_type'] for r in selected['quota_status']}, {'business'})
+        self.assertEqual([(p['plan'], p['rows']) for p in selected['usage']['plans']], [('business', [0])])
 
     def test_rows_and_facts_are_additive_and_filter_safe(self):
         rows = [

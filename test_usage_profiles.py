@@ -95,7 +95,7 @@ class UsageProfileTests(unittest.TestCase):
         self.assertTrue(all('source_url' not in ref for ref in shared['usage']['cloud_references']))
 
     def test_missing_plans_are_explicit_and_follow_only_their_rows(self):
-        rows = [observation('claude', harness='claude'), observation('codex', harness='codex'), observation('codex-pro', harness='codex', quota={'plan_type':'pro', 'windows':[]})]
+        rows = [observation('claude', harness='claude'), observation('codex', harness='codex', session='no-snapshot'), observation('codex-pro', harness='codex', quota={'plan_type':'pro', 'windows':[]})]
         payload = report.build_report(rows, {}, redact=False)
         unknown = {p['harness']:p['rows'] for p in payload['usage']['plans'] if p['source']=='unknown'}
         self.assertEqual(unknown, {'claude':[0], 'codex':[1]})
