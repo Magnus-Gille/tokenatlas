@@ -311,7 +311,9 @@ def recording_disabled_by_env(value=None):
 def _command_state(command):
     """Classify one statusLine command: 'foreign', 'disabled', 'enabled', or 'unknown' when it is tokenatlas's but too complex to read reliably
     (shell operators or substitutions). Leading VAR=value assignments are honoured for TOKENATLAS_NO_QUOTA."""
-    if not _tokenatlas_invocation(command):return 'foreign'
+    invocation = _tokenatlas_invocation(command)
+    if invocation is None:return 'unknown'
+    if not invocation:return 'foreign'
     # A generated wrapper quotes the entire inner shell command as one argument.
     # Its flags/operators are unrelated to the recorder's options.
     wrapper = None
@@ -339,23 +341,127 @@ def _command_state(command):
     return 'enabled'
 
 
-def _tokenatlas_invocation(command, depth=0):
-    """Distinguish command positions from quoted literal arguments."""
-    if not isinstance(command, str) or depth > 3:return False
-    # POSIX shlex strips unquoted Windows path separators. Normalize only path
-    # tokens, leaving quoting and other shell escapes intact; no alternate
-    # lexer may reinterpret characters inside an already valid quoted word.
-    command = re.sub(r"(^|[\s;&|()])((?:[A-Za-z]:\\|\\\\)[^\s'\";&|()]+)",
-                     lambda match: match[1] + match[2].replace('\\', '/'), command)
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|<>()')
-        lexer.whitespace_split = True
-        lexer.commenters = ''
-        tokens = list(lexer)
-    except ValueError:
-        return bool(re.search(r'\btokenatlas\b.*\bstatusline\b', command))
-    return _invocation_tokens(tokens, depth)
+def _normalise_command_paths(word):
+    """Normalize unquoted Windows path words without changing quote boundaries."""
+    out, quote, at, beginning, windows = [], None, 0, True, False
+    while at < len(word):
+        char = word[at]
+        if quote:
+            out.append(char)
+            at += 1
+            if quote == '"' and char == '\\' and at < len(word):
+                out.append(word[at]); at += 1
+            elif char == quote:quote = None
+            continue
+        if char in ('"', "'"):
+            quote = char; beginning = False
+            out.append(char); at += 1
+            continue
+        if beginning:
+            windows = bool(re.match('(?:[A-Za-z]:\\\\|\\\\\\\\|\\.{1,2}\\\\|%[A-Za-z_]\\w*%\\\\)', word[at:]))
+            beginning = False
+        if char == '\\':
+            if windows and at + 1 < len(word) and word[at + 1] not in '"\';&|<>() \t\r\n':
+                out.append('/'); at += 1
+            else:
+                out.append(char); at += 1
+                if at < len(word):out.append(word[at]); at += 1
+        else:
+            out.append(char); at += 1
+    return ''.join(out)
 
+
+def _command_tokens(command):
+    """Shell words plus provenance: quoted operators remain ordinary arguments."""
+    tokens, word, quote, at = [], None, None, 0
+    def finish(end):
+        nonlocal word
+        if word is not None:
+            values = shlex.split(_normalise_command_paths(command[word:end]))
+            if len(values) != 1:raise ValueError('ambiguous shell word')
+            tokens.append((values[0], False))
+            word = None
+    while at < len(command):
+        char = command[at]
+        if quote:
+            if quote == '"' and char == '\\':at += 2; continue
+            if char == quote:quote = None
+            at += 1; continue
+        if char in ('"', "'"):
+            if word is None:word = at
+            quote = char; at += 1; continue
+        if char == '\\':
+            if word is None:word = at
+            at += 2; continue
+        if char.isspace() or char in ';&|<>()':
+            finish(at)
+            if char == '\n':tokens.append((';', True))
+            elif not char.isspace():
+                end = at + 1
+                while end < len(command) and command[end] in ';&|<>()':end += 1
+                tokens.append((command[at:end], True)); at = end; continue
+            at += 1; continue
+        if word is None:word = at
+        at += 1
+    if quote:raise ValueError('unclosed shell quote')
+    finish(len(command))
+    return tokens
+
+
+def _statusline_operand(args):
+    args = list(args)
+    while args:
+        token = args.pop(0)
+        if token == '--db':
+            if not args:return False
+            args.pop(0)
+        elif token.startswith('--db='):continue
+        else:return token == 'statusline'
+    return False
+
+
+def _python_statusline(name, args):
+    args = list(args)
+    flags = {'-I', '-S', '-E', '-s', '-B', '-u', '-O', '-OO', '-q', '-b', '-bb', '-P', '-v', '-x', '-R', '-d', '-i'}
+    while args:
+        token = args.pop(0)
+        if token == '-m':return bool(args and args.pop(0) == 'tokenatlas' and _statusline_operand(args))
+        if token.startswith('-m') and len(token) > 2:return token[2:] == 'tokenatlas' and _statusline_operand(args)
+        if token in flags:continue
+        if name in ('py', 'py.exe') and re.fullmatch(r'-[23](?:\.\d+)?|-V:.+', token):continue
+        if token in ('-W', '-X'):
+            if not args:return False
+            args.pop(0); continue
+        if token.startswith(('-W', '-X')) and len(token) > 2:continue
+        return False  # -c, a script, stdin or an unknown option ends module selection
+    return False
+
+
+def _shell_source(name, args):
+    args = list(args)
+    while args:
+        token = args.pop(0)
+        low = token.lower()
+        if name in ('cmd', 'cmd.exe'):
+            if low == '/c':return ' '.join(args)
+            if low in ('/d', '/s', '/q', '/a', '/u') or low.startswith(('/e:', '/v:', '/f:')):continue
+        elif name in ('powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
+            if low in ('-command', '-c'):return args[0] if len(args) == 1 else ' '.join(args)
+            if low in ('-noprofile', '-noninteractive', '-nologo', '-sta', '-mta'):continue
+            if low in ('-executionpolicy', '-inputformat', '-outputformat') and args:args.pop(0); continue
+        else:
+            if re.fullmatch(r'-[eiluxv]*c[eiluxv]*', token):return args[0] if args else None
+            if token in ('--noprofile', '--norc') or re.fullmatch(r'-[eiluxv]+', token):continue
+        return None  # a script operand or unknown option cannot become a later -c
+    return None
+
+
+def _tokenatlas_invocation(command, depth=0):
+    """Recognise supported command positions without interpreting literal data."""
+    if not isinstance(command, str) or depth > 3:return False
+    try:tokens = _command_tokens(command)
+    except ValueError:return None
+    return _invocation_tokens(tokens, depth)
 
 def _launcher_operand(name, args):
     """Return the command operand, never search the launched command's arguments."""
@@ -398,32 +504,38 @@ def _launcher_operand(name, args):
 
 
 def _invocation_tokens(tokens, depth):
-    start = True
-    for i, token in enumerate(tokens):
-        if token and all(c in ';&|<>()' for c in token):
-            start = True
+    start, redirected = True, False
+    for i, (token, operator) in enumerate(tokens):
+        if operator:
+            if '<' in token or '>' in token:redirected = True
+            else:start = True
             continue
+        if redirected:redirected = False; continue
         if not start:continue
-        if re.match(r'[A-Za-z_][A-Za-z0-9_]*=', token) or token in ('exec', 'command', 'env') or token.startswith('-'):
-            continue
-        end = next((j for j in range(i + 1, len(tokens)) if tokens[j] and all(c in ';&|<>()' for c in tokens[j])), len(tokens))
-        args = tokens[i + 1:end]
+        if token.isdigit() and i + 1 < len(tokens) and tokens[i + 1][1] and any(c in tokens[i + 1][0] for c in '<>'):continue
+        if re.match(r'[A-Za-z_][A-Za-z0-9_]*=', token) or token in ('exec', 'command', 'env') or token.startswith('-'):continue
+        args, at = [], i + 1
+        while at < len(tokens):
+            value, op = tokens[at]
+            if op:
+                if '<' in value or '>' in value:at += 2; continue
+                break
+            args.append(value); at += 1
         name = token.replace('\\', '/').rsplit('/', 1)[-1].lower()
-        if name in ('tokenatlas', 'tokenatlas.exe', 'energy-monitor', 'energy-monitor.exe') and 'statusline' in args:return True
-        if (name.startswith('python') or name in ('py', 'py.exe')) and '-m' in args:
-            at = args.index('-m')
-            if args[at + 1:at + 2] == ['tokenatlas'] and 'statusline' in args[at + 2:]:return True
+        if name in ('tokenatlas', 'tokenatlas.exe', 'energy-monitor', 'energy-monitor.exe') and _statusline_operand(args):return True
+        if (name.startswith('python') or name in ('py', 'py.exe')) and _python_statusline(name, args):return True
         if name in ('uvx', 'uv', 'pipx', 'nice', 'timeout', 'gtimeout'):
             operand = _launcher_operand(name, args)
-            if operand and _tokenatlas_invocation(' '.join(shlex.quote(v) for v in operand), depth + 1):return True
+            if operand:
+                found = _tokenatlas_invocation(' '.join(shlex.quote(v) for v in operand), depth + 1)
+                if found is not False:return found
         if name in ('sh', 'bash', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
-            for flag in ('-c', '-lc', '/c', '-Command', '-command'):
-                if flag in args:
-                    at = args.index(flag)
-                    if len(args) > at + 1 and _tokenatlas_invocation(args[at + 1], depth + 1):return True
+            source = _shell_source(name, args)
+            if source:
+                found = _tokenatlas_invocation(source, depth + 1)
+                if found is not False:return found
         start = False
     return False
-
 
 def recording_state():
     """'unknown' when no Claude Code settings file can be read (or the effective command is too complex to parse); 'foreign' when the effective

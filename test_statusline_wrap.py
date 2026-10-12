@@ -679,6 +679,50 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(config)}, clear=False):
                     self.assertIn('--wrap', statusline.wrap_setup_text(self.db, shell='sh' if os.name != 'nt' else 'powershell'))
 
+    def test_quoted_operators_do_not_create_command_positions(self):
+        for command in ("printf ';' tokenatlas statusline", "printf '>' tokenatlas statusline",
+                        'echo "|" tokenatlas statusline', 'echo "( tokenatlas statusline )"'):
+            with self.subTest(command=command):
+                self.assertEqual(statusline._command_state(command), 'foreign')
+        self.assertEqual(statusline._command_state('tokenatlas >out statusline'), 'unknown')
+        self.assertEqual(statusline._command_state('>out tokenatlas statusline'), 'unknown')
+
+    def test_classifier_does_not_scan_quoted_literals_or_launcher_operands(self):
+        foreign = [
+            r'echo " C:\x\" tokenatlas statusline"',
+            r'echo " C:\x\" ; tokenatlas statusline ; echo C:\y\" "',
+            'python3 status.py -m tokenatlas statusline',
+            'py render.py -m tokenatlas statusline',
+            "python -c 'print(1)' -m tokenatlas statusline",
+            'nice -n 5 python3 status.py -m tokenatlas statusline',
+            "sh render.sh -c 'tokenatlas statusline'",
+            'tokenatlas report --project statusline',
+            "printf '%s' >tokenatlas statusline",
+        ]
+        for command in foreign:
+            with self.subTest(command=command):
+                self.assertEqual(statusline._command_state(command), 'foreign')
+
+        quoted_literals = [
+            r"printf '%s' 'tokenatlas statusline'",
+            r'''printf "%s" "tokenatlas statusline"''',
+            r'''printf '%s' 'token'"atlas statusline"''',
+            r'''printf '%s' 'C:\tools\tokenatlas' "statusline"''',
+            r'''echo " C:\x\" tokenatlas statusline"''',
+        ]
+        for command in quoted_literals:
+            with self.subTest(quoted_literal=command):
+                shlex.split(command)  # All matrix entries are valid POSIX shell words.
+                self.assertEqual(statusline._command_state(command), 'foreign')
+
+        enabled = [
+            'python -I -S -W ignore -X dev -m tokenatlas statusline',
+            'py -3.12 -m tokenatlas statusline',
+        ]
+        for command in enabled:
+            with self.subTest(interpreter_flags=command):
+                self.assertEqual(statusline._command_state(command), 'enabled')
+
     def test_windows_helper_interpreter_resolution_refuses_venv_redirector(self):
         with mock.patch.object(sys, 'prefix', str(self.root)), \
                 mock.patch.object(sys, 'base_prefix', str(self.root / 'base')), \
