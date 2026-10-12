@@ -289,7 +289,7 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                 child_pid_file = self.root / f"startup-child-{signum}"
                 env = self._isolated_signal_env()
                 env.update({
-                    "TOKENATLAS_SIGNAL": str(signum),
+                    "TOKENATLAS_SIGNAL": str(int(signum)),
                     "TOKENATLAS_CHILD_PID_FILE": str(child_pid_file),
                     "TOKENATLAS_DB": str(self.db),
                 })
