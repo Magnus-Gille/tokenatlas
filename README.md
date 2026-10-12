@@ -514,6 +514,24 @@ The line reads `Opus 4.8 | Ctx:42% | 5h:29% 7d:52% | D:2.0M ~2 kWh | W:45.3M ~20
 
 Totals are the same numbers as the report (ambiguous observations excluded) and are only as fresh as the last `tokenatlas refresh`, `open` or `collect`, which write a small `statusline.json` (0600) next to the history database; schedule `collect` to keep them current. The statusline reads only that file, never the database, so a new day rolls the totals over without a rewrite. When the file is older than 45 minutes its time is appended, e.g. `(14:40)`; when it is missing, the totals are left out. It makes no network calls and uses no credentials. By default it appends quota readings to `claude-quota.jsonl`; `--no-record-quota` or `TOKENATLAS_NO_QUOTA=1` turns that off (see [Claude quota snapshots](#claude-quota-snapshots-on-by-default-opt-out)). If anything goes wrong it prints a short fallback line. It starts without loading the history modules to stay fast on every status update.
 
+### Keep your own statusline and still record quota
+
+If you already have a statusline command, let TokenAtlas wrap it so the Claude payload and both output streams pass through unchanged while the quota snapshot is recorded first:
+
+```bash
+tokenatlas --db ~/.local/state/tokenatlas/history.sqlite3 statusline --wrap -- your-statusline-command --your-args
+```
+
+The wrapped command is started directly with `shell=False`, so quote and operator characters in its arguments stay arguments. Its exit status is returned to Claude Code. Use `--wrap-timeout SECONDS` to change the limit (the default is 5 seconds; values must be finite and positive, up to 60). A timeout returns exit status `124` with a diagnostic. An inner `--no-record-quota` belongs to your command and does not turn off TokenAtlas recording; pass `--no-record-quota` before `--wrap` if you want to disable the outer recording.
+
+To adapt an existing Claude Code shell statusline, ask for a mergeable snippet and an undo snippet:
+
+```bash
+tokenatlas statusline --setup --wrap
+```
+
+The setup command reads only the effective `settings.json` and `settings.local.json`, prints the complete existing `statusLine` object (including fields such as `padding` and `refreshInterval`) and never writes either file. It explicitly invokes the original shell source through POSIX `sh -c` or Windows `cmd /c` with quoting for that shell. Claude Code managed settings outside these two files are not available to this helper and must be handled through the management mechanism that owns them.
+
 ## Retired checkout scripts
 
 This release retires the old checkout-only energy-monitor scripts (the standalone `statusline.py`, the `stepcount.py` summaries, the Codex and Pi status and step-count scripts, `advisor.py`, the interactive export, the analysis and validation scripts, and the `why.py` command). They are not part of the PyPI package and remain in git history up to tag `v1.8.0`. What replaced them: `tokenatlas statusline` for the status line, and the energy card in the report and the `energy` fact in `tokenatlas insights` for the energy estimate; `tokenatlas open`, `top` and `insights` cover the rest. `tokenatlas/why.py` stays as the internal module with the per-harness collectors.
