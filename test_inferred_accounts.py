@@ -1,9 +1,10 @@
 """Counter labels are scoped inference; raw status remains provider data."""
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from tokenatlas import quota_share, quota_status
 import test_quota_share as fixtures
 from test_quota_share import TABLE, iso, quota, req
+from test_quota_share import RESET
 
 class InferredAccounts(unittest.TestCase):
     def rows(self):
@@ -34,5 +35,17 @@ class InferredAccounts(unittest.TestCase):
         snapshots = quota_share.snapshots_from_records(rows)
         status = quota_status.collect(rows, snapshots=snapshots, now=datetime(2026, 9, 4, tzinfo=timezone.utc))
         self.assertEqual(sorted(r['used_percent'] for r in status), [18, 97])
+
+    def test_pre_reset_straggler_cannot_replace_the_current_window(self):
+        rows = self.rows()
+        reset = datetime.fromisoformat(RESET)
+        next_reset = (reset + timedelta(days=7)).isoformat()
+        rows += [req('current', (reset+timedelta(seconds=2)).isoformat(), session='s1', q=quota(week=1,resets=next_reset)),
+                 req('straggler', (reset+timedelta(seconds=4)).isoformat(), session='s1', q=quota(week=99))]
+        snapshots = quota_share.snapshots_from_records(rows)
+        self.assertTrue(snapshots[-1].get('straggler'))
+        status = quota_status.collect(rows, snapshots=snapshots, now=reset+timedelta(seconds=10))
+        self.assertEqual([(r['used_percent'],r['resets_at']) for r in status], [(1,next_reset)])
+        self.assertNotIn('inferred_account', status[0])
 
 if __name__ == '__main__':unittest.main()

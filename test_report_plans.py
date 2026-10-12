@@ -52,6 +52,15 @@ class ReportPlans(unittest.TestCase):
         self.assertNotIn("acme-internal", payload)
         self.assertTrue(any(p["plan"].startswith("plan ") for p in report["insights"]["plans"]))
 
+    def test_shared_business_name_is_public_on_every_plan_surface(self):
+        rows=[observation('business',ts='2026-10-12T11:30:00+00:00',harness='codex',session='business',quota=quota('business'))]
+        report=build_report(rows,{},redact=True,now=NOW)
+        self.assertEqual(expand(report)[0]['plan'],'business')
+        self.assertEqual(report['quota_status'][0]['plan_type'],'business')
+        self.assertEqual(report['quota_windows'][0]['plan'],'business')
+        self.assertEqual(report['usage']['plans'][0]['plan'],'business')
+        self.assertEqual(report['insights']['plans'][0]['plan'],'business')
+
     def test_quota_windows_carry_plan(self):
         rows = [observation("one", harness="codex", session="quota", quota=quota("pro"))]
         report = build_report(rows, {}, redact=False, now=NOW)

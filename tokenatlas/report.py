@@ -159,7 +159,7 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
     if redact:
         public = public_model_checker(pricing.load_prices(), credit_rates.packaged())
         cloud_references = [r for r in cloud_references if r['provider'] in PUBLIC_NAMES['provider'] and public(r['provider'], r['model'])]
-    safe_plan = lambda value, kind: value if not redact or value in usage_profiles.KNOWN_PLAN_NAMES else f'{kind} plan'
+    safe_plan = lambda value, kind: value if not redact or value in _plan_public_names() else f'{kind} plan'
     plans, seen = [], set()
     for i, record in enumerate(records):
         quota = record.get('quota') or {}
@@ -422,7 +422,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         report['quota_status'] = quota_status.redact(
             status_rows, shared=redact,
             account_alias=lambda value: alias('limit', value),
-            plan_alias=lambda value: value if value in usage_profiles.KNOWN_PLAN_NAMES else alias('plan', value),
+            plan_alias=lambda value: value if value in _plan_public_names() else alias('plan', value),
         )
     if prompt_texts is not None:
         report['prompt_texts'] = {shown[tuple(k)]: t for k, t in prompt_texts.items() if t and tuple(k) in shown}

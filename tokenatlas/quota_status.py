@@ -94,7 +94,7 @@ def _consider(found, *, harness, account, plan, minutes, used, resets, observed,
         found[key] = (observed, candidate)
 
 
-def _record_readings(found, items, now, counters=None):
+def _record_readings(found, items, now, counters=None, excluded=frozenset()):
     for index, record in enumerate(items or ()):
         if not isinstance(record, dict):
             continue
@@ -117,6 +117,7 @@ def _record_readings(found, items, now, counters=None):
             minutes = window.get("minutes")
             if isinstance(minutes, bool) or not isinstance(minutes, int) or minutes not in WINDOWS:
                 continue
+            if (index, minutes) in excluded:continue
             _consider(found, harness=harness, account=account, plan=plan, minutes=minutes,
                       used=window.get("used_percent"), resets=window.get("resets_at"),
                       observed=observed, inferred=(counters or {}).get((index, minutes)))
@@ -167,6 +168,7 @@ def collect(records=(), events=(), claude=None, now=None, snapshots=None):
         now = datetime.now(timezone.utc)
     found = {}
     counters = {}
+    excluded = set()
     latest_instances = {}
     instances = {}
     for snapshot in snapshots or ():
@@ -176,13 +178,18 @@ def collect(records=(), events=(), claude=None, now=None, snapshots=None):
         instance = (*scope, key[6])
         instances.setdefault(instance, []).append(snapshot)
         old = latest_instances.get(scope)
-        if old is None or snapshot['t'] >= old[0]:latest_instances[scope] = (snapshot['t'], instance)
+        # A delayed reading may belong to an older instance after a reset.
+        # Segment sequence, not observation timestamp, identifies the current one.
+        if old is None or key[6] > old[0]:latest_instances[scope] = (key[6], instance)
+    for instance, group in instances.items():
+        if instance != latest_instances[instance[:-1]][1]:
+            excluded.update((s['i'], s['key'][2]) for s in group if s['i'] is not None)
     for _, instance in latest_instances.values():
         group = instances[instance]
         if len({s['key'][5] for s in group}) > 1:
             for s in group:
                 if s['i'] is not None:counters[(s['i'], s['key'][2])] = s['key'][5] + 1
-    _record_readings(found, records, now, counters)
+    _record_readings(found, records, now, counters, excluded)
     _record_readings(found, events, now)
     _claude_readings(found, claude, now)
     # Earlier unsplit readings are superseded by the proven current counters.
