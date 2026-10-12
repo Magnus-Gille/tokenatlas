@@ -140,3 +140,28 @@ see (other machines, cloud tasks) and unpriced models (13% of events) account fo
 - Do not state token or message caps per plan, peak-hour rules, or model weightings: none are published.
 - A rate-limit rejection is a fact ("hit the 5-hour limit at 14:02, resets 19:00"). What filled the window is a
   ranking of what tokenatlas saw in it.
+
+## Subscription plans and inferred accounts
+
+The report's Subscription filter and column, `top --plan PLAN`, and the
+`insights --json` subscriptions summary separate requests by their recorded
+plan. Codex requests without a plan inherit the nearest dated plan snapshot in
+the same session, including a snapshot outside the selected report period.
+Without such a snapshot the plan is unknown. Business uses the raw `team` value;
+Pro Lite uses `prolite`. Tooltips retain the raw plan value. Claude remains
+unknown when its logs do not name a plan. Plan names identify products, not people.
+
+Every request contributes to exactly one plan's cost. A turn that contains
+requests under several plans contributes to each relevant plan's turn count,
+so turn counts can overlap. Costs are list-price equivalents, not subscription
+fees or charges; unpriced usage stays explicitly unpriced.
+
+When concurrent sessions repeatedly report incompatible counters on the same
+plan, TokenAtlas can distinguish their observed quota windows as inferred
+accounts, such as Pro (account 1) and Pro (account 2). The numbers are stable
+within the rendered window instance, but cannot identify or track a person
+across resets, five-hour versus weekly windows, or different reports. A single
+counter does not prove there is only one account. The subscription status still
+uses each counter's latest raw provider reading, not its peak or an estimated
+cost share. No credential files, account IDs or email addresses are read.
+Shared reports retain known public plan names and pseudonymize custom names.

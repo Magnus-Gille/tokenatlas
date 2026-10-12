@@ -84,3 +84,5 @@ jobs:
           python -m unittest test_efficiency_integration.SurfaceParity -v
           node test_efficiency_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html"
           node test_subscriptions_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html"
+          python scripts/plans_fixture.py "${{ runner.temp }}/tokenatlas-plans.html"
+          node test_plans_browser.cjs "${{ runner.temp }}/tokenatlas-plans.html"
