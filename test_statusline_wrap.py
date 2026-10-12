@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -116,6 +117,19 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertLess(elapsed, 3)
         self.assertIn(b"timeout", done.stderr.lower())
 
+    def test_normal_exit_closes_descendant_output_pipes_promptly(self):
+        grandchild = (
+            "import sys,time; sys.stdout.write('grandchild stdout'); "
+            "sys.stderr.write('grandchild stderr'); sys.stdout.flush(); sys.stderr.flush(); time.sleep(4)"
+        )
+        child = f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', {grandchild!r}])"
+        started = time.monotonic()
+        done = run_cli(self.db, "statusline", "--wrap", "--wrap-timeout", "0.1", "--", PYTHON,
+                       "-c", child, input=payload_bytes(), timeout=6)
+        elapsed = time.monotonic() - started
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertLess(elapsed, 3)
+
     def test_default_wrap_timeout_is_five_seconds(self):
         child = "import time; time.sleep(5.2)"
         started = time.monotonic()
@@ -191,6 +205,22 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(executed.stderr, b"")
         self.assertTrue((self.db.parent / statusline.QUOTA_NAME).is_file())
 
+    @unittest.skipIf(os.name == "nt", "POSIX launcher quoting")
+    def test_setup_wrap_quotes_spaced_interpreter_module_fallback(self):
+        config = self.root / "claude"
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": "printf '%s' spaced"}
+        }))
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(config)}, clear=False), \
+                mock.patch.object(statusline, "executable", return_value="/tmp/Python Runtime/bin/python -m tokenatlas"):
+            text = statusline.wrap_setup_text(self.db)
+        wrapped = [obj["statusLine"] for obj in json_objects(text)
+                   if isinstance(obj.get("statusLine"), dict) and "--wrap" in obj["statusLine"].get("command", "")]
+        self.assertTrue(wrapped)
+        tokens = shlex.split(wrapped[0]["command"])
+        self.assertEqual(tokens[:3], ["/tmp/Python Runtime/bin/python", "-m", "tokenatlas"])
+
     @unittest.skipIf(os.name != "nt", "cmd.exe quoting is exercised on Windows")
     def test_setup_wrap_uses_inert_base64_cmd_c_on_windows(self):
         config = self.root / "claude"
@@ -210,7 +240,11 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(encoded).decode("utf-8"), original_source)
         self.assertEqual(wrapped[0]["padding"], 2)
         self.assertEqual(wrapped[0]["refreshInterval"], 9)
-        executed = subprocess.run(["cmd.exe", "/d", "/s", "/c", wrapped_command], input=payload_bytes(),
+        shutil.copy2(sys.executable, self.root / "cmd.exe")
+        shutil.copy2(sys.executable, self.root / "taskkill.exe")
+        env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
+        system_cmd = statusline._system_command("cmd.exe")
+        executed = subprocess.run([system_cmd, "/d", "/s", "/c", wrapped_command], input=payload_bytes(),
                                   capture_output=True, cwd=ROOT, env=env, timeout=5)
         self.assertEqual(executed.returncode, 0, executed.stderr)
         self.assertEqual(executed.stdout, b'"quoted & operator synthetic"\r\n')

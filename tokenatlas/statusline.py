@@ -430,6 +430,13 @@ def executable():
     return str(Path(found).resolve()) if found else f'{sys.executable} -m tokenatlas'
 
 
+def _launcher_text(command, windows=None):
+    """Quote a launcher path, or the interpreter part of a module fallback."""
+    suffix = ' -m tokenatlas'
+    if command.endswith(suffix):return _quote(command[:-len(suffix)], windows) + suffix
+    return _quote(command, windows)
+
+
 WINDOWS_UNSAFE = re.compile(r'[^\w\-.:\\/ ]')  # cmd.exe has no quoting that is safe for &, |, ^, %, ! and the like
 
 
@@ -447,7 +454,7 @@ def setup_text(db=None, command=None, windows=None):
     windows = os.name == 'nt' if windows is None else windows
     args = ([] if ' -m ' in command else [command]) + ([str(Path(db).expanduser().absolute())] if db is not None else [])
     unsafe = windows and any(WINDOWS_UNSAFE.search(a) for a in args)
-    if ' -m ' not in command:command = _quote(command, windows)
+    command = _launcher_text(command, windows)
     if db is not None:command += f' --db {_quote(str(Path(db).expanduser().absolute()), windows)}'
     snippet = json.dumps({'statusLine': {'type': 'command', 'command': f"{command} statusline"}}, indent=2)
     warning = ('Warning: a path in this command contains a character that cmd.exe treats specially (&, |, ^, %, ! ...) and that no quoting makes '
@@ -479,7 +486,7 @@ def wrap_setup_text(db=None):
     if _command_state(original['command']) in ('enabled', 'disabled'):
         raise ValueError('the effective statusLine already uses TokenAtlas; keep it or restore your original command first')
     command = executable()
-    if ' -m ' not in command:command = _quote(command)
+    command = _launcher_text(command)
     if db is not None:command += ' --db ' + _quote(str(Path(db).expanduser().absolute()))
     if os.name == 'nt':
         # cmd.exe expands %VAR% and metacharacters even inside several forms of
@@ -505,14 +512,31 @@ def _wrap_timeout(value):
     return number
 
 
-def _stop_wrapped(process):
+def _system_command(name):
+    """Resolve Windows utilities without consulting cwd, PATH or COMSPEC."""
+    import ctypes
+    buffer = ctypes.create_unicode_buffer(32768)
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.GetSystemDirectoryW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+    api.GetSystemDirectoryW.restype = ctypes.c_uint
+    count = api.GetSystemDirectoryW(buffer, len(buffer))
+    if not 0 < count < len(buffer):raise ctypes.WinError(ctypes.get_last_error())
+    return str(Path(buffer.value) / name)
+
+
+_WRAP_HELPER = '''import json, subprocess, sys
+header = sys.stdin.buffer.readline()
+if not header: raise SystemExit(2)
+argv = json.loads(header)
+raw = sys.stdin.buffer.read()
+raise SystemExit(subprocess.run(argv, input=raw).returncode)
+'''
+
+
+def _stop_wrapped(process, job=None):
     """Stop only the isolated child tree created by this wrapper."""
     if os.name == 'nt':
-        try:
-            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        if job is not None:job.close()  # kill-on-close includes already-orphaned descendants
         if process.poll() is None:process.kill()
     else:
         try:os.killpg(process.pid, signal.SIGKILL)
@@ -529,26 +553,44 @@ def _run_wrapped(args, db, stdin, now):
             if isinstance(payload, dict):record_quota(payload, db if db is not None else default_db(), now or datetime.now(timezone.utc))
         except (OSError, ValueError, TypeError, OverflowError):
             pass  # malformed input or unavailable recorder must not change the user's output
+    job = None
+    process = None
     try:
-        process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=os.name != 'nt',
-                                   creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
+        if os.name == 'nt':
+            from tokenatlas.upgrade_process import _Job
+            job = _Job()
+            # The helper cannot launch the command until the parent assigns its
+            # job and sends the stdin header. This closes the startup escape race.
+            process = subprocess.Popen([sys.executable, '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
+                                       creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            job.assign(process)
+            raw = json.dumps(args.command).encode('utf-8') + b'\n' + raw
+        else:
+            process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=True)
     except OSError as exc:
+        if job is not None:job.close()
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
         print(f'tokenatlas statusline: cannot run command: {exc}', file=sys.stderr)
         return 127
     previous = {}
     def cancelled(signum, frame):
-        _stop_wrapped(process)
+        _stop_wrapped(process, job)
         raise SystemExit(128 + signum)
     try:
         for signum in (signal.SIGTERM, signal.SIGINT):
             previous[signum] = signal.signal(signum, cancelled)
         process.communicate(raw, timeout=args.wrap_timeout)
     except subprocess.TimeoutExpired:
-        _stop_wrapped(process)
+        _stop_wrapped(process, job)
         process.communicate(timeout=1)
         print('tokenatlas statusline: wrapped command timeout', file=sys.stderr)
         return 124
     finally:
+        # A successful direct child may leave descendants holding the output
+        # pipes. A statusline has no persistent background process contract.
+        _stop_wrapped(process, job)
         for signum, handler in previous.items():signal.signal(signum, handler)
     return process.returncode if process.returncode >= 0 else 128 - process.returncode
 
@@ -580,7 +622,11 @@ def run(argv, db=None, stdin=None, now=None):
         except (ValueError, UnicodeError) as exc:
             print(f'tokenatlas statusline: invalid encoded command: {exc}', file=sys.stderr)
             return 2
-        args.command = (['cmd.exe', '/d', '/s', '/c'] if os.name == 'nt' else ['sh', '-c']) + [source]
+        try:shell = _system_command('cmd.exe') if os.name == 'nt' else 'sh'
+        except OSError as exc:
+            print(f'tokenatlas statusline: cannot resolve shell: {exc}', file=sys.stderr)
+            return 127
+        args.command = [shell, '/d', '/s', '/c', source] if os.name == 'nt' else [shell, '-c', source]
     if args.command and not args.wrap:
         print('TokenAtlas')
         return 0

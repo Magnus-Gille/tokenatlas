@@ -522,7 +522,7 @@ If you already have a statusline command, let TokenAtlas wrap it so the Claude p
 tokenatlas --db ~/.local/state/tokenatlas/history.sqlite3 statusline --wrap -- your-statusline-command --your-args
 ```
 
-The wrapped command is started directly with `shell=False`, so quote and operator characters in its arguments stay arguments. Its exit status is returned to Claude Code. Use `--wrap-timeout SECONDS` to change the limit (the default is 5 seconds; values must be finite and positive, up to 60). A timeout returns exit status `124` with a diagnostic. An inner `--no-record-quota` belongs to your command and does not turn off TokenAtlas recording; pass `--no-record-quota` before `--wrap` if you want to disable the outer recording.
+The wrapped command is started directly with `shell=False`, so quote and operator characters in its arguments stay arguments. Its exit status is returned to Claude Code, and background descendants are stopped when the command ends so they cannot hold the statusline pipes open. Use `--wrap-timeout SECONDS` to change the limit (the default is 5 seconds; values must be finite and positive, up to 60). A timeout returns exit status `124` with a diagnostic. An inner `--no-record-quota` belongs to your command and does not turn off TokenAtlas recording; pass `--no-record-quota` before `--wrap` if you want to disable the outer recording.
 
 To adapt an existing Claude Code shell statusline, ask for a mergeable snippet and an undo snippet:
 
