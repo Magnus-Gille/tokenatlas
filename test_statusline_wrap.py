@@ -506,7 +506,10 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         shutil.copy2(sys.executable, self.root / "taskkill.exe")
         env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
         system_cmd = statusline._system_command("cmd.exe")
-        executed = subprocess.run([system_cmd, "/d", "/s", "/c", wrapped_command], input=payload_bytes(),
+        # cmd.exe consumes source, not CRT-escaped argv. /s strips these outer
+        # quotes and preserves the snippet's path quotes and metacharacters.
+        outer = subprocess.list2cmdline([system_cmd, '/d', '/s', '/c']) + ' "' + wrapped_command + '"'
+        executed = subprocess.run(outer, executable=system_cmd, input=payload_bytes(),
                                   capture_output=True, cwd=ROOT, env=env, timeout=5)
         self.assertEqual(executed.returncode, 0, executed.stderr)
         original_output = subprocess.run(original_source, shell=True, executable=system_cmd,
@@ -636,6 +639,46 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                 "statusLine": {"type": "command", "command": "tokenatlas statusline --wrap && echo outer -- sh -c printf"}
             }))
             self.assertEqual(statusline.recording_state(), "unknown")
+
+    def test_classifier_preserves_windows_paths_and_common_launchers(self):
+        commands = [r'C:\Users\me\.local\bin\tokenatlas.exe statusline',
+                    r'C:\Users\me\.local\bin\tokenatlas.exe --db C:\state\history.sqlite3 statusline',
+                    'uvx tokenatlas statusline', 'uv tool run tokenatlas statusline',
+                    'pipx run tokenatlas statusline', 'nice -n 5 tokenatlas statusline',
+                    'timeout 2 tokenatlas statusline']
+        config = self.root / 'claude'
+        config.mkdir()
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(statusline._command_state(command), 'enabled')
+                (config / 'settings.json').write_text(json.dumps({'statusLine': {'type': 'command', 'command': command}}))
+                with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(config)}, clear=False):
+                    with self.assertRaisesRegex(ValueError, 'already uses TokenAtlas'):
+                        statusline.wrap_setup_text(self.db)
+
+    def test_windows_helper_interpreter_resolution_refuses_venv_redirector(self):
+        with mock.patch.object(sys, 'prefix', str(self.root)), \
+                mock.patch.object(sys, 'base_prefix', str(self.root / 'base')), \
+                mock.patch.object(sys, '_base_executable', str(self.root / 'python.exe')):
+            with self.assertRaisesRegex(OSError, 'external Python'):
+                statusline._wrapper_python()
+        base = self.root.parent / 'base-python.exe'
+        with mock.patch.object(sys, 'prefix', str(self.root)), \
+                mock.patch.object(sys, 'base_prefix', str(self.root.parent)), \
+                mock.patch.object(sys, '_base_executable', str(base)):
+            self.assertEqual(statusline._wrapper_python(), base.resolve())
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows venv helper supervision')
+    def test_windows_venv_wrapper_uses_base_interpreter_and_forwards_bytes(self):
+        venv = self.root / 'venv'
+        subprocess.run([PYTHON, '-m', 'venv', '--without-pip', str(venv)], check=True, capture_output=True)
+        python = venv / 'Scripts' / 'python.exe'
+        result = subprocess.run([str(python), '-m', 'tokenatlas', '--db', str(self.db),
+                                 'statusline', '--no-record-quota', '--wrap', '--', PYTHON, '-c',
+                                 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.exit(23)'],
+                                input=b'\x00raw\xff', capture_output=True, cwd=ROOT, env=ENV, timeout=10)
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual(result.stdout, b'\x00raw\xff')
 
     def test_plain_statusline_behavior_is_unchanged(self):
         done = run_cli(self.db, "statusline", input=payload_bytes())

@@ -347,8 +347,18 @@ def _tokenatlas_invocation(command, depth=0):
         lexer.whitespace_split = True
         lexer.commenters = ''
         tokens = list(lexer)
+        windows_lexer = shlex.shlex(command, posix=False, punctuation_chars=';&|<>()')
+        windows_lexer.whitespace_split = True
+        windows_lexer.commenters = ''
+        windows_tokens = [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in windows_lexer]
     except ValueError:
         return bool(re.search(r'\btokenatlas\b.*\bstatusline\b', command))
+    for parsed_tokens in (tokens, windows_tokens):
+        if _invocation_tokens(parsed_tokens, depth):return True
+    return False
+
+
+def _invocation_tokens(tokens, depth):
     start = True
     for i, token in enumerate(tokens):
         if token and all(c in ';&|<>()' for c in token):
@@ -364,6 +374,11 @@ def _tokenatlas_invocation(command, depth=0):
         if name.startswith('python') and '-m' in args:
             at = args.index('-m')
             if args[at + 1:at + 2] == ['tokenatlas'] and 'statusline' in args[at + 2:]:return True
+        if name in ('uvx', 'uv', 'pipx', 'nice', 'timeout', 'gtimeout'):
+            for j, value in enumerate(args):
+                child = value.replace('\\', '/').rsplit('/', 1)[-1].lower()
+                if child in ('tokenatlas', 'tokenatlas.exe', 'energy-monitor', 'energy-monitor.exe') or child.startswith('python'):
+                    if _tokenatlas_invocation(' '.join(shlex.quote(v) for v in args[j:]), depth + 1):return True
         if name in ('sh', 'bash', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
             for flag in ('-c', '-lc', '/c', '-Command', '-command'):
                 if flag in args:
@@ -665,6 +680,14 @@ def _stop_wrapped(process, job=None):
             print(f'tokenatlas statusline: cannot stop wrapped process group: {exc}', file=sys.stderr)
 
 
+def _wrapper_python():
+    """Use the base interpreter, not a Windows venv process redirector."""
+    python = Path(getattr(sys, '_base_executable', sys.executable)).resolve()
+    if sys.prefix != sys.base_prefix and python.is_relative_to(Path(sys.prefix).resolve()):
+        raise OSError('cannot identify an external Python for safe Windows statusline supervision')
+    return python
+
+
 def _run_wrapped(args, db, stdin, now):
     stream = stdin if stdin is not None else getattr(sys.stdin, 'buffer', sys.stdin)
     raw = stream.read()
@@ -693,10 +716,11 @@ def _run_wrapped(args, db, stdin, now):
         try:
             if os.name == 'nt':
                 from tokenatlas.upgrade_process import _Job
+                python = _wrapper_python()
                 job = _Job()
                 # The helper cannot launch the command until the parent assigns
                 # its job and sends the stdin header.
-                process = subprocess.Popen([sys.executable, '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
+                process = subprocess.Popen([str(python), '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
                                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 job.assign(process)
                 options = {'argv': args.command}

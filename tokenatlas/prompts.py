@@ -101,7 +101,8 @@ def top_prompts(records, table, k=5, by='cost', keep=None, credit_table=None, as
         first, last = min((r['ts'] for r in rows), key=_t), max((r['ts'] for r in rows), key=_t)
         head = min(own or rows, key=lambda r: _t(r['ts']))
         stopped = [r['ts'] for r in rows if 'interrupted' in (r.get('flags') or ())]  # the user stopped the turn (logged, not inferred)
-        plans = {r.get('plan') or 'unknown' for r in rows}
+        from tokenatlas.plan_metadata import plan_of
+        plans = {plan_of(r) or 'unknown' for r in rows}
         plan = next(iter(plans)) if len(plans) == 1 else 'mixed'
         prompts.append({
             'harness': harness, 'session': session, 'turn_id': turn, 'thread_kind': head['thread_kind'], 'machine': head.get('machine'),

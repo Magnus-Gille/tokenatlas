@@ -278,14 +278,14 @@ def _hits(history,records,events=None,assigned=None):
     return limits.limit_hits(records,events,pricing.load_prices(),assigned=assigned)  # no shortcut: a full window with no reached type is a hit too
 
 
-def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=None):
+def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=None,events=None):
     """(automatic budgets, skipped counts) from the whole history: limit hits and Claude statusline readings (budget.auto_budgets, #116). Computed, never stored."""
     from tokenatlas import budget, quota_share
     with progress.step('Automatic budgets'):
         if records is None:records, events=_plan_history(history)
         else:
             from tokenatlas import subscriptions
-            records, events=subscriptions.annotate_with_events(records,history.limit_events())
+            records, events=subscriptions.annotate_with_events(records,history.limit_events() if events is None else events)
         if hits is None:hits=_hits(history,records,events)
         if snapshots is None:snapshots=quota_share.snapshots_from_records(records,events=events,claude=_claude_quota(db))
         return budget.auto_budgets(records,hits,snapshots,table,*(() if keep is None else (keep,)))
@@ -603,9 +603,12 @@ def _main(argv=None):
                     with History(args.db) as history:  # the automatic budgets are computed from the history (#116)
                         history.connection.execute('BEGIN')
                         cache={}
-                        def automatic(keep):
+                        def cached_records():
                             if 'records' not in cache:
                                 with progress.step('Read history'):cache['records'],cache['events']=_plan_history(history)
+                            return cache['records']
+                        def automatic(keep):
+                            cached_records()
                             if 'table' not in cache:cache['table']=pricing.load_prices()
                             records,table=cache['records'],cache['table']
                             if 'assigned' not in cache:cache['assigned']=prompts.assign_prompts(records)
@@ -619,7 +622,7 @@ def _main(argv=None):
                             memo={};cost_of=insights.memo_cost(table,memo)
                             shares=quota_share.compute(records,table,cost_of=cost_of,assigned=assigned,events=cache['events'],claude=_claude_quota(args.db))[1]
                             return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate','range')})
-                        return budget.run(args,args.db,None,lambda:cache['table'] if 'table' in cache else pricing.load_prices(),_printing(done),automatic,over_cap) or 0
+                        return budget.run(args,args.db,cached_records,lambda:cache['table'] if 'table' in cache else pricing.load_prices(),_printing(done),automatic,over_cap) or 0
                 return budget.run(args,args.db,None,pricing.load_prices,_printing(done)) or 0
             if not args.db.expanduser().is_file():raise ValueError('history database does not exist; run refresh first')
             with History(args.db) as history:
@@ -738,7 +741,7 @@ def _main(argv=None):
                 quota_share.mark_turns(result['prompts'],shares)
                 derived=budget.load_derived(budget.path_for(args.db),table=table,records_fn=lambda:everything)
                 if any((p.get('quota_share') or {}).get('label') not in ('observed','estimate','range') for p in result['prompts']):  # automatic budgets only matter for a turn without its own share (#116)
-                    derived=budget.combine(derived,_auto_budgets(history,args.db,table,everything,all_hits,snaps or None)[0])
+                    derived=budget.combine(derived,_auto_budgets(history,args.db,table,everything,all_hits,snaps or None,events=events)[0])
                 if derived:  # only where there is no observed or estimated share; the turn's whole identified cost, whatever the filters keep
                     budget.mark_turns(result['prompts'],derived,budget.turn_costs(everything,assigned,cost_of,table))
                 texts,ctx=prompt_store.visible_all(store,everything,table,ranked=global_ranked,ranked_choice=(args.limit,args.by))  # only the global top k: never text or context outside it

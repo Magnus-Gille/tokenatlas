@@ -14,9 +14,25 @@ async function ready(page, errors) {
   }
 }
 
+function withData(source, mutate) {
+  const match = source.match(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+/=]+)(<\/script>)/);
+  if (!match) throw new Error('report data payload not found');
+  const data = JSON.parse(zlib.gunzipSync(Buffer.from(match[2], 'base64')).toString('utf8'));
+  mutate(data);
+  const encoded = zlib.gzipSync(Buffer.from(JSON.stringify(data))).toString('base64');
+  return source.replace(match[0], match[1] + encoded + match[3]);
+}
+
 async function main() {
   if (!process.argv[2]) throw new Error('usage: node test_plans_browser.cjs REPORT.html');
   const source = fs.readFileSync(process.argv[2], 'utf8');
+  const planHitScope = {project_id:'\x01p001', model:'gpt-5.5', effort:'high', provider:'openai', session:'codex:pro', agent:'private-agent', plan:'business'};
+  const filteredSource = withData(source, data => {
+    data.limit_hits = [
+      {at:'2026-10-10T12:00:00+00:00', local_date:'2026-10-10', harness:'codex', window_minutes:300, reached:'five_hour', prompt:null, scope:planHitScope},
+      {at:'2026-10-10T12:01:00+00:00', local_date:'2026-10-10', harness:'codex', window_minutes:10080, reached:'weekly', prompt:1, scope:planHitScope},
+    ];
+  });
   const browser = await playwright[process.env.BROWSER || 'chromium'].launch({headless: true});
   const screenshots = process.env.SCREENSHOT_DIR;
   if (screenshots) fs.mkdirSync(screenshots, {recursive: true});
@@ -27,7 +43,7 @@ async function main() {
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (/^https?:/.test(request.url())) requests.push(request.url()); });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenatlas-plans-'));
-  const file = path.join(dir, 'report.html'); fs.writeFileSync(file, source);
+  const file = path.join(dir, 'report.html'); fs.writeFileSync(file, filteredSource);
   await page.goto(`file://${file}`);
   await ready(page, errors);
   await context.setOffline(true);
@@ -44,6 +60,8 @@ async function main() {
   assert.match(await page.locator('#selection').innerText(), /2 of 5/);
   assert.equal(await page.evaluate(() => UsageReport.aggregate(UsageReport.getSelected()).known_tokens), 7700);
   assert.equal(await page.evaluate(() => Number(UsageReport.getSelected().reduce((sum, row) => sum + (row.cost || 0), 0).toFixed(3))), 0.056);
+  assert.equal(await page.evaluate(() => UsageReport.glanceFacts(UsageReport.getSelected()).hits.n), 1, 'plan filter excludes out-of-plan scoped hits but keeps selected-prompt hits');
+  assert.equal(await page.evaluate(() => UsageReport.efficiencyBundle.filters.plan), true, 'efficiency export records an active plan filter');
   await page.selectOption('#plan', 'business');
   await page.locator('.session summary').first().click();
   await page.locator('.turn summary').first().click();
@@ -68,7 +86,7 @@ async function main() {
   assert.equal(await page.locator('#plan-facts .plan-note').innerText(), 'Turer som byter abonnemang kan räknas i flera rader.');
   const common={harness:'codex',account:null,plan_type:'pro',observed_at:new Date().toISOString(),resets_at:new Date(Date.now()+3600000).toISOString()};
   const counters=[{...common,minutes:300,inferred_account:1,used_percent:20},{...common,minutes:300,inferred_account:2,used_percent:80},{...common,minutes:10080,inferred_account:1,used_percent:40}];
-  const accountHtml=source.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+/=]+)(<\/script>)/,(_,open,encoded,close)=>{
+  const accountHtml=filteredSource.replace(/(<script id="report-data" type="application\/octet-stream\+base64">)([A-Za-z0-9+/=]+)(<\/script>)/,(_,open,encoded,close)=>{
     const data=JSON.parse(zlib.gunzipSync(Buffer.from(encoded,'base64')).toString('utf8'));data.quota_status=counters;
     return open+zlib.gzipSync(Buffer.from(JSON.stringify(data))).toString('base64')+close;
   });

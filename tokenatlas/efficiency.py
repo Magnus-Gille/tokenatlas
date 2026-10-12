@@ -17,7 +17,7 @@ _TOKENS = (*_INPUT, 'output')
 _PUBLIC_PROJECT = re.compile(r'^Project ([0-9]{3,})$')
 _REPORT_PROJECT = re.compile(r'^\x01p([0-9]{3,})$')
 _FILTER_FLAGS = frozenset(('harness', 'provider', 'model', 'project_id', 'thread_kind',
-                           'effort', 'session', 'agent', 'search', 'zoom'))
+                           'effort', 'session', 'agent', 'plan', 'search', 'zoom'))
 
 
 def _instant(value, name):

@@ -4,7 +4,7 @@
   const KEYS = ['fresh_input', 'cache_read', 'cache_write', 'output'];
   const INPUT = KEYS.slice(0, 3);
   const SEMANTICS = 'hypothetical_input_reduction_not_savings';
-  const FILTERS = ['harness','provider','model','effort','project_id','session','agent','thread_kind','search','zoom'];
+  const FILTERS = ['harness','provider','model','effort','project_id','session','agent','thread_kind','plan','search','zoom'];
   function instant(value) {
     if (typeof value !== 'string' || !/(Z|[+-]\d\d:\d\d)$/.test(value) || !Number.isFinite(Date.parse(value))) throw new TypeError('Offset ISO timestamp required');
     return Date.parse(value);

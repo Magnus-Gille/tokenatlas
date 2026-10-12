@@ -130,7 +130,7 @@ def annotate_with_events(records, events=()):
     """
     requests, observations = list(records), list(events)
     source = requests + observations
-    if all(plan_metadata.plan_of(row) is not None and row.get('plan') == plan_metadata.plan_of(row) for row in source):
+    if all(row.get('plan') == (plan_metadata.plan_of(row) or UNKNOWN) for row in source):
         return requests, observations
     annotated = annotate(source)
     for original, copied in zip(source, annotated):

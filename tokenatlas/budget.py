@@ -26,6 +26,7 @@ MIXED = '\0mixed'  # a turn whose requests ran on more than one plan: no budget 
 PLANNED = ('codex',)  # harnesses whose quota snapshots name a plan
 ROLLING = ('codex',)  # Codex windows are rolling ([reading - window, reading]); Claude's weekly window resets at a fixed time
 KEEP = 8  # readings older than this many windows are ignored
+ATTRIBUTION_REVISION = 1  # Codex cost attribution now includes inherited plan metadata
 AUTO_RISE = 5.0  # automatic statusline points need the percentage to rise by at least this many points (the 1% resolution and noise dominate below)
 AUTO_MIN_COST = 0.50  # ... and the window to hold at least this much list-price cost (USD); a limit hit needs the same
 AUTO_MIN_POINTS = 3  # an automatic budget is used for shares only with at least this many points ...
@@ -178,11 +179,21 @@ def window_start(x):
 
 
 def reprice(data, table, records_fn=None):
-    """`data` with every reading priced for `table`: a reading made with another table is recomputed from the history (`records_fn()`, called at most once);
-    without a history it is dropped as stale, and so is one whose window now has no priced cost. Manual budgets do not depend on a table."""
+    """`data` with every reading priced for `table` and Codex attribution current.
+
+    Readings made with another price table are recomputed from the history
+    (`records_fn()`, called at most once). Codex readings with an older or
+    missing attribution revision are also recomputed, even when the table
+    matches. Without history stale readings are dropped. Manual budgets do not
+    depend on a table.
+    """
     tid, records, out = table_id(table), None, []
     for x in data.get('readings', []):
-        if not _valid(x) or x.get('table') == tid:
+        if not _valid(x):
+            out.append(x)
+            continue
+        stale_attribution = x['harness'] == 'codex' and x.get('attribution_revision') != ATTRIBUTION_REVISION
+        if x.get('table') == tid and not stale_attribution:
             out.append(x)
             continue
         if records_fn is None:
@@ -191,7 +202,10 @@ def reprice(data, table, records_fn=None):
             records = records_fn()
         cost, unpriced, excluded = cost_seen(records, table, x['harness'], window_start(x), prompts._t(x['taken_at']), x.get('plan'))
         if cost > 0:
-            out.append(dict(x, cost_usd=cost, unpriced_requests=unpriced, excluded_requests=excluded, table=tid))
+            updated = dict(x, cost_usd=cost, unpriced_requests=unpriced, excluded_requests=excluded, table=tid)
+            if x['harness'] == 'codex':
+                updated['attribution_revision'] = ATTRIBUTION_REVISION
+            out.append(updated)
     return dict(data, readings=out)
 
 
@@ -276,7 +290,8 @@ def make_reading(records, table, harness, window, used, resets=None, at=None, no
                          'so a budget cannot be derived from this reading; check the harness, the window and the reset time, or refresh the history first, '
                          f'or set a budget directly with `quota set --harness {harness} --window {window} --budget-usd N`' + (f'; {excluded} {harness} requests in the window carry no plan and were left out' if excluded else ''))
     return dict(harness=harness, minutes=minutes, used=fraction, resets_at=None if end is None else end.isoformat(), taken_at=taken.isoformat(),
-                cost_usd=cost, unpriced_requests=unpriced, excluded_requests=excluded, approximate=approximate, table=table_id(table), plan=plan)
+                cost_usd=cost, unpriced_requests=unpriced, excluded_requests=excluded, approximate=approximate, table=table_id(table), plan=plan,
+                attribution_revision=ATTRIBUTION_REVISION)
 
 
 def add_reading(path, reading):
@@ -613,6 +628,12 @@ def run(args, db, records_fn, table_fn, out, auto_fn=None, cap_fn=None):
         if args.keep < 1:
             raise ValueError('--keep must be at least 1')
         data = load(path)
+        stale = [x for x in data['readings'] if _valid(x) and x['harness'] == 'codex' and x.get('attribution_revision') != ATTRIBUTION_REVISION]
+        if stale and records_fn is not None:
+            # Show current Codex attribution, while preserving the established
+            # display of other readings at their original price table.
+            refreshed = reprice(dict(data, readings=stale), table_fn(), records_fn)['readings']
+            data = dict(data, readings=[x for x in data['readings'] if x not in stale] + refreshed)
         derived = derive(data, now, args.keep)
         auto, skipped = auto_fn(args.keep) if auto_fn else ({}, {})
         unfit = cap_fn(auto, derived) if cap_fn and auto else 0

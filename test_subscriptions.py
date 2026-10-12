@@ -32,6 +32,15 @@ def row(identity, ts, *, session="s", harness="codex", plan=None, turn="t", mode
 
 
 class AnnotationTests(unittest.TestCase):
+    def test_already_annotated_mixed_unknown_rows_do_not_allocate_another_universe(self):
+        rows = annotate([row('claude', '2026-01-01T00:00:00Z', harness='claude'),
+                         row('codex', '2026-01-01T00:00:00Z', session='unknown')])
+        with mock.patch.object(subscriptions, 'annotate', side_effect=AssertionError('redundant annotation')):
+            requests, events = subscriptions.annotate_with_events(rows)
+        self.assertEqual(requests, rows)
+        self.assertIs(requests[0], rows[0])
+        self.assertEqual(events, [])
+
     def test_direct_plan_beats_nearest_snapshot(self):
         records = [row("before", "2026-01-01T00:00:00Z", plan="plus"),
                    row("direct", "2026-01-02T00:00:00Z", plan=" PRO "),
