@@ -524,13 +524,20 @@ def _system_command(name):
     return str(Path(buffer.value) / name)
 
 
-_WRAP_HELPER = '''import json, subprocess, sys
+_WRAP_HELPER = '''import json, os, subprocess, sys
 header = sys.stdin.buffer.readline()
 if not header: raise SystemExit(2)
-argv = json.loads(header)
+options = json.loads(header)
+argv = options["argv"] if isinstance(options, dict) else options
 raw = sys.stdin.buffer.read()
 try:
-    result = subprocess.run(argv, input=raw)
+    if os.name == "nt" and isinstance(options, dict) and options.get("shell_source") is not None:
+        # cmd.exe parses shell source, not CRT-escaped argv. /s strips these
+        # outer quotes, preserving every quote/metacharacter in the source.
+        line = subprocess.list2cmdline(argv[:4]) + ' "' + options["shell_source"] + '"'
+        result = subprocess.run(line, executable=argv[0], input=raw)
+    else:
+        result = subprocess.run(argv, input=raw)
 except OSError as exc:
     print(f"tokenatlas statusline: cannot run command: {exc}", file=sys.stderr)
     raise SystemExit(127)
@@ -569,7 +576,9 @@ def _run_wrapped(args, db, stdin, now):
             process = subprocess.Popen([sys.executable, '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
                                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
             job.assign(process)
-            raw = json.dumps(args.command).encode('utf-8') + b'\n' + raw
+            options = {'argv': args.command}
+            if args.wrap_shell_base64 is not None:options['shell_source'] = args.command[-1]
+            raw = json.dumps(options).encode('utf-8') + b'\n' + raw
         else:
             process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=True)
     except OSError as exc:

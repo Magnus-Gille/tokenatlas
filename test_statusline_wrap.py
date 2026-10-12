@@ -257,7 +257,10 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         executed = subprocess.run([system_cmd, "/d", "/s", "/c", wrapped_command], input=payload_bytes(),
                                   capture_output=True, cwd=ROOT, env=env, timeout=5)
         self.assertEqual(executed.returncode, 0, executed.stderr)
-        self.assertEqual(executed.stdout, b'"quoted & operator synthetic"\r\n')
+        original_output = subprocess.run(original_source, shell=True, executable=system_cmd,
+                                         input=payload_bytes(), capture_output=True, env=env, cwd=ROOT, timeout=5)
+        self.assertEqual(original_output.returncode, 0, original_output.stderr)
+        self.assertEqual(executed.stdout, original_output.stdout)
         self.assertEqual(executed.stderr, b"")
         self.assertTrue((self.db.parent / statusline.QUOTA_NAME).is_file())
 
@@ -277,7 +280,7 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
     def test_plain_statusline_behavior_is_unchanged(self):
         done = run_cli(self.db, "statusline", input=payload_bytes())
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(done.stdout, b"Synthetic | 5h:12% 7d:34%\n")
+        self.assertEqual(done.stdout, b"Synthetic | 5h:12% 7d:34%" + os.linesep.encode())
 
     def test_missing_or_empty_wrap_command_is_an_error(self):
         for args in (("statusline", "--wrap"), ("statusline", "--wrap", "--")):
