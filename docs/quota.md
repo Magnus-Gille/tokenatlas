@@ -11,7 +11,8 @@ Claude rejection naming a time window is retained as exhausted (100%), as normal
 existing collector; no percentage is estimated from tokens or cost. Each row has
 `harness` (`codex` or `claude`), nullable `account` and `plan_type`, `minutes` (`300` or `10080`),
 nullable `used_percent`, nullable `resets_at`, and nullable `observed_at`; timestamps are UTC ISO
-strings and percentages are between 0 and 100. The report page groups rows by harness, account and
+strings and percentages are finite and nonnegative. Codex can report usage above 100%; that reported
+value is preserved, while the remaining percentage is floored at 0. The report page groups rows by harness, account and
 plan, keeps the newest reading for each window, and shows missing windows as unavailable. It never
 turns a missing or expired reading into 0% or 100%, and it does not collect live data. Readings older
 than 30 minutes are labelled as the last known value. `account` is the existing payload name for

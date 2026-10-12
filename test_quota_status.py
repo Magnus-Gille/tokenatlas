@@ -56,12 +56,20 @@ class QuotaStatusTests(unittest.TestCase):
     def test_bad_fields_do_not_become_zero_and_missing_reset_is_allowed(self):
         rows = [reading("bad", "2026-10-12T11:00:00+00:00", windows=[
             window(300, True, None), window(10080, -1, None),
-            window(300, 101, None), window(10080, float("inf"), None),
+            window(300, float("nan"), None), window(10080, float("inf"), None),
             window(42, 3),
         ])]
         got = collect(rows, now=NOW)
         self.assertEqual([(r["minutes"], r["used_percent"], r["resets_at"]) for r in got],
                          [(300, None, None), (10080, None, None)])
+
+    def test_reported_overshoot_is_preserved_but_huge_invalid_values_are_unknown(self):
+        rows = [reading("overshoot", "2026-10-12T11:00:00+00:00", windows=[window(300, 104)])]
+        self.assertEqual(collect(rows, now=NOW)[0]["used_percent"], 104)
+        huge = [reading("bad", "2026-10-12T11:00:00+00:00", windows=[window(300, 10 ** 400, 10 ** 400)])]
+        row = collect(huge, now=NOW)[0]
+        self.assertIsNone(row["used_percent"])
+        self.assertIsNone(row["resets_at"])
 
     def test_missing_reset_then_valid_later_reset_uses_latest_raw_value(self):
         rows = [

@@ -102,7 +102,7 @@ const quotaDate=iso=>{if(!iso)return '';try{return new Intl.DateTimeFormat(local
 const quotaPercent=value=>Number.isInteger(value)?dec(value,0):dec(value,1);
 const quotaLimitLabel=value=>{const text=loc(value);return typeof text==='string'&&text.charCodeAt(0)===1?text.slice(1):text};
 const quotaValidIso=iso=>iso==null||((typeof iso==='string')&&Number.isFinite(Date.parse(iso)));
-const quotaValidPercent=value=>value==null||(typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=100);
+const quotaValidPercent=value=>value==null||(typeof value==='number'&&Number.isFinite(value)&&value>=0);
 function quotaRows(){
   const rows=Array.isArray(DATA.quota_status)?DATA.quota_status:[],latest=new Map();
   for(const input of rows){
@@ -144,7 +144,7 @@ function renderSubscriptionWindow(row,scope,now){
   if(!row)values.append(el('span',t('sub_unavailable')));
   else if(expired)values.append(el('span',t('sub_awaiting')));
   else if(row.used_percent==null)values.append(el('span',t('sub_percent_unavailable')));
-  else values.append(el('strong',t('sub_remaining',{n:quotaPercent(100-row.used_percent)})),el('span',' · '),el('span',t('sub_used',{n:quotaPercent(row.used_percent)})));
+  else values.append(el('strong',t('sub_remaining',{n:quotaPercent(Math.max(0,100-row.used_percent))})),el('span',' · '),el('span',t('sub_used',{n:quotaPercent(row.used_percent)})));
   win.append(head,values);
   const meta=el('div',undefined,'quota-meta');
   if(row){

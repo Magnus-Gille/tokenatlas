@@ -43,23 +43,27 @@ def _utc_iso(value):
     found = _time(value)
     if found is not None:
         return found.isoformat()
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            return datetime.fromtimestamp(value, timezone.utc).isoformat()
+            if math.isfinite(value):
+                return datetime.fromtimestamp(value, timezone.utc).isoformat()
         except (OverflowError, OSError, ValueError):
             pass
     return None
 
 
 def _percent(value):
-    """A finite provider percentage in the public range, or ``None``.
+    """A finite nonnegative provider percentage, including overshoot, or ``None``.
 
     Invalid values still produce a row when the provider named a valid window;
     that preserves the distinction between an unknown reading and a real zero.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if not math.isfinite(value) or not 0 <= value <= 100:
+    try:
+        if value < 0 or not math.isfinite(value):
+            return None
+    except OverflowError:
         return None
     return value
 

@@ -134,6 +134,9 @@ async function run() {
   await evolving.page.waitForTimeout(1200);
   assert.match(await evolving.page.locator('[data-scope]').innerText(), /äldre än 30 minuter/i);
 
+  const overshoot = await pageFor(edit(source, [{...rows[0], used_percent:104}]));
+  assert.equal(await overshoot.page.locator('.quota-values').first().innerText(), 'Kvar 0 % · Använt 104 %');
+
   const expiring = await pageFor(edit(source, [{harness:'codex',account:null,plan_type:'soon',minutes:300,used_percent:42,resets_at:'2026-10-12T12:00:02Z',observed_at:'2026-10-12T11:59:00Z'}]));
   assert.match(await expiring.page.locator('.quota-values').first().innerText(), /Kvar 58 %/);
   await expiring.page.evaluate(ms => window.__setQuotaNow(ms), fixedNow + 3 * 1000);
