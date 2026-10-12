@@ -223,7 +223,7 @@ with the most expensive turns and text already kept by `top --keep-text`.
 Branches outside that retained context remain unknown. Shared reports omit this section.
 **Used in this period** follows the same filters and separates the client from
 local inference. Codex plan names come from recorded quota snapshots; missing
-plans remain unknown. A Claude plan can be supplied explicitly as a manual label:
+plans inherit a dated snapshot in the same session when available, otherwise they remain unknown. A Claude plan can be supplied explicitly as a manual label:
 
 ```bash
 tokenatlas plan set --harness claude max-5x
@@ -410,7 +410,7 @@ from the history with the selected table, so a relative price change can move al
 changes both the turns' costs and the calibration's denominator, so the other models' turns move too. **Codex plans:** readings and budgets are kept per plan (`--plan pro`, from the quota snapshot
 on the observations; default the plan seen in the window or on the latest Codex observation, an error when several plans were
 active in the window). Only requests on that plan count toward the cost seen and receive a calibrated share; a request without
-a quota snapshot has an unknown plan, is left out and makes a turn's share a floor. `quota set` without `--plan` fits any plan
+a dated snapshot in the same session has an unknown plan, is left out and makes a turn's share a floor. `quota set` without `--plan` fits any plan
 that has none of its own. Several accounts of one plan cannot be told apart by plan, so `quota calibrate` refuses a window in which more than one account's counter was detected (use `quota set --budget-usd` instead), and turns on such a plan get no calibrated share. Claude carries no plan information, so Claude readings are per harness. The budget is
 the median of cost seen / used over your readings, shown with the min-max spread and the reading count; readings older than 8
 windows are ignored (`--keep N`). A manual budget wins. Turns with no observed or estimated share then show
@@ -522,7 +522,7 @@ If you already have a statusline command, let TokenAtlas wrap it so the Claude p
 tokenatlas --db ~/.local/state/tokenatlas/history.sqlite3 statusline --wrap -- your-statusline-command --your-args
 ```
 
-The wrapped command is started directly with `shell=False`, so quote and operator characters in its arguments stay arguments. Its exit status is returned to Claude Code, and background descendants are stopped when the command ends so they cannot hold the statusline pipes open. Use `--wrap-timeout SECONDS` to change the limit (the default is 5 seconds; values must be finite and positive, up to 60). A timeout returns exit status `124` with a diagnostic. An inner `--no-record-quota` belongs to your command and does not turn off TokenAtlas recording; pass `--no-record-quota` before `--wrap` if you want to disable the outer recording.
+The wrapped command is started directly with `shell=False`, so quote and operator characters in its arguments stay arguments. Its exit status is returned to Claude Code, and its isolated process group (POSIX) or job (Windows) is stopped when the command ends. On POSIX a descendant that deliberately creates another process group can escape cleanup; killing the wrapper with SIGKILL also prevents its cleanup handlers from running. Cleanup waits remain bounded and failures produce diagnostics. Use `--wrap-timeout SECONDS` to change the limit (the default is 5 seconds; values must be finite and positive, up to 60). A timeout returns exit status `124` with a diagnostic. An inner `--no-record-quota` belongs to your command and does not turn off TokenAtlas recording; pass `--no-record-quota` before `--wrap` if you want to disable the outer recording.
 
 To adapt an existing Claude Code shell statusline, ask for a mergeable snippet and an undo snippet:
 
@@ -530,7 +530,7 @@ To adapt an existing Claude Code shell statusline, ask for a mergeable snippet a
 tokenatlas statusline --setup --wrap
 ```
 
-The setup command reads only the effective `settings.json` and `settings.local.json`, prints the complete existing `statusLine` object (including fields such as `padding` and `refreshInterval`) and never writes either file. It explicitly invokes the original shell source through POSIX `sh -c` or Windows `cmd /c` with quoting for that shell. Claude Code managed settings outside these two files are not available to this helper and must be handled through the management mechanism that owns them.
+The setup command reads only the effective `settings.json` and `settings.local.json`, prints the complete existing `statusLine` object (including fields such as `padding` and `refreshInterval`) and never writes either file. Use this only when the original command is compatible with POSIX `/bin/sh -c`. For Bash syntax, select `tokenatlas statusline --setup --wrap --wrap-shell bash`. The helper reports the effective settings file to edit and undo. On Windows, choose `--wrap-shell bash` for Git Bash or `--wrap-shell powershell` for Windows PowerShell; there is no implicit shell choice. Claude Code documents Git Bash when installed and PowerShell otherwise ([statusline documentation](https://code.claude.com/docs/en/statusline)). Select `cmd` only when cmd.exe actually runs the original command. The source passes through the outer shell as inert base64 on Windows, then runs in the explicitly selected shell. Git Bash is resolved from its configured absolute path or installation, and system shells from the Windows system directory; cwd/PATH lookalikes are ignored. Claude Code managed settings outside these two files are not available to this helper and must be handled through the management mechanism that owns them.
 
 ## Retired checkout scripts
 
@@ -825,7 +825,7 @@ an identifiable plan. The raw plan value appears in report tooltips and the
 per plan in `subscriptions`; mixed-plan turn counts may overlap, while each
 request's cost belongs to one plan.
 
-Missing Codex plans inherit the nearest snapshot in the same session. Separate
+Missing Codex plans on requests and zero-token quota events inherit the nearest dated direct snapshot in the same harness and session. This attribution is shared by report rows, quota windows, limit hits and budget calculations. Raw percentages and reset times stay unchanged. Separate
 accounts on the same plan are only inferred when their counters repeatedly
 conflict; numbered account labels are local to one quota window instance and
 cannot identify people or link five-hour and weekly accounts. No credentials

@@ -1,5 +1,8 @@
 import base64
+import contextlib
+import io
 import json
+import math
 import os
 import shlex
 import signal
@@ -112,6 +115,55 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(done.returncode, 124)
         self.assertLess(elapsed, 3)
         self.assertIn(b"timeout", done.stderr.lower())
+
+    def test_wrap_timeout_handles_second_communicate_timeout_with_bounded_wait(self):
+        class DoubleTimeoutProcess:
+            pid = 1
+            returncode = -9
+
+            def __init__(self):
+                self.communicate_timeouts = []
+                self.wait_timeouts = []
+
+            def communicate(self, *args, **kwargs):
+                timeout = kwargs.get("timeout")
+                self.communicate_timeouts.append(timeout)
+                raise subprocess.TimeoutExpired(["synthetic-child"], timeout)
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                if timeout is None:
+                    raise AssertionError("wrapped-process cleanup wait must be bounded")
+                self.returncode = -9
+                return self.returncode
+
+        process = DoubleTimeoutProcess()
+        stderr = io.StringIO()
+        with mock.patch.object(statusline.subprocess, "Popen", return_value=process), \
+                mock.patch.object(statusline, "_stop_wrapped"), \
+                contextlib.redirect_stderr(stderr):
+            result = statusline.run(
+                ["--no-record-quota", "--wrap", "--", "synthetic-child"],
+                db=self.db,
+                stdin=io.BytesIO(payload_bytes()),
+            )
+
+        self.assertEqual(result, 124)
+        self.assertEqual(process.communicate_timeouts[0], 5)
+        self.assertTrue(all(
+            isinstance(timeout, (int, float)) and math.isfinite(timeout) and timeout > 0
+            for timeout in process.communicate_timeouts
+        ))
+        self.assertTrue(process.wait_timeouts)
+        self.assertTrue(all(
+            isinstance(timeout, (int, float)) and math.isfinite(timeout) and timeout > 0
+            for timeout in process.wait_timeouts
+        ))
+        self.assertIn("timeout", stderr.getvalue().lower())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     @unittest.skipIf(os.name == "nt", "POSIX process groups")
     def test_timeout_kills_grandchild_that_holds_output_pipes(self):
@@ -359,6 +411,10 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual({p: p.read_bytes() for p in before}, before)
         text = done.stdout.decode()
+        add_instruction = text[:text.index("\n\n")]
+        undo_start = text.index("Undo:")
+        self.assertIn(str(settings_local), add_instruction)
+        self.assertIn(str(settings_local), text[undo_start:])
         objects = json_objects(text)
         status_objects = [obj["statusLine"] for obj in objects if isinstance(obj.get("statusLine"), dict)]
         wrapped = [line for line in status_objects if "--wrap" in str(line.get("command", ""))]
@@ -372,8 +428,8 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertIn("sh -c", text)
         shell_command = wrapped[0]["command"]
         shell_tokens = shlex.split(shell_command)
-        self.assertIn("sh", shell_tokens)
-        shell_index = shell_tokens.index("sh")
+        self.assertIn("/bin/sh", shell_tokens)
+        shell_index = shell_tokens.index("/bin/sh")
         self.assertEqual(shell_tokens[shell_index + 1], "-c")
         self.assertIn(local["statusLine"]["command"], shell_tokens[shell_index + 2:])
         executed = subprocess.run(["sh", "-c", shell_command], input=payload_bytes(), capture_output=True,
@@ -382,6 +438,31 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(executed.stdout, b"local 'quoted' valuelocal&operator")
         self.assertEqual(executed.stderr, b"")
         self.assertTrue((self.db.parent / statusline.QUOTA_NAME).is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX shell setup")
+    def test_setup_wrap_refuses_compound_existing_tokenatlas_command(self):
+        config = self.root / "claude"
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": "cd /srv/project && tokenatlas statusline"}
+        }))
+        done = run_cli(self.db, "statusline", "--setup", "--wrap",
+                       env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)))
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn(b"already uses TokenAtlas", done.stderr)
+        self.assertNotIn(b'"--wrap"', done.stdout)
+
+    @unittest.skipIf(os.name == "nt", "POSIX shell setup")
+    def test_setup_wrap_allows_quoted_tokenatlas_literal(self):
+        config = self.root / "claude"
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": "printf '%s' 'tokenatlas statusline'"}
+        }))
+        done = run_cli(self.db, "statusline", "--setup", "--wrap",
+                       env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(b'--wrap', done.stdout)
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher quoting")
     def test_setup_wrap_quotes_spaced_interpreter_module_fallback(self):
@@ -408,7 +489,7 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                                     "refreshInterval": 9}}
         (config / "settings.json").write_text(json.dumps(original))
         env = dict(ENV, CLAUDE_CONFIG_DIR=str(config), TOKENATLAS_WRAP_MARKER="synthetic")
-        done = run_cli(self.db, "statusline", "--setup", "--wrap", env=env)
+        done = run_cli(self.db, "statusline", "--setup", "--wrap", "--wrap-shell", "cmd", env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
         wrapped = [obj["statusLine"] for obj in json_objects(done.stdout.decode())
                    if isinstance(obj.get("statusLine"), dict) and "--wrap" in obj["statusLine"].get("command", "")]
@@ -431,6 +512,101 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(executed.stdout, original_output.stdout)
         self.assertEqual(executed.stderr, b"")
         self.assertTrue((self.db.parent / statusline.QUOTA_NAME).is_file())
+
+    def test_wrap_shell_base64_requires_an_explicit_shell(self):
+        encoded = base64.b64encode(b"printf '%s' encoded").decode("ascii")
+        done = run_cli(self.db, "statusline", "--wrap", "--wrap-shell-base64", encoded,
+                       input=payload_bytes())
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn(b"requires --wrap-shell", done.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows shell selection")
+    def test_setup_wrap_on_windows_requires_an_explicit_shell(self):
+        config = self.root / "claude"
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": "echo original"}
+        }))
+        done = run_cli(self.db, "statusline", "--setup", "--wrap",
+                       env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)))
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn(b"choose --wrap-shell", done.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows PowerShell")
+    def test_setup_wrap_preserves_native_powershell_source(self):
+        config = self.root / "claude"
+        config.mkdir()
+        source = '$quoted = "quoted \' value"; if ($true) { Write-Output ("$quoted|" + $env:TOKENATLAS_WRAP_MARKER) }'
+        (config / "settings.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": source}
+        }))
+        env = dict(ENV, CLAUDE_CONFIG_DIR=str(config), TOKENATLAS_WRAP_MARKER="native-marker")
+        done = run_cli(self.db, "statusline", "--setup", "--wrap", "--wrap-shell", "powershell", env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        wrapped = [obj["statusLine"] for obj in json_objects(done.stdout.decode())
+                   if isinstance(obj.get("statusLine"), dict) and "--wrap" in obj["statusLine"].get("command", "")]
+        self.assertEqual(len(wrapped), 1, done.stdout)
+        wrapped_command = wrapped[0]["command"]
+        self.assertIn("--wrap-shell powershell", wrapped_command)
+        encoded = wrapped_command.rsplit("--wrap-shell-base64 ", 1)[1].split()[0]
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), source)
+        self.assertEqual(statusline._command_state(wrapped_command), 'enabled')
+        executed = subprocess.run(statusline._source_command('powershell', wrapped_command),
+                                  input=payload_bytes(), capture_output=True, cwd=ROOT, env=env, timeout=10)
+        self.assertEqual(executed.returncode, 0, executed.stderr)
+        self.assertIn(b"quoted ' value|native-marker", executed.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows Git Bash")
+    def test_setup_wrap_preserves_native_git_bash_source(self):
+        config = self.root / "claude"
+        config.mkdir()
+        source = 'values=("quoted value" second); if [[ "${#values[@]}" -eq 2 ]]; then printf "%s\\n" "${values[@]}" | tr " " "_"; fi'
+        (config / "settings.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": source}
+        }))
+        done = run_cli(self.db, "statusline", "--setup", "--wrap", "--wrap-shell", "bash",
+                       env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        wrapped = [obj["statusLine"] for obj in json_objects(done.stdout.decode())
+                   if isinstance(obj.get("statusLine"), dict) and "--wrap" in obj["statusLine"].get("command", "")]
+        self.assertEqual(len(wrapped), 1, done.stdout)
+        wrapped_command = wrapped[0]["command"]
+        self.assertIn("--wrap-shell bash", wrapped_command)
+        encoded = wrapped_command.rsplit("--wrap-shell-base64 ", 1)[1].split()[0]
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), source)
+        self.assertEqual(statusline._command_state(wrapped_command), 'enabled')
+        executed = subprocess.run(statusline._source_command('bash', wrapped_command),
+                                  input=payload_bytes(), capture_output=True, cwd=ROOT,
+                                  env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)), timeout=10)
+        self.assertEqual(executed.returncode, 0, executed.stderr)
+        self.assertIn(b"quoted_value", executed.stdout)
+        self.assertIn(b"second", executed.stdout)
+
+    @unittest.skipIf(os.name == "nt", "POSIX Bash selection")
+    def test_setup_wrap_default_sh_refuses_bash_specific_source(self):
+        config = self.root / "claude"
+        config.mkdir()
+        source = 'values=(one two); if [[ "${values[0]}" == one ]]; then printf "%s\\n" "${values[@]}" | tr " " "_"; fi'
+        (config / "settings.json").write_text(json.dumps({
+            "statusLine": {"type": "command", "command": source}
+        }))
+        env = dict(ENV, CLAUDE_CONFIG_DIR=str(config))
+        refused = run_cli(self.db, "statusline", "--setup", "--wrap", env=env)
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn(b"Bash-specific", refused.stderr)
+
+        selected = run_cli(self.db, "statusline", "--setup", "--wrap", "--wrap-shell", "bash", env=env)
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        wrapped = [obj["statusLine"] for obj in json_objects(selected.stdout.decode())
+                   if isinstance(obj.get("statusLine"), dict) and "--wrap" in obj["statusLine"].get("command", "")]
+        self.assertEqual(len(wrapped), 1, selected.stdout)
+        shell_tokens = shlex.split(wrapped[0]["command"])
+        self.assertIn("/bin/bash", shell_tokens)
+        self.assertIn(source, shell_tokens)
+        executed = subprocess.run(['/bin/bash', '-c', wrapped[0]['command']],
+                                  input=payload_bytes(), capture_output=True, cwd=ROOT, env=env, timeout=5)
+        self.assertEqual(executed.returncode, 0, executed.stderr)
+        self.assertEqual(executed.stdout, b'one\ntwo\n')
 
     def test_doctor_recognizes_a_wrapped_tokenatlas_statusline(self):
         config = self.root / "claude"

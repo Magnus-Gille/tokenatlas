@@ -1,7 +1,8 @@
 import copy
 import unittest
+from unittest import mock
 
-from tokenatlas import prompts
+from tokenatlas import prompts, subscriptions
 from tokenatlas.subscriptions import PUBLIC_PLANS, annotate, label, plan_facts
 
 
@@ -95,6 +96,46 @@ class PlanFactsTests(unittest.TestCase):
         annotated = annotate(universe)
         result = plan_facts([annotated[1]], TABLE)
         self.assertEqual(result["plans"][0]["plan"], "plus")
+
+    def test_preannotated_rows_skip_annotation_without_changing_facts(self):
+        records = [row("plus", "2026-01-01T00:00:00Z", turn="plus", plan="plus"),
+                   row("team", "2026-01-01T00:01:00Z", turn="team", plan="team")]
+        assigned = [("codex", "s", "plus", "own"), ("codex", "s", "team", "own")]
+        expected = {"plans": [
+            {"plan": "plus", "label": "Plus", "observations": 1, "turns": 1, "cost": 2.0,
+             "priced": 1, "unpriced": 0, "lower_bound": False},
+            {"plan": "team", "label": "Business", "observations": 1, "turns": 1, "cost": 2.0,
+             "priced": 1, "unpriced": 0, "lower_bound": False},
+        ], "note": "A turn that contains requests under multiple plans is counted once in each plan bucket; plan turn counts may overlap."}
+        calls = []
+        original = subscriptions.annotate
+
+        def tracked(source):
+            calls.append(len(source))
+            return original(source)
+
+        with mock.patch.object(subscriptions, "annotate", side_effect=tracked):
+            found = plan_facts(records, TABLE, assigned=assigned)
+        self.assertEqual(found, expected)
+        self.assertEqual(calls, [])
+
+    def test_direct_quota_plan_overrides_stale_supplied_plan(self):
+        record = row("stale", "2026-01-01T00:00:00Z", plan="pro")
+        record["plan"] = "plus"
+        result = plan_facts([record], TABLE, assigned=[("codex", "s", "t", "own")])
+        self.assertEqual(result["plans"][0]["plan"], "pro")
+
+    def test_mixed_unannotated_rows_still_inherit_and_preserve_supplied_plan(self):
+        snapshot = row("snapshot", "2026-01-01T00:00:00Z", plan="plus", turn="snapshot")
+        inherited = row("inherited", "2026-01-03T00:00:00Z", turn="inherited")
+        supplied = row("supplied", "2026-01-04T00:00:00Z", turn="supplied")
+        supplied["plan"] = "pro"
+        records = [snapshot, inherited, supplied]
+        assigned = [("codex", "s", r["turn_id"], "own") for r in records]
+        result = plan_facts(records, TABLE, assigned=assigned)
+        by_plan = {item["plan"]: item for item in result["plans"]}
+        self.assertEqual(by_plan["plus"]["observations"], 2)
+        self.assertEqual(by_plan["pro"]["observations"], 1)
 
 
     def test_ambiguous_identity_does_not_inflate_plan_totals(self):

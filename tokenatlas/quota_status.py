@@ -14,6 +14,8 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tokenatlas import plan_metadata
+
 
 WINDOWS = frozenset((300, 10080))
 _WINDOW_NAMES = (("five_hour", 300), ("seven_day", 10080))
@@ -68,16 +70,14 @@ def _percent(value):
     return value
 
 
-def _scope(harness, quota):
+def _scope(harness, quota, record=None):
     """Return the stable internal scope key and payload fields."""
     limit_id = quota.get("limit_id") if isinstance(quota, dict) else None
     if not isinstance(limit_id, str) or not limit_id.strip() or limit_id == harness:
         account = None
     else:
         account = limit_id
-    plan = quota.get("plan_type") if isinstance(quota, dict) else None
-    if not isinstance(plan, str) or not plan.strip():
-        plan = None
+    plan = plan_metadata.plan_of(record if record is not None else {'quota': quota})
     return account, plan
 
 
@@ -105,9 +105,7 @@ def _record_readings(found, items, now, counters=None, excluded=frozenset()):
         quota = record.get("quota")
         if harness not in ("claude", "codex") or not isinstance(quota, dict):
             continue
-        account, plan = _scope(harness, quota)
-        if record.get('plan') not in (None, '', 'unknown'):
-            plan = record['plan']
+        account, plan = _scope(harness, quota, record)
         windows = quota.get("windows")
         if not isinstance(windows, (list, tuple)):
             continue

@@ -311,7 +311,7 @@ def recording_disabled_by_env(value=None):
 def _command_state(command):
     """Classify one statusLine command: 'foreign', 'disabled', 'enabled', or 'unknown' when it is tokenatlas's but too complex to read reliably
     (shell operators or substitutions). Leading VAR=value assignments are honoured for TOKENATLAS_NO_QUOTA."""
-    if not (isinstance(command, str) and 'tokenatlas' in command and 'statusline' in command):return 'foreign'
+    if not _tokenatlas_invocation(command):return 'foreign'
     # A generated wrapper quotes the entire inner shell command as one argument.
     # Its flags/operators are unrelated to the recorder's options.
     wrapper = None
@@ -324,6 +324,8 @@ def _command_state(command):
     except ValueError:
         return 'unknown'
     prefix = command.split(' -- ', 1)[0] if wrapper is not None else command
+    if prefix.lstrip().startswith('& ') and '--wrap-shell-base64' in parsed:
+        prefix = prefix.lstrip()[2:]  # PowerShell call operator in our encoded wrapper
     if re.search(r'[;|&`<>\n]|\$\(', prefix):return 'unknown'
     try:tokens = shlex.split(command)
     except ValueError:return 'unknown'
@@ -335,6 +337,40 @@ def _command_state(command):
         if token.startswith(NO_QUOTA_ENV + '='):local = match.group(1)
     if '--no-record-quota' in tokens or recording_disabled_by_env(local):return 'disabled'
     return 'enabled'
+
+
+def _tokenatlas_invocation(command, depth=0):
+    """Distinguish actual shell commands from quoted text naming TokenAtlas."""
+    if not isinstance(command, str) or depth > 3:return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|<>()')
+        lexer.whitespace_split = True
+        lexer.commenters = ''
+        tokens = list(lexer)
+    except ValueError:
+        return bool(re.search(r'\btokenatlas\b.*\bstatusline\b', command))
+    start = True
+    for i, token in enumerate(tokens):
+        if token and all(c in ';&|<>()' for c in token):
+            start = True
+            continue
+        if not start:continue
+        if re.match(r'[A-Za-z_][A-Za-z0-9_]*=', token) or token in ('exec', 'command', 'env') or token.startswith('-'):
+            continue
+        end = next((j for j in range(i + 1, len(tokens)) if tokens[j] and all(c in ';&|<>()' for c in tokens[j])), len(tokens))
+        args = tokens[i + 1:end]
+        name = token.replace('\\', '/').rsplit('/', 1)[-1].lower()
+        if name in ('tokenatlas', 'tokenatlas.exe', 'energy-monitor', 'energy-monitor.exe') and 'statusline' in args:return True
+        if name.startswith('python') and '-m' in args:
+            at = args.index('-m')
+            if args[at + 1:at + 2] == ['tokenatlas'] and 'statusline' in args[at + 2:]:return True
+        if name in ('sh', 'bash', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
+            for flag in ('-c', '-lc', '/c', '-Command', '-command'):
+                if flag in args:
+                    at = args.index(flag)
+                    if len(args) > at + 1 and _tokenatlas_invocation(args[at + 1], depth + 1):return True
+        start = False
+    return False
 
 
 def recording_state():
@@ -469,6 +505,7 @@ def _effective_statusline():
     """Read the same user settings precedence as doctor, without writing it."""
     base = settings_path()
     found = None
+    found_path = None
     for path in (base, base.with_name('settings.local.json')):
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
@@ -476,31 +513,52 @@ def _effective_statusline():
             continue
         if isinstance(data, dict) and 'statusLine' in data:
             found = data['statusLine']
+            found_path = path
     if not isinstance(found, dict) or found.get('type', 'command') != 'command' or not isinstance(found.get('command'), str) or not found['command'].strip():
         raise ValueError('no command statusLine found in Claude settings; configure your own command first')
-    return dict(found)
+    return dict(found), found_path
 
 
-def wrap_setup_text(db=None):
-    original = _effective_statusline()
-    if _command_state(original['command']) in ('enabled', 'disabled'):
+def wrap_setup_text(db=None, shell=None):
+    original, target = _effective_statusline()
+    if _command_state(original['command']) in ('enabled', 'disabled', 'unknown'):
         raise ValueError('the effective statusLine already uses TokenAtlas; keep it or restore your original command first')
+    if shell is None and os.name == 'nt':
+        raise ValueError('choose --wrap-shell bash or powershell to match the shell Claude Code uses for your statusLine command; cmd is only for an explicitly cmd-based command')
+    shell = shell or 'sh'
+    if shell == 'sh' and re.search(r'\[\[|\$\x27|(?:^|[;\n])\s*source\s|\b\w+\s*=\s*\(', original['command']):
+        raise ValueError('the command contains Bash-specific syntax; use --wrap-shell bash if Bash runs your original statusLine')
+    shell_command = _source_command(shell, original['command'])
     command = executable()
-    command = _launcher_text(command)
-    if db is not None:command += ' --db ' + _quote(str(Path(db).expanduser().absolute()))
-    if os.name == 'nt':
-        # cmd.exe expands %VAR% and metacharacters even inside several forms of
-        # quotes. Carry the source as inert base64, decode only inside TokenAtlas.
-        encoded = base64.b64encode(original['command'].encode('utf-8')).decode('ascii')
-        suffix = ' statusline --wrap --wrap-shell-base64 ' + encoded
+    if os.name == 'nt':command = command.replace('\\', '/')
+    if os.name == 'nt' and shell == 'cmd':
+        launcher = command.removesuffix(' -m tokenatlas')
+        paths = [launcher] + ([str(Path(db).expanduser().absolute())] if db is not None else [])
+        if any(WINDOWS_UNSAFE.search(path) for path in paths):
+            raise ValueError('cmd setup requires plain launcher and database paths; cmd metacharacters cannot be quoted safely')
+    if shell == 'powershell':
+        suffix = ' -m tokenatlas'
+        prefix = command[:-len(suffix)] if command.endswith(suffix) else command
+        command = "& '" + prefix.replace("'", "''") + "'" + (suffix if command.endswith(suffix) else '')
+        quote = lambda value: "'" + value.replace('\\', '/').replace("'", "''") + "'"
     else:
-        suffix = ' statusline --wrap -- sh -c ' + _quote(original['command'])
+        command = _launcher_text(command, windows=os.name == 'nt' and shell == 'cmd')
+        quote = (lambda value: _quote(value, True)) if os.name == 'nt' and shell == 'cmd' else shlex.quote
+    if db is not None:command += ' --db ' + quote(str(Path(db).expanduser().absolute()))
+    if os.name == 'nt':
+        # Carry source as inert base64 through the shell Claude uses. Re-run it
+        # only in the explicitly selected matching shell inside our job.
+        encoded = base64.b64encode(original['command'].encode('utf-8')).decode('ascii')
+        suffix = ' statusline --wrap --wrap-shell ' + shell + ' --wrap-shell-base64 ' + encoded
+    else:
+        suffix = ' statusline --wrap -- ' + ' '.join(shlex.quote(arg) for arg in shell_command)
     wrapped = dict(original, command=command + suffix)
     snippet = json.dumps({'statusLine': wrapped}, indent=2)
     undo = json.dumps({'statusLine': original}, indent=2)
-    return (f'Add this to {settings_path()} (merge into the effective settings; this command never edits files):\n\n{snippet}\n\n'
-            f'Undo: restore the original statusLine:\n\n{undo}\n\n'
+    return (f'Add this to {target} (merge into the effective settings; this command never edits files):\n\n{snippet}\n\n'
+            f'Undo: restore the original statusLine in {target}:\n\n{undo}\n\n'
             'Quota is recorded before your command runs. Its stdin, stdout, stderr and exit code are preserved; a timeout returns 124. '
+            f'This snippet assumes {shell} runs your original command; choose --wrap-shell to match it. '
             'Managed settings can prevent statusLine changes. Check the effective command with tokenatlas doctor.')
 
 
@@ -522,6 +580,49 @@ def _system_command(name):
     count = api.GetSystemDirectoryW(buffer, len(buffer))
     if not 0 < count < len(buffer):raise ctypes.WinError(ctypes.get_last_error())
     return str(Path(buffer.value) / name)
+
+
+def _git_bash():
+    """Resolve the configured or installed Git Bash, never a cwd/PATH executable."""
+    override = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
+    if override:
+        path = Path(override)
+        if not path.is_absolute() or not path.is_file():
+            raise ValueError('CLAUDE_CODE_GIT_BASH_PATH must name the existing absolute Git Bash executable')
+        return str(path.resolve())
+    import winreg
+    roots = []
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (0, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, r'SOFTWARE\GitForWindows', 0, winreg.KEY_READ | view) as key:
+                    folder, _ = winreg.QueryValueEx(key, 'InstallPath')
+                if isinstance(folder, str) and Path(folder).is_absolute():roots.append(Path(folder))
+            except OSError:continue
+    drive = Path(_system_command('cmd.exe')).anchor
+    roots += [Path(drive) / 'Program Files' / 'Git', Path(drive) / 'Program Files (x86)' / 'Git']
+    for root in roots:
+        for relative in ('bin/bash.exe', 'usr/bin/bash.exe'):
+            path = root / relative
+            if path.is_file():return str(path.resolve())
+    raise ValueError('Git Bash was not found; use the existing CLAUDE_CODE_GIT_BASH_PATH or select the shell that runs your statusLine')
+
+
+def _source_command(shell, source):
+    """Explicit matching shell for the original command, separate from argv wrapping."""
+    if shell in ('sh', 'bash'):
+        if os.name == 'nt':
+            if shell != 'bash':raise ValueError('use bash for Git Bash on Windows')
+            executable = _git_bash()
+        else:
+            executable = '/bin/' + shell
+            if not Path(executable).is_file():raise ValueError(f'{executable} is unavailable; run your shell explicitly with --wrap -- COMMAND')
+        return [executable, '-c', source]
+    if os.name != 'nt':raise ValueError(f'{shell} setup is available only on Windows')
+    if shell == 'powershell':
+        encoded = base64.b64encode(source.encode('utf-16-le')).decode('ascii')
+        return [_system_command('WindowsPowerShell/v1.0/powershell.exe'), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]
+    return [_system_command('cmd.exe'), '/d', '/s', '/c', source]
 
 
 _WRAP_HELPER = '''import json, os, subprocess, sys
@@ -553,6 +654,8 @@ def _stop_wrapped(process, job=None):
     else:
         try:os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:pass
+        except PermissionError as exc:
+            print(f'tokenatlas statusline: cannot stop wrapped process group: {exc}', file=sys.stderr)
 
 
 def _run_wrapped(args, db, stdin, now):
@@ -590,7 +693,7 @@ def _run_wrapped(args, db, stdin, now):
                                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 job.assign(process)
                 options = {'argv': args.command}
-                if args.wrap_shell_base64 is not None:options['shell_source'] = args.command[-1]
+                if args.wrap_shell_base64 is not None and args.wrap_shell == 'cmd':options['shell_source'] = args.command[-1]
                 raw = json.dumps(options).encode('utf-8') + b'\n' + raw
             else:
                 process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=True)
@@ -602,7 +705,8 @@ def _run_wrapped(args, db, stdin, now):
         process.communicate(raw, timeout=args.wrap_timeout)
     except subprocess.TimeoutExpired:
         _stop_wrapped(process, job)
-        process.communicate(timeout=1)
+        try:process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:pass  # cleanup remains bounded even for an uninterruptible child
         print('tokenatlas statusline: wrapped command timeout', file=sys.stderr)
         return 124
     finally:
@@ -612,7 +716,9 @@ def _run_wrapped(args, db, stdin, now):
         try:
             if process is not None:
                 _stop_wrapped(process, job)
-                process.wait()
+                try:process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    print('tokenatlas statusline: wrapped process cleanup deadline exceeded', file=sys.stderr)
             elif job is not None:job.close()
         finally:
             for signum, handler in previous.items():signal.signal(signum, handler)
@@ -628,6 +734,7 @@ def run(argv, db=None, stdin=None, now=None):
     parser.add_argument('--no-record-quota', action='store_true', help=f'Do not append the 5-hour and weekly quota readings to {QUOTA_NAME} next to the history (also TOKENATLAS_NO_QUOTA=1).')
     parser.add_argument('--wrap', action='store_true', help='Record quota first, then run the command after -- with unchanged stdin and output.')
     parser.add_argument('--wrap-timeout', type=_wrap_timeout, default=5, metavar='SECONDS', help='Wrapped command deadline (default 5 seconds; at most 60).')
+    parser.add_argument('--wrap-shell', choices=('sh', 'bash', 'powershell', 'cmd'), help='Shell Claude uses for the original command. With --setup --wrap: sh by default on POSIX; required on Windows (Git Bash or PowerShell).')
     parser.add_argument('--wrap-shell-base64', help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     try:
@@ -647,16 +754,21 @@ def run(argv, db=None, stdin=None, now=None):
         except (ValueError, UnicodeError) as exc:
             print(f'tokenatlas statusline: invalid encoded command: {exc}', file=sys.stderr)
             return 2
-        try:shell = _system_command('cmd.exe') if os.name == 'nt' else 'sh'
-        except OSError as exc:
+        if args.wrap_shell is None:
+            print('tokenatlas statusline: encoded command requires --wrap-shell', file=sys.stderr)
+            return 2
+        try:args.command = _source_command(args.wrap_shell, source)
+        except (OSError, ValueError) as exc:
             print(f'tokenatlas statusline: cannot resolve shell: {exc}', file=sys.stderr)
             return 127
-        args.command = [shell, '/d', '/s', '/c', source] if os.name == 'nt' else [shell, '-c', source]
     if args.command and not args.wrap:
         print('TokenAtlas')
         return 0
+    if args.wrap_shell is not None and not (args.setup and args.wrap) and args.wrap_shell_base64 is None:
+        print('tokenatlas statusline: --wrap-shell requires --setup --wrap or encoded shell source', file=sys.stderr)
+        return 2
     if args.setup:
-        try:print(wrap_setup_text(db) if args.wrap else setup_text(db))
+        try:print(wrap_setup_text(db, args.wrap_shell) if args.wrap else setup_text(db))
         except ValueError as exc:
             print(f'tokenatlas statusline: {exc}', file=sys.stderr)
             return 2

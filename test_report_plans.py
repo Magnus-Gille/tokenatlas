@@ -67,6 +67,23 @@ class ReportPlans(unittest.TestCase):
         self.assertEqual(report["quota_windows"][0]["plan"], "pro")
         self.assertIn("plan", decode_html(render_report(report))["columns"]["dict"])
 
+    def test_quota_event_and_request_share_inherited_window(self):
+        rows = [observation('anchor', ts='2026-10-12T10:00:00+00:00', harness='codex',
+                            session='same', quota=quota('pro', 80)),
+                observation('request', ts='2026-10-12T11:00:00+00:00', harness='codex',
+                            session='same', quota=quota(None, 90))]
+        event = observation('event', ts='2026-10-12T11:30:00+00:00', harness='codex',
+                            session='same', quota=dict(quota(None, 100), status='event', reached='window_full'))
+        report = build_report(rows[1:], {}, universe=rows, quota_events=[event], redact=False, now=NOW)
+        self.assertEqual(len(report['quota_windows']), 1)
+        self.assertEqual(report['quota_windows'][0]['plan'], 'pro')
+        self.assertEqual(report['quota_windows'][0]['peak_percent'], 100)
+        self.assertTrue(report['quota_windows'][0]['hit'])
+        self.assertEqual({row['plan_type'] for row in report['quota_status']}, {'pro'})
+        self.assertEqual(report['quota_status'][0]['used_percent'], 100)
+        self.assertNotIn('plan', event)
+        self.assertIsNone(event['quota']['plan_type'])
+
 
 if __name__ == "__main__":
     unittest.main()

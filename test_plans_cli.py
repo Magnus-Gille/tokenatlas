@@ -77,6 +77,22 @@ class PlansCli(Base):
         self.assertEqual(code, 0, err)
         self.assertEqual([p['turn_id'] for p in json.loads(out)['prompts']], ['team-turn'])
 
+    def test_top_budget_uses_same_inherited_plan_as_quota_show(self):
+        self.insert([row('snapshot', '2026-09-03T09:00:00+00:00', None, plan='pro'),
+                     row('request', '2026-09-03T10:00:00+00:00', 'inherited')])
+        code, out, err = self.run_cli('quota', 'set', '--harness', 'codex', '--plan', 'pro',
+                                      '--window', '5h', '--budget-usd', '100')
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_cli('quota', 'show', '--json')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)['derived'][0]['plan'], 'pro')
+        code, out, err = self.top('--json')
+        self.assertEqual(code, 0, err)
+        turn = next(p for p in json.loads(out)['prompts'] if p['turn_id'] == 'inherited')
+        self.assertEqual(turn['plan'], 'pro')
+        self.assertEqual(turn['quota_share']['label'], 'calibrated')
+        self.assertEqual(turn['quota_share']['delta_percent'], 1.0)
+
     def test_top_marks_unknown_and_mixed_plans_and_text_uses_labels(self):
         self.insert([
             row('unknown', '2026-09-03T10:00:00+00:00', 'unknown-turn', session='unknown'),

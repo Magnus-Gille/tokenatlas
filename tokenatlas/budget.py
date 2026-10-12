@@ -16,7 +16,7 @@ from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tokenatlas import prompts, quota_share
+from tokenatlas import plan_metadata, prompts, quota_share
 
 FILE = 'quota-budget.json'
 WINDOWS = {'5h': 300, '7d': 10080}
@@ -103,9 +103,8 @@ def save(path, data):
 
 
 def plan_of(r):
-    """The plan a Codex request ran under, from the quota snapshot on the observation (lower case); None when it carries none. Claude has no plan information."""
-    plan = (r.get('quota') or {}).get('plan_type')
-    return plan.strip().lower() if isinstance(plan, str) and plan.strip() else None
+    """The canonical plan a Codex request ran under, if known."""
+    return plan_metadata.plan_of(r)
 
 
 def multi_counter_plans(records, start=None, end=None):
