@@ -154,14 +154,15 @@ def context_lines(ctx,text=None):
 
 def render_top(result,texts=None,contexts=None):
     """Compact table of ranked turns; cost is list-price, '≥' when some requests could not be priced. Stored context or preview goes on indented lines."""
-    from tokenatlas import credits as credit_rates, limits, quota_share
+    from tokenatlas import credits as credit_rates, limits, quota_share, subscriptions
     zone=ZoneInfo(DEFAULT_TIMEZONE)
-    rows=[('#','when','harness','project','models','req','sub','Mtok','cost')]  # a Codex/OpenAI turn with a credit rate adds its credit equivalent to the cost cell; the resume command goes on its own line
+    rows=[('#','when','harness','project','plan','models','req','sub','Mtok','cost')]  # a Codex/OpenAI turn with a credit rate adds its credit equivalent to the cost cell; the resume command goes on its own line
     for i,p in enumerate(result['prompts'],1):
         cost='n/a' if p['cost'] is None else ('' if p['cost_complete'] else '≥')+f"${p['cost']:.2f}"
         if p.get('credits') is not None:cost+=f" ({'≥' if p['credits_lower_bound'] else '≈'} {credit_rates.fmt(p['credits'])} credits)"
         when=datetime.fromisoformat(p['first_ts']).astimezone(zone).strftime('%Y-%m-%d %H:%M')
-        rows.append((str(i),when,p['harness'],p['project_label'] or '-',','.join(p['models']) or '-',str(p['requests']),
+        rows.append((str(i),when,p['harness'],p['project_label'] or '-',subscriptions.label(p.get('plan')),
+                     ','.join(p['models']) or '-',str(p['requests']),
                      str(p['subagents']),f"{p['total_tokens']/1e6:.2f}",cost))
     widths=[max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     lines=['  '.join(c.ljust(w) for c,w in zip(r,widths)).rstrip() for r in rows]
@@ -176,6 +177,18 @@ def render_top(result,texts=None,contexts=None):
         if command:shown.append('    resume: '+command)
     lines=[lines[0],*shown]
     if len(result['prompts'])<result['total_prompts']:lines.append(f"showing {len(result['prompts'])} of {result['total_prompts']} turns")
+    return '\n'.join(lines)
+
+
+def _render_plan_facts(facts):
+    """Render the additive plan partition in the insights text output."""
+    lines=['', 'Subscriptions by plan:']
+    for plan in facts.get('plans', ()):
+        cost='n/a' if not plan['priced'] else ('≥' if plan.get('lower_bound') else '') + f"${plan['cost']:.2f}"
+        lines.append(f"  {plan['label']}: {plan['observations']:,} observations; {plan['turns']:,} turns; "
+                     f"priced cost {cost}; unknown {plan['unpriced']:,}")
+    if facts.get('note'):
+        lines.append(f"  {facts['note']}")
     return '\n'.join(lines)
 
 
@@ -347,7 +360,7 @@ def _main(argv=None):
         if hasattr(stream,'reconfigure'):stream.reconfigure(errors='replace')
     done=_statusline_dispatch(sys.argv[1:] if argv is None else argv)
     if done is not None:return done
-    from tokenatlas import insights, limits, pricing, prompt_store, prompts, quota_share, sessions, why
+    from tokenatlas import insights, limits, pricing, prompt_store, prompts, quota_share, sessions, subscriptions, why
     from tokenatlas.history import History, summarize
     from tokenatlas.report import build_report, coverage_key, read_report_state, render_report, report_state, write_report
     if Path(sys.argv[0]).name.lower() in ('energy-monitor','energy-monitor.exe','energy-monitor-script.py'):
@@ -411,6 +424,7 @@ def _main(argv=None):
     top.add_argument('--end',help='Exclusive ISO timestamp; offset required.')
     top.add_argument('--harness',choices=('claude','codex','pi','opencode'))
     top.add_argument('--project',help='Exact full project identity, not basename.')
+    top.add_argument('--plan',help='Canonical subscription plan label to include (case-insensitive; use unknown for missing metadata).')
     top.add_argument('--prices',type=Path,help='Override the price table.')
     top.add_argument('--json',action='store_true')
     top.add_argument('--keep-text',action='store_true',help='Store the text and context of the current global top -n turns in top-prompts.json next to the history (0600).')
@@ -492,6 +506,9 @@ def _main(argv=None):
     provider_sub.add_parser('show',help='Show configured local provider names.')
     commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
     args=parser.parse_args(argv)
+    if args.command=='top' and args.plan is not None:
+        args.plan=subscriptions._plan(args.plan)
+        if args.plan is None:parser.error('--plan must not be empty')
     if args.command=='upgrade':
         if args.db is not None:
             parser.error('--db cannot be used with upgrade')
@@ -690,10 +707,12 @@ def _main(argv=None):
                     done()
                     print(json.dumps({'forgotten':str(store)}));return 0
                 table=pricing.load_prices(args.prices)
-                with progress.step('Read history'):everything=history.records()  # rank over the whole history; the filters only choose which rows contribute
+                with progress.step('Read history'):everything=subscriptions.annotate(history.records())  # resolve inheritance on the whole history before filters choose contributing rows
                 assigned=prompts.assign_prompts(everything)
-                filtered=any(x is not None for x in (start,end,args.harness,args.project))
+                filtered=any(x is not None for x in (start,end,args.harness,args.project,args.plan))
                 selected=_select_records(everything,start,end,args.harness,args.project) if filtered else everything
+                if args.plan is not None:
+                    selected=[r for r in selected if r.get('plan')==args.plan]
                 keep={prompts.ident(r) for r in selected} if filtered else None
                 with progress.step('Rank turns'):
                     global_ranked=prompts.top_prompts(everything,table,args.limit,args.by,assigned=assigned)
@@ -726,11 +745,17 @@ def _main(argv=None):
                 now=datetime.now(ZoneInfo('UTC'))
                 history.connection.execute('BEGIN')
                 table=pricing.load_prices(args.prices);memo={}
-                with progress.step('Read history'):everything=history.records()
+                with progress.step('Read history'):everything=subscriptions.annotate(history.records())
                 assigned=prompts.assign_prompts(everything)
                 with progress.step('Limit hits'):hits=limits.limit_hits(everything,history.limit_events(),table,assigned=assigned)
                 with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,assigned=assigned,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
                 with progress.step('Cost facts'):result=insights.cost_facts(everything,table,start,end,hits=hits,quota=shares,memo=memo)
+                selected_indices=[index for index, record in enumerate(everything)
+                                  if (start is None or prompts._t(record['ts']) >= start)
+                                  and (end is None or prompts._t(record['ts']) < end)]
+                selected=[everything[index] for index in selected_indices]
+                selected_assigned=[assigned[index] for index in selected_indices]
+                result['subscriptions']=subscriptions.plan_facts(selected,table,assigned=selected_assigned)
                 # Bind evidence to retained collection state, not export time.
                 # This keeps an unchanged history and fixed bounds reproducible.
                 imports=[json.loads(row[0]) for row in history.connection.execute('SELECT data FROM imports')]
@@ -755,6 +780,7 @@ def _main(argv=None):
                 done()
                 if not args.json:
                     print(insights.render_text(result))
+                    print(_render_plan_facts(result['subscriptions']))
                     evidence=result['token_efficiency']
                     print('\nToken efficiency (known tokens; not a measure of waste)')
                     print(f"  Window: {evidence['window']['start']} to {evidence['window']['end']} ({args.timezone}); snapshot {evidence['window']['snapshot']}")

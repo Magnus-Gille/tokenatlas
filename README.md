@@ -796,3 +796,19 @@ python3 scripts/demo.py OUTDIR [--seed N] [--no-screens] [--shared]
 ```
 
 It builds a temporary HOME with synthetic Claude Code, Codex, Pi and OpenCode logs (about 30 days in September 2026, three fictional projects under `/Users/demo/code`, dummy lorem-style content), runs `python3 -m tokenatlas` against it (`refresh`, `overhead --refresh`, `session demo-orchestrated`, `report --html`) and writes `demo-report.html`, `session.txt`, `overhead.txt`, `demo-summary.json` and, unless `--no-screens`, `overview.png`, `session.png` and `overhead.png`. Real logs and state are never read. The HTML report keeps the fictional project labels by default; `--shared` redacts them. The screenshots need Playwright (`PLAYWRIGHT_MODULE`, else a cached npx copy) via `scripts/demo_screens.cjs`.
+
+### Usage by subscription
+
+The offline report includes a Subscription / Abonnemang filter and column.
+`tokenatlas top --plan team` selects Business usage; `--plan pro` selects Pro,
+`--plan prolite` selects Pro Lite, and `--plan unknown` selects requests without
+an identifiable plan. The raw plan value appears in report tooltips and the
+`plan` field of top's JSON. `tokenatlas insights --json` adds cost and turn counts
+per plan in `subscriptions`; mixed-plan turn counts may overlap, while each
+request's cost belongs to one plan.
+
+Missing Codex plans inherit the nearest snapshot in the same session. Separate
+accounts on the same plan are only inferred when their counters repeatedly
+conflict; numbered account labels are local to one quota window instance and
+cannot identify people or link five-hour and weekly accounts. No credentials
+or account files are inspected. See [quota details](docs/quota.md).

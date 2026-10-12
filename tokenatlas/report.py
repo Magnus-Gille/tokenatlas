@@ -17,6 +17,8 @@ from tokenatlas import budget, credits as credit_rates, energy, insights, limits
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
 
+from tokenatlas import subscriptions as subscription_plans
+
 PUBLIC_NAMES = dict(
     provider=frozenset('anthropic openai openai-codex openrouter opencode berget google mistral'.split()),
     origin=frozenset(('cli', 'claude-desktop', 'sdk-cli', 'sdk-py', 'sdk-ts', 'codex-tui', 'codex_cli_rs',
@@ -46,11 +48,12 @@ def public_model_checker(*tables):
 # 2: public client labels, local-inference counts and public plan tiers are allowed (#146); work context remains private.
 # 3: compact public cloud-reference rate cards are allowed for explicit local what-if comparisons.
 # 4: canonical public speed and service-tier values are included in request analytics metadata.
-REDACTION_REVISION = 4
+# 5: canonical subscription plans are included in request rows and filters.
+REDACTION_REVISION = 5
 INSIGHT_DAYS = 30
 MAX_QUOTA_WINDOWS = 12
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-DICT_FIELDS = ('harness', 'provider', 'model', 'effort', 'thread_kind', 'origin', 'turn_confidence', 'session',
+DICT_FIELDS = ('harness', 'provider', 'model', 'effort', 'thread_kind', 'origin', 'turn_confidence', 'plan', 'session',
                'parent_session', 'turn_id', 'agent', 'project_id', 'project_label', 'warnings')
 WARNING_SEPARATOR = '\x1f'
 LANGS = ('auto', 'sv', 'en')
@@ -58,6 +61,23 @@ LANGS = ('auto', 'sv', 'en')
 # u unknown project, t turn, w warning. They only ever appear as dictionary entries, never per row.
 CODES = {'Projekt': 'p', 'Tur': 't', 'Varning': 'w'}
 UNKNOWN_PROJECT, PROJECT = '\x01u', '\x01p'
+
+
+def _plan_public_names():
+    return subscription_plans.PUBLIC_PLANS
+
+
+def _record_key(record):
+    return (record.get('provider'), record.get('harness'), record.get('machine'), record.get('id'), record.get('ts'))
+
+
+def _annotate_records(records, universe):
+    """Resolve plans over `universe`, then project those annotated copies onto `records`."""
+    history = list(universe if universe is not None else records or ())
+    annotated = subscription_plans.annotate(history)
+    by_key = {_record_key(record): record for record in annotated}
+    selected = [by_key.get(_record_key(record), record) for record in (records or ())]
+    return selected, (annotated if universe is not None else selected)
 
 
 def encode_columns(rows):
@@ -139,11 +159,11 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
     if redact:
         public = public_model_checker(pricing.load_prices(), credit_rates.packaged())
         cloud_references = [r for r in cloud_references if r['provider'] in PUBLIC_NAMES['provider'] and public(r['provider'], r['model'])]
-    safe_plan = lambda value, kind: value if not redact or value in usage_profiles.KNOWN_PLAN_NAMES else f'{kind} plan'
+    safe_plan = lambda value, kind: value if not redact or value in _plan_public_names() else f'{kind} plan'
     plans, seen = [], set()
     for i, record in enumerate(records):
         quota = record.get('quota') or {}
-        raw = quota.get('plan_type') if record.get('harness') == 'codex' else None
+        raw = (record.get('plan') if record.get('plan') not in (None, 'unknown') else quota.get('plan_type')) if record.get('harness') == 'codex' else None
         if not raw:
             continue
         plan = safe_plan(str(raw), 'Codex')
@@ -212,9 +232,14 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     table = table or pricing.load_prices()
     credit_table = credit_table or credit_rates.packaged()
     zone = ZoneInfo(timezone_name)
-    assignment_by_row = None if assigned is None else {id(r): a for r, a in zip(records, assigned)}
+    original_records = list(records or ())
+    original_assigned = None if assigned is None else {_record_key(record): value for record, value in zip(original_records, assigned)}
+    records, annotated_universe = _annotate_records(original_records, universe)
+    if universe is not None:
+        universe = annotated_universe
+    assignment_by_row = original_assigned
     records = sorted(records, key=lambda r: (r['ts'], r['harness'], r['id']))
-    if assignment_by_row is not None:assigned = [assignment_by_row[id(r)] for r in records]
+    if assignment_by_row is not None:assigned = [assignment_by_row[_record_key(r)] for r in records]
     del assignment_by_row
     is_public_model = public_model_checker(pricing.load_prices(), credit_rates.packaged()) if redact else None  # the packaged tables, never a caller-supplied one: they decide what is public
     aliases = {}
@@ -239,6 +264,8 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
             return value
         if kind == 'model':
             public = record.get('provider') in PUBLIC_NAMES['provider'] and is_public_model(record.get('provider'), value)
+        elif kind == 'plan':
+            public = value in _plan_public_names() or value == 'unknown'
         elif record is None:
             public = CONSERVATIVE_NAME.fullmatch(str(value))
         else:
@@ -257,7 +284,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         for index, record in enumerate(records):
             dt = datetime.fromisoformat(record['ts']).astimezone(zone)
             row = {key: metadata(key, record.get(key), record) for key in
-                   ('harness', 'provider', 'model', 'effort', 'thread_kind', 'origin', 'turn_confidence')}
+                   ('harness', 'provider', 'model', 'effort', 'thread_kind', 'origin', 'turn_confidence', 'plan')}
             oid = alias('Observation', record.get('id')) if redact else record.get('id')
             row['id'] = None if oid is None else int(oid.rsplit(' ', 1)[1]) if redact else oid
             for key, kind in (('session', 'Session'),
@@ -291,13 +318,24 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         coverage['ranges'].append(dict(harness=harness, observations=len(group),
                                        first_event=group[0]['ts'], last_event=group[-1]['ts']))
     now = now or datetime.now(timezone.utc)
-    status_rows = quota_status.collect(whole, quota_events or (), claude=claude_quota, now=now) if quota else None
     display = lambda provider, model: metadata('model', model, {'provider': provider})
     memo = {'assigned': {id(r): a for r, a in zip(whole, whole_assigned)}}
     cost_of = insights.memo_cost(table, memo)
+    plan_facts = subscription_plans.plan_facts(records, table, assigned=assigned)
+    if redact:
+        for fact in plan_facts.get('plans', []):
+            raw = fact.get('plan')
+            if raw not in _plan_public_names() and raw != 'unknown':
+                safe = alias('plan', raw)
+                fact['plan'] = safe
+                fact['label'] = safe
     # one captured `now` is the exclusive end of the 30-day window: later-dated observations are not 'the last 30 days'
     with progress.step('Quota shares and cost insights'):
         snapshots = quota_share.snapshots_from_records(whole, whole_assigned, quota_events or (), claude=claude_quota) if quota else []  # one per window per request that carries a quota
+        if quota:
+            status_rows = quota_status.collect(whole, quota_events or (), claude=claude_quota, now=now, snapshots=snapshots)
+        else:
+            status_rows = None
         shares = quota_share.turn_shares(whole, snapshots, table, cost_of) if snapshots else None
         windows = [dict(id=wid, **insights.public(insights.cost_facts(records, table, start, end, name=display, memo=memo, credit_table=credit_table, hits=limit_hits, universe=universe, quota=shares)))
                    for wid, start, end in (('30d', now - timedelta(days=INSIGHT_DAYS), now), ('all', None, None))]
@@ -376,12 +414,15 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                   timezone=timezone_name, lang=lang, privacy='redacted' if redact else 'local',
                   prices_retrieved=table.get('retrieved_on'),
                   columns=encode_columns(rows), coverage=coverage, analytics_metadata=analytics_metadata,
-                  energy=dict(per_1k=energy.PER_1K, uncertainty=energy.UNCERTAINTY, tier_multipliers=energy.TIERS, multipliers=weights), insights=dict(days=INSIGHT_DAYS, big_turn=insights.BIG_TURN, windows=windows), usage=usage)
+                  energy=dict(per_1k=energy.PER_1K, uncertainty=energy.UNCERTAINTY, tier_multipliers=energy.TIERS, multipliers=weights),
+                  insights=dict(days=INSIGHT_DAYS, big_turn=insights.BIG_TURN, windows=windows,
+                                plans=plan_facts.get('plans', []), plan_note=plan_facts.get('note')),
+                  usage=usage)
     if quota:
         report['quota_status'] = quota_status.redact(
             status_rows, shared=redact,
             account_alias=lambda value: alias('limit', value),
-            plan_alias=lambda value: value if value in usage_profiles.KNOWN_PLAN_NAMES else alias('plan', value),
+            plan_alias=lambda value: value if value in _plan_public_names() else alias('plan', value),
         )
     if prompt_texts is not None:
         report['prompt_texts'] = {shown[tuple(k)]: t for k, t in prompt_texts.items() if t and tuple(k) in shown}
@@ -443,6 +484,8 @@ def _quota_payload(shares, windows, shown, metadata, account):
     if windows:
         out['quota_windows'] = [dict(harness=metadata('harness', w['harness'], w), account=None if w['account'] == w['harness'] else account(w['account']), minutes=w['minutes'], resets_at=w['resets_at'], start=w['start'],
                                      peak_percent=w['peak_percent'], peak_at=w['peak_at'], hit=w['hit'], snapshots=w['snapshots'],
+                                     plan=metadata('plan', w.get('plan_type') or 'unknown', {'provider': w['harness']}),
+                                     **({'inferred_account': w['inferred_account']} if isinstance(w.get('inferred_account'), int) and not isinstance(w.get('inferred_account'), bool) else {}),
                                      cost=w.get('cost'), unpriced_requests=w.get('unpriced_requests'), uncertain_requests=w.get('uncertain_requests', 0), lower_bound=w.get('lower_bound', False)) for w in windows]
     return out
 

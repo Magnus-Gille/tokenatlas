@@ -704,10 +704,11 @@ class Surfaces(unittest.TestCase):
         import json
         payload = self.build(redact=True)
         blob = json.dumps({k: payload[k] for k in ('quota_shares', 'quota_windows')})
-        for secret in ('s1', 's2', 't1', 't2', 'codex"', 'pro'):
+        for secret in ('s1', 's2', 't1', 't2', 'codex"'):
             self.assertNotIn(f'"{secret}"', blob)
+        self.assertEqual(payload['quota_windows'][0]['plan'], 'pro')  # public product name, explicitly retained by #119
         self.assertEqual(set(payload['quota_windows'][0]), {'harness', 'account', 'minutes', 'resets_at', 'start', 'peak_percent', 'peak_at', 'hit',
-                                                            'snapshots', 'cost', 'unpriced_requests', 'uncertain_requests', 'lower_bound'})
+                                                            'snapshots', 'plan', 'cost', 'unpriced_requests', 'uncertain_requests', 'lower_bound'})
         self.assertEqual(set(next(iter(payload['quota_shares'].values()))), {'harness', 'minutes', 'label', 'percent', 'lower', 'upper', 'shared_with'})
 
     def test_a_subagent_only_filter_keeps_the_quota_fact_equal_to_the_card(self):

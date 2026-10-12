@@ -77,11 +77,18 @@ ATTACH = timedelta(minutes=5)  # a Claude reading is placed at its session's lat
 CLAUDE_WINDOWS = (('five_hour', FIVE_HOURS), ('seven_day', WEEK))
 
 
+class _ClaudeRows(list):
+    """Tuple-compatible readings plus raw sessions for source matching only."""
+    def __init__(self):
+        super().__init__()
+        self.source_sessions = []
+
+
 def read_claude(path):
     """(rows, malformed) from a claude-quota.jsonl (written by `tokenatlas statusline --record-quota`): rows = [(t, ts, session, [(minutes,
     used_percent, resets_at ISO)])] (a missing session becomes a unique string per line) in file order, only lines with a valid time and at least one valid window; `malformed` counts the lines
     that are not (a torn or foreign line is skipped, never an error). A missing or unreadable file is ([], 0)."""
-    rows, bad = [], 0
+    rows, bad = _ClaudeRows(), 0
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
             for n, text in enumerate(f):
@@ -105,6 +112,7 @@ def read_claude(path):
                     bad += 1
                     continue
                 rows.append((t, row['ts'], session or f'\x00{n}', wins))  # a reading without a session is its own participant: never matched, never compared with a real id
+                rows.source_sessions.append(session)
     except OSError:
         return [], 0
     return rows, bad
@@ -140,7 +148,8 @@ def claude_snapshots(path, records, assigned, rows=None):
         found.sort(key=lambda x: x[0])
         index[session] = ([t for t, _ in found], [i for _, i in found])
     out = []
-    for t, ts, session, wins in rows:
+    source_sessions = getattr(rows, 'source_sessions', None)
+    for source_index, (t, ts, session, wins) in enumerate(rows):
         i = None
         if session in index:
             times, idx = index[session]
@@ -157,6 +166,7 @@ def claude_snapshots(path, records, assigned, rows=None):
             who = tuple(a[:3]) if a else ('claude', session if j is None else records[j]['session'], None)
             out.append(dict(ts=ts, t=t, at=None if j is None else at, harness='claude', account='claude', plan_type=None, window=(minutes, due), used_percent=used, reached=None,
                             turn=who if who[2] is not None else None, who=who, i=j, resets=due, root=root, hit=False, due=prompts._t(due),
+                            source='claude_sidecar', source_session=source_sessions[source_index] if source_sessions is not None else session,
                             key=('claude', 'claude', minutes, None, None, 0, 0)))
     return out
 
@@ -184,7 +194,7 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
         harnesses.add('claude')
     out = Snapshots()
     quiet = []  # quota-only events as snapshots
-    for e in events:
+    for event_index, e in enumerate(events):
         quota = e.get('quota') or {}
         t = _when(e.get('ts'))
         if quota.get('status') != 'event' or t is None:
@@ -194,7 +204,7 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
         account = quota.get('limit_id') or e['harness']
         for w in valid:
             quiet.append(dict(ts=e['ts'], t=t, harness=e['harness'], account=account, plan_type=quota.get('plan_type'), window=(w['minutes'], w['resets_at']),
-                              used_percent=w['used_percent'], reached=quota.get('reached'), turn=None, who=None, i=None, resets=w['resets_at'], due=_when(w['resets_at']), event=True,
+                              used_percent=w['used_percent'], reached=quota.get('reached'), turn=None, who=None, i=None, resets=w['resets_at'], due=_when(w['resets_at']), event=True, event_i=event_index,
                               root=(e['harness'], e.get('parent_session') or e.get('session')), hit=_window_hit(quota.get('reached'), full, w),
                               key=(e['harness'], account, w['minutes'], None, quota.get('plan_type'), 0, 0)))
     if not carriers and not rows:
@@ -222,12 +232,13 @@ def snapshots_from_records(records, assigned=None, events=(), claude=None):
             valid = reading[i]
             full = [w for w, _ in valid if w['used_percent'] >= 100]
             account = quota.get('limit_id') or r['harness']
+            plan = r.get('plan') if r.get('plan') not in (None, '', 'unknown') else quota.get('plan_type')
             for w, due in valid:
-                out.append(dict(ts=r['ts'], t=t, harness=r['harness'], account=account, plan_type=quota.get('plan_type'),
+                out.append(dict(ts=r['ts'], t=t, harness=r['harness'], account=account, plan_type=plan,
                                 window=(w['minutes'], w['resets_at']), used_percent=w['used_percent'], reached=quota.get('reached'),
                                 turn=who if who[2] is not None else None, who=who, i=i, resets=w['resets_at'], due=due, root=(r['harness'], r.get('parent_session') or r['session']),
                                 hit=_window_hit(quota.get('reached'), full, w),
-                                key=(r['harness'], account, w['minutes'], None, quota.get('plan_type'), 0, 0)))
+                                key=(r['harness'], account, w['minutes'], None, plan, 0, 0)))
     if rows:
         for s in claude_snapshots(claude, records, assigned, rows):
             out.append(s)
@@ -430,6 +441,15 @@ def windows(snapshots, last=None, records=None, cost_of=None, hits=None):
         rows_of[id(entry)], keys_of[id(entry)] = main.get(key, []), key
         out.append(entry)
     out.sort(key=lambda w: (prompts._t(w['resets_at']), w['minutes'], w['harness'], w['account'], w['plan_type'] or ''))
+    # Counter numbers are evidence local to one window instance, never account IDs.
+    split = {}
+    for entry in out:
+        key = keys_of[id(entry)]
+        split.setdefault((*key[:5], key[6]), set()).add(key[5])
+    for entry in out:
+        key = keys_of[id(entry)]
+        if len(split[(*key[:5], key[6])]) > 1:
+            entry['inferred_account'] = key[5] + 1
     if last is not None:
         groups = {}
         for w in out:
