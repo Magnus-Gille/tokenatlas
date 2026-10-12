@@ -567,34 +567,38 @@ def _run_wrapped(args, db, stdin, now):
             pass  # malformed input or unavailable recorder must not change the user's output
     job = None
     process = None
-    try:
-        if os.name == 'nt':
-            from tokenatlas.upgrade_process import _Job
-            job = _Job()
-            # The helper cannot launch the command until the parent assigns its
-            # job and sends the stdin header. This closes the startup escape race.
-            process = subprocess.Popen([sys.executable, '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
-                                       creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            job.assign(process)
-            options = {'argv': args.command}
-            if args.wrap_shell_base64 is not None:options['shell_source'] = args.command[-1]
-            raw = json.dumps(options).encode('utf-8') + b'\n' + raw
-        else:
-            process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=True)
-    except OSError as exc:
-        if job is not None:job.close()
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait()
-        print(f'tokenatlas statusline: cannot run command: {exc}', file=sys.stderr)
-        return 127
     previous = {}
+    starting = True
+    pending_signal = None
     def cancelled(signum, frame):
-        _stop_wrapped(process, job)
-        raise SystemExit(128 + signum)
+        nonlocal pending_signal
+        pending_signal = signum
+        # Do not interrupt Popen before it returns the child handle. Defer the
+        # exit until the isolated process (and Windows job) can be cleaned up.
+        if not starting:raise SystemExit(128 + signum)
     try:
-        for signum in (signal.SIGTERM, signal.SIGINT):
+        signals = (signal.SIGTERM, signal.SIGINT) if os.name == 'nt' else (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+        for signum in signals:
             previous[signum] = signal.signal(signum, cancelled)
+        try:
+            if os.name == 'nt':
+                from tokenatlas.upgrade_process import _Job
+                job = _Job()
+                # The helper cannot launch the command until the parent assigns
+                # its job and sends the stdin header.
+                process = subprocess.Popen([sys.executable, '-I', '-S', '-c', _WRAP_HELPER], stdin=subprocess.PIPE,
+                                           creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                job.assign(process)
+                options = {'argv': args.command}
+                if args.wrap_shell_base64 is not None:options['shell_source'] = args.command[-1]
+                raw = json.dumps(options).encode('utf-8') + b'\n' + raw
+            else:
+                process = subprocess.Popen(args.command, stdin=subprocess.PIPE, start_new_session=True)
+        except OSError as exc:
+            print(f'tokenatlas statusline: cannot run command: {exc}', file=sys.stderr)
+            return 127
+        starting = False
+        if pending_signal is not None:raise SystemExit(128 + pending_signal)
         process.communicate(raw, timeout=args.wrap_timeout)
     except subprocess.TimeoutExpired:
         _stop_wrapped(process, job)
@@ -604,8 +608,15 @@ def _run_wrapped(args, db, stdin, now):
     finally:
         # A successful direct child may leave descendants holding the output
         # pipes. A statusline has no persistent background process contract.
-        _stop_wrapped(process, job)
-        for signum, handler in previous.items():signal.signal(signum, handler)
+        starting = True  # finish cleanup even if another termination arrives
+        try:
+            if process is not None:
+                _stop_wrapped(process, job)
+                process.wait()
+            elif job is not None:job.close()
+        finally:
+            for signum, handler in previous.items():signal.signal(signum, handler)
+        if pending_signal is not None:raise SystemExit(128 + pending_signal)
     return process.returncode if process.returncode >= 0 else 128 - process.returncode
 
 

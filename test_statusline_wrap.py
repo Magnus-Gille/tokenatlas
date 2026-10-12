@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -158,6 +159,173 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                            "-c", child, str(marker), input=payload_bytes())
             self.assertNotEqual(done.returncode, 0, value)
             self.assertFalse(marker.exists(), value)
+
+    def _isolated_signal_env(self):
+        home = self.root / "home"
+        home.mkdir(exist_ok=True)
+        return {
+            "HOME": str(home),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": os.environ.get("PATH", os.defpath),
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": str(ROOT),
+            "TOKENATLAS_NO_QUOTA": "1",
+        }
+
+    @staticmethod
+    def _pid_is_live(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        proc_stat = Path(f"/proc/{pid}/stat")
+        if proc_stat.is_file():
+            try:
+                state = proc_stat.read_text().rsplit(") ", 1)[1].split()[0]
+            except (OSError, IndexError):
+                return True
+            return state != "Z"
+        try:
+            probe = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                   capture_output=True, text=True, check=False)
+        except OSError:
+            return True
+        state = probe.stdout.strip()
+        return bool(state) and not state.startswith("Z")
+
+    @classmethod
+    def _wait_pid_gone(cls, pid, timeout=3):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not cls._pid_is_live(pid):
+                return True
+            time.sleep(0.02)
+        return not cls._pid_is_live(pid)
+
+    @staticmethod
+    def _group_is_live(pgid):
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @classmethod
+    def _wait_group_gone(cls, pgid, timeout=3):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not cls._group_is_live(pgid):
+                return True
+            time.sleep(0.02)
+        return not cls._group_is_live(pgid)
+
+    @staticmethod
+    def _cleanup_signal_process(process, child_pid=None, child_pgid=None):
+        if process is not None and process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        if child_pgid is not None:
+            try:
+                os.killpg(child_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if child_pid is not None and StatuslineWrapperSubprocessTests._pid_is_live(child_pid):
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if process is not None:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups and signals")
+    def test_sighup_after_child_start_returns_129_and_kills_child_group(self):
+        marker = self.root / "child-pid-and-pgid"
+        child = (
+            "import os,pathlib,sys,time; "
+            "pathlib.Path(sys.argv[1]).write_text(f'{os.getpid()}\\n{os.getpgid(0)}\\n'); "
+            "time.sleep(30)"
+        )
+        env = self._isolated_signal_env()
+        process = subprocess.Popen(
+            [PYTHON, "-m", "tokenatlas", "--db", str(self.db), "statusline", "--no-record-quota",
+             "--wrap", "--", PYTHON, "-c", child, str(marker)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=ROOT, env=env,
+        )
+        child_pid = child_pgid = None
+        try:
+            process.stdin.write(payload_bytes())
+            process.stdin.close()
+            process.stdin = None
+            deadline = time.monotonic() + 3
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.is_file(), "child did not publish its PID")
+            child_pid, child_pgid = (int(value) for value in marker.read_text().splitlines())
+            os.kill(process.pid, signal.SIGHUP)
+            process.wait(timeout=5)
+            self.assertEqual(process.returncode, 128 + signal.SIGHUP)
+            self.assertTrue(self._wait_pid_gone(child_pid), "child process survived SIGHUP")
+            self.assertTrue(self._wait_group_gone(child_pgid), "child process group survived SIGHUP")
+        finally:
+            self._cleanup_signal_process(process, child_pid, child_pgid)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups and signals")
+    def test_signal_during_popen_return_returns_signal_code_and_kills_child(self):
+        child = "import time; time.sleep(30)"
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            with self.subTest(signal=signal.Signals(signum).name):
+                child_pid_file = self.root / f"startup-child-{signum}"
+                env = self._isolated_signal_env()
+                env.update({
+                    "TOKENATLAS_SIGNAL": str(signum),
+                    "TOKENATLAS_CHILD_PID_FILE": str(child_pid_file),
+                    "TOKENATLAS_DB": str(self.db),
+                })
+                harness = (
+                    "import os,signal,subprocess,sys\n"
+                    "from pathlib import Path\n"
+                    "from tokenatlas import statusline\n"
+                    "real_popen=subprocess.Popen\n"
+                    "def launch(*args,**kwargs):\n"
+                    "    process=real_popen(*args,**kwargs)\n"
+                    "    Path(os.environ['TOKENATLAS_CHILD_PID_FILE']).write_text(str(process.pid))\n"
+                    "    os.kill(os.getpid(),int(os.environ['TOKENATLAS_SIGNAL']))\n"
+                    "    return process\n"
+                    "statusline.subprocess.Popen=launch\n"
+                    "raise SystemExit(statusline.run(['--no-record-quota','--wrap','--',sys.executable,'-c',"
+                    f"{child!r}],db=Path(os.environ['TOKENATLAS_DB']),stdin=sys.stdin.buffer))"
+                )
+                process = subprocess.Popen(
+                    [PYTHON, "-c", harness], stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=ROOT, env=env,
+                )
+                child_pid = None
+                try:
+                    process.stdin.write(payload_bytes())
+                    process.stdin.close()
+                    process.stdin = None
+                    process.wait(timeout=5)
+                    self.assertEqual(process.returncode, 128 + signum)
+                    self.assertTrue(child_pid_file.is_file(), "Popen did not publish child PID")
+                    child_pid = int(child_pid_file.read_text())
+                    self.assertTrue(self._wait_pid_gone(child_pid), "startup child survived signal")
+                    self.assertTrue(self._wait_group_gone(child_pid), "startup child group survived signal")
+                finally:
+                    if child_pid is None and child_pid_file.is_file():
+                        child_pid = int(child_pid_file.read_text())
+                    self._cleanup_signal_process(process, child_pid, child_pid)
 
     @unittest.skipIf(os.name == "nt", "POSIX sh setup")
     def test_setup_wrap_prints_effective_settings_and_undo_without_writing(self):
