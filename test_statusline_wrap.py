@@ -690,6 +690,20 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         self.assertEqual(statusline._command_state('tokenatlas >out statusline'), 'unknown')
         self.assertEqual(statusline._command_state('>out tokenatlas statusline'), 'unknown')
 
+    def test_cmd_literals_and_foreign_ansi_quotes_remain_wrappable(self):
+        commands = ['cmd /c echo "(tokenatlas statusline)"',
+                    'cmd /c echo "a;tokenatlas statusline"',
+                    'nice cmd /c echo "(tokenatlas statusline)"',
+                    r"printf $'it\'s\n'", "echo Don't panic",
+                    r"printf $'tokenatlas statusline: it\'s fine\n'"]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(statusline._command_state(command), 'foreign')
+        self.assertEqual(statusline._command_state('cmd /c tokenatlas statusline'), 'enabled')
+        self.assertEqual(statusline._command_state('cmd /d /s /c "tokenatlas statusline"'), 'enabled')
+        self.assertEqual(statusline._command_state("tokenatlas statusline 'unclosed"), 'unknown')
+        self.assertEqual(statusline._command_state(r"$'tokenatlas' statusline"), 'enabled')
+
     def test_classifier_does_not_scan_quoted_literals_or_launcher_operands(self):
         foreign = [
             r'echo " C:\x\" tokenatlas statusline"',

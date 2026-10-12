@@ -371,22 +371,62 @@ def _normalise_command_paths(word):
     return ''.join(out)
 
 
+def _ansi_quoted_word(word):
+    """Translate Bash ANSI quote spans to inert POSIX words for classification."""
+    out, quote, at = [], None, 0
+    escapes = {'a': '\a', 'b': '\b', 'e': '\x1b', 'E': '\x1b', 'f': '\f',
+               'n': '\n', 'r': '\r', 't': '\t', 'v': '\v', '\\': '\\', "'": "'", '"': '"'}
+    def decode(match):
+        value = match[1]
+        if value in escapes:return escapes[value]
+        if value[0] in 'xuU' and len(value) > 1:
+            point = int(value[1:], 16)
+            return chr(point) if point <= 0x10ffff and not 0xd800 <= point <= 0xdfff else match[0]
+        if value[0] in '01234567':return chr(int(value, 8) & 0xff)
+        return match[0]
+    while at < len(word):
+        char = word[at]
+        if quote:
+            out.append(char); at += 1
+            if quote == '"' and char == '\\' and at < len(word):
+                out.append(word[at]); at += 1
+            elif char == quote:quote = None
+            continue
+        if word[at:at + 2] == "$'":
+            end = at + 2
+            while end < len(word):
+                if word[end] == '\\':end += 2; continue
+                if word[end] == "'":break
+                end += 1
+            if end >= len(word):raise ValueError('unclosed ANSI quote')
+            body = re.sub(r'\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[0-7]{1,3}|.)', decode, word[at + 2:end])
+            out.append(shlex.quote(body)); at = end + 1; continue
+        out.append(char); at += 1
+        if char in ('"', "'"):quote = char
+        elif char == '\\' and at < len(word):out.append(word[at]); at += 1
+    return ''.join(out)
+
+
 def _command_tokens(command):
     """Shell words plus provenance: quoted operators remain ordinary arguments."""
-    tokens, word, quote, at = [], None, None, 0
+    tokens, word, quote, ansi, at = [], None, None, False, 0
     def finish(end):
         nonlocal word
         if word is not None:
-            values = shlex.split(_normalise_command_paths(command[word:end]))
+            values = shlex.split(_normalise_command_paths(_ansi_quoted_word(command[word:end])))
             if len(values) != 1:raise ValueError('ambiguous shell word')
             tokens.append((values[0], False))
             word = None
     while at < len(command):
         char = command[at]
         if quote:
-            if quote == '"' and char == '\\':at += 2; continue
-            if char == quote:quote = None
+            if (quote == '"' or ansi) and char == '\\':at += 2; continue
+            if char == quote:quote, ansi = None, False
             at += 1; continue
+        if command[at:at + 2] == "$'":
+            if word is None:word = at
+            quote, ansi = "'", True
+            at += 2; continue
         if char in ('"', "'"):
             if word is None:word = at
             quote = char; at += 1; continue
@@ -443,7 +483,7 @@ def _shell_source(name, args):
         token = args.pop(0)
         low = token.lower()
         if name in ('cmd', 'cmd.exe'):
-            if low == '/c':return ' '.join(args)
+            if low == '/c':return args[0] if len(args) == 1 else ' '.join(shlex.quote(value) for value in args)
             if low in ('/d', '/s', '/q', '/a', '/u') or low.startswith(('/e:', '/v:', '/f:')):continue
         elif name in ('powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
             if low in ('-command', '-c'):return args[0] if len(args) == 1 else ' '.join(args)
@@ -460,7 +500,8 @@ def _tokenatlas_invocation(command, depth=0):
     """Recognise supported command positions without interpreting literal data."""
     if not isinstance(command, str) or depth > 3:return False
     try:tokens = _command_tokens(command)
-    except ValueError:return None
+    except ValueError:
+        return None if re.search(r'(?i)\b(tokenatlas|energy-monitor)\b', command) and 'statusline' in command else False
     return _invocation_tokens(tokens, depth)
 
 def _launcher_operand(name, args):
