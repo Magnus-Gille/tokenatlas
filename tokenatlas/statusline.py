@@ -340,22 +340,61 @@ def _command_state(command):
 
 
 def _tokenatlas_invocation(command, depth=0):
-    """Distinguish actual shell commands from quoted text naming TokenAtlas."""
+    """Distinguish command positions from quoted literal arguments."""
     if not isinstance(command, str) or depth > 3:return False
+    # POSIX shlex strips unquoted Windows path separators. Normalize only path
+    # tokens, leaving quoting and other shell escapes intact; no alternate
+    # lexer may reinterpret characters inside an already valid quoted word.
+    command = re.sub(r"(^|[\s;&|()])((?:[A-Za-z]:\\|\\\\)[^\s'\";&|()]+)",
+                     lambda match: match[1] + match[2].replace('\\', '/'), command)
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|<>()')
         lexer.whitespace_split = True
         lexer.commenters = ''
         tokens = list(lexer)
-        windows_lexer = shlex.shlex(command, posix=False, punctuation_chars=';&|<>()')
-        windows_lexer.whitespace_split = True
-        windows_lexer.commenters = ''
-        windows_tokens = [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in windows_lexer]
     except ValueError:
         return bool(re.search(r'\btokenatlas\b.*\bstatusline\b', command))
-    for parsed_tokens in (tokens, windows_tokens):
-        if _invocation_tokens(parsed_tokens, depth):return True
-    return False
+    return _invocation_tokens(tokens, depth)
+
+
+def _launcher_operand(name, args):
+    """Return the command operand, never search the launched command's arguments."""
+    args = list(args)
+    if name == 'uv':
+        if args[:2] == ['tool', 'run']:args = args[2:]
+        elif args[:1] == ['run']:args = args[1:]
+        else:return None
+    elif name == 'pipx':
+        if args[:1] != ['run']:return None
+        args = args[1:]
+    values = {
+        'uvx': {'--from', '--with', '--with-requirements', '--python', '--index-url', '--directory'},
+        'uv': {'--from', '--with', '--with-requirements', '--python', '--directory'},
+        'pipx': {'--spec', '--python', '--index-url', '--pip-args'},
+        'nice': {'-n', '--adjustment'},
+        'timeout': {'-k', '--kill-after', '-s', '--signal'},
+        'gtimeout': {'-k', '--kill-after', '-s', '--signal'},
+    }[name]
+    flags = {'-q', '--quiet', '-v', '--verbose', '--offline', '--no-cache', '--no-config', '--isolated',
+             '--foreground', '--preserve-status'}
+    while args and args[0].startswith('-'):
+        option = args.pop(0)
+        if option == '--':break
+        key, equals, _value = option.partition('=')
+        if key in values:
+            if not equals:
+                if not args:return None
+                args.pop(0)
+        elif option in flags or (name == 'nice' and re.fullmatch(r'-[0-9]+|-n-?[0-9]+', option)):
+            continue
+        else:return None  # unknown option arity cannot prove a command position
+    if name in ('timeout', 'gtimeout'):
+        if not args:return None
+        args.pop(0)  # duration, before the command operand
+    if not args:return None
+    if name in ('uvx', 'uv', 'pipx') and args[0].startswith('tokenatlas@'):
+        args[0] = 'tokenatlas'
+    return args
 
 
 def _invocation_tokens(tokens, depth):
@@ -371,14 +410,12 @@ def _invocation_tokens(tokens, depth):
         args = tokens[i + 1:end]
         name = token.replace('\\', '/').rsplit('/', 1)[-1].lower()
         if name in ('tokenatlas', 'tokenatlas.exe', 'energy-monitor', 'energy-monitor.exe') and 'statusline' in args:return True
-        if name.startswith('python') and '-m' in args:
+        if (name.startswith('python') or name in ('py', 'py.exe')) and '-m' in args:
             at = args.index('-m')
             if args[at + 1:at + 2] == ['tokenatlas'] and 'statusline' in args[at + 2:]:return True
         if name in ('uvx', 'uv', 'pipx', 'nice', 'timeout', 'gtimeout'):
-            for j, value in enumerate(args):
-                child = value.replace('\\', '/').rsplit('/', 1)[-1].lower()
-                if child in ('tokenatlas', 'tokenatlas.exe', 'energy-monitor', 'energy-monitor.exe') or child.startswith('python'):
-                    if _tokenatlas_invocation(' '.join(shlex.quote(v) for v in args[j:]), depth + 1):return True
+            operand = _launcher_operand(name, args)
+            if operand and _tokenatlas_invocation(' '.join(shlex.quote(v) for v in operand), depth + 1):return True
         if name in ('sh', 'bash', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'):
             for flag in ('-c', '-lc', '/c', '-Command', '-command'):
                 if flag in args:

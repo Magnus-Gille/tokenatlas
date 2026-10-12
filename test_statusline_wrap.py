@@ -653,7 +653,8 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                     r'C:\Users\me\.local\bin\tokenatlas.exe --db C:\state\history.sqlite3 statusline',
                     'uvx tokenatlas statusline', 'uv tool run tokenatlas statusline',
                     'pipx run tokenatlas statusline', 'nice -n 5 tokenatlas statusline',
-                    'timeout 2 tokenatlas statusline']
+                    'timeout 2 tokenatlas statusline', 'uvx tokenatlas@1.23 statusline',
+                    'py -m tokenatlas statusline', 'uvx --from tokenatlas tokenatlas statusline']
         config = self.root / 'claude'
         config.mkdir()
         for command in commands:
@@ -663,6 +664,20 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(config)}, clear=False):
                     with self.assertRaisesRegex(ValueError, 'already uses TokenAtlas'):
                         statusline.wrap_setup_text(self.db)
+
+    def test_launcher_arguments_and_mixed_quoted_literals_remain_foreign(self):
+        commands = ["nice -n 5 printf '%s %s\\n' 'tokenatlas' 'statusline'",
+                    'timeout 2 my-status --app tokenatlas --view statusline',
+                    'echo x"(tokenatlas statusline)"', 'echo x"y "tokenatlas statusline',
+                    "uvx my-status --app 'tokenatlas' --view 'statusline'"]
+        config = self.root / 'claude'
+        config.mkdir()
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(statusline._command_state(command), 'foreign')
+                (config / 'settings.json').write_text(json.dumps({'statusLine': {'type': 'command', 'command': command}}))
+                with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(config)}, clear=False):
+                    self.assertIn('--wrap', statusline.wrap_setup_text(self.db, shell='sh' if os.name != 'nt' else 'powershell'))
 
     def test_windows_helper_interpreter_resolution_refuses_venv_redirector(self):
         with mock.patch.object(sys, 'prefix', str(self.root)), \
