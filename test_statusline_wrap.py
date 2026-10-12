@@ -195,8 +195,11 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
             "sys.stderr.write('grandchild stderr'); sys.stdout.flush(); sys.stderr.flush(); time.sleep(4)"
         )
         child = f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', {grandchild!r}])"
+        # This verifies cleanup after a normal exit, not a 100ms interpreter
+        # startup promise. Keep the same <3s closure assertion; without cleanup
+        # the grandchild holds these pipes for 4s.
         started = time.monotonic()
-        done = run_cli(self.db, "statusline", "--wrap", "--wrap-timeout", "0.1", "--", PYTHON,
+        done = run_cli(self.db, "statusline", "--wrap", "--wrap-timeout", "2", "--", PYTHON,
                        "-c", child, input=payload_bytes(), timeout=6)
         elapsed = time.monotonic() - started
         self.assertEqual(done.returncode, 0, done.stderr)
