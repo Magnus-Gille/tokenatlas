@@ -1,3 +1,3 @@
 """Local observed-usage history. Only the explicit upgrader contacts a package index."""
 
-__version__ = "1.24.0"
+__version__ = "1.24.1"
