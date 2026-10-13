@@ -96,6 +96,7 @@ async function run() {
   assert.deepEqual(full.requests, []);
   assert.equal(await full.page.locator('#subscriptions').isVisible(), true);
   const visibleKeys = await scopeKeys(full.page, true);
+  assert.deepEqual(visibleKeys.filter(([h])=>h==='claude'), [['claude','work','max'],['claude','personal','pro']], 'Claude scope insertion order is preserved');
   assert.deepEqual(visibleKeys.filter(([h]) => h === 'codex').sort(), [
     ['codex', null, 'pro'], ['codex', 'tie-a', 'tie-a'], ['codex', 'tie-b', 'tie-b'],
   ].sort(), 'latest Codex scope and exact timestamp ties stay primary');
@@ -156,7 +157,7 @@ async function run() {
   assert.equal(await history.count(), 1, 'other Codex readings use a native disclosure');
   assert.equal(await history.evaluate(node => node.open), false, 'other Codex readings start collapsed');
   const historySummary = await history.locator('summary').innerText();
-  assert.match(historySummary, /2/);
+  assert.match(historySummary, /\(2\)/);
   const historyText = await history.textContent();
   assert.match(historyText, /Codex/i);
   assert.match(historyText, /2026|okt|oct/i, 'history exposes dates');
@@ -172,8 +173,11 @@ async function run() {
   assert.equal(await old.isVisible(), true);
   assert.match(await old.innerText(), /12/);
   assert.match(await old.innerText(), /äldre än 30 minuter/i);
+  assert.match(await old.locator('.quota-scope-meta').innerText(), /Senast observerad/);
+  assert.equal(await old.locator('[data-observed-at]').count(),2, 'history contains both observation times, not just resets');
   const undated = await scopeCard(full.page, {harness:'codex',account:'no-date',plan:'undated'});
   assert.equal(await undated.locator('[data-observed-at]').count(), 0, 'undated secondary readings have no dated reading indication');
+  assert.match(await undated.innerText(), /Ingen observationstid sparad för denna avläsning/, 'undated secondary scope has an explicit warning even alongside dated scopes');
   await history.locator('summary').focus();
   await full.page.keyboard.press('Enter');
   assert.equal(await history.evaluate(node => node.open), false, 'keyboard collapses other Codex readings');
@@ -216,10 +220,11 @@ async function run() {
   assert.equal((await full.page.locator('#subscriptions-body').innerText()).trimEnd(), before);
   await full.page.click('[data-lang="en"]');
   assert.match(await full.page.locator('#subscriptions-title').innerText(), /Subscriptions now/);
-  assert.match(await history.locator('summary').innerText(), /2/);
+  assert.match(await history.locator('summary').innerText(), /\(2\)/);
   assert.match(await history.textContent(), /Codex/i);
   assert.match(await full.page.locator('.quota-identity-note').innerText(), /same account.*cannot reliably identify accounts/i, 'English visible note explains account uncertainty');
-  assert.match(await history.textContent(), /2026|Oct/i, 'English history keeps dates');
+  assert.match(await history.textContent(), /Latest observed/, 'English history keeps observation dates');
+  assert.match(await (await scopeCard(full.page,{harness:'codex',account:'no-date',plan:'undated'})).textContent(), /No observation time saved for this reading/);
   assert.equal(await full.page.locator('body').evaluate(node => node.classList.contains('quota-focus')), true);
   if (screenshotDir) await full.page.screenshot({path:path.join(screenshotDir, 'subscriptions-desktop-en.png'),fullPage:true});
 
@@ -254,6 +259,12 @@ async function run() {
   assert.equal(await undatedOnly.page.locator('.quota-history').evaluate(node=>node.open), false);
   await undatedOnly.page.locator('.quota-history summary').click();
   assert.equal(await undatedOnly.page.locator('.quota-history .quota-scope').isVisible(), true);
+
+  const differentInferredTimes = await pageFor(edit(source, inferredRows.map(r=>({...r,observed_at:r.minutes===300?'2026-10-12T11:20:00Z':'2026-10-12T10:20:00Z'}))));
+  assert.equal(await differentInferredTimes.page.locator('.quota-primary-scopes .quota-scope').count(),2);
+  assert.equal(await differentInferredTimes.page.locator('.quota-history .quota-scope').count(),2);
+  assert.deepEqual(await differentInferredTimes.page.locator('.quota-primary-scopes [data-quota-window]').evaluateAll(nodes=>nodes.map(n=>n.dataset.quotaWindow)),['300','300'],'inferred durations with different observation times remain separate');
+  assert.match(await undatedOnly.page.locator('.quota-history summary').innerText(),/Äldre eller annan kvotavläsning \(1\)/,'singular translation selected by t()');
 
   const evolving = await pageFor(edit(source, [{harness:'claude',account:'work',plan_type:'fresh',minutes:300,used_percent:12,resets_at:null,observed_at:'2026-10-12T11:59:00Z'}]));
   assert.doesNotMatch(await evolving.page.locator('[data-scope]').innerText(), /äldre än 30 minuter/i);

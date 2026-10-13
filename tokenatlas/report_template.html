@@ -187,6 +187,7 @@ function renderSubscriptionScope(scope,now,codexLabel){
   const heading=el('h3',scope.harness==='claude'?'Claude Code':'Codex'),meta=el('p',undefined,'quota-scope-meta');
   const limit=scope.account?quotaLimitLabel(scope.account):null,plan=scope.plan_type?subscriptionPlanName(scope.plan_type):t('plan_unknown'),planText=el('span',plan);if(scope.plan_type)planText.title=planRaw(scope.plan_type);
   if(scope.latestObservedAt)meta.append(t('sub_latest_observed',{at:quotaDate(scope.latestObservedAt)}),' · ');
+  else if(scope.harness==='codex')meta.append(el('span',t('sub_undated'),'quota-stale'),' · ');
   meta.append(limit?t('sub_limit',{name:limit}):t('sub_limit_unknown'),' · ',el('span',t('sub_plan_label')+': '),planText);if(Number.isInteger(scope.inferred_account))meta.append(' · ',el('span',t('sub_inferred',{n:scope.inferred_account})));
   card.append(heading,meta);
   const minutesToRender=Number.isInteger(scope.inferred_account)?[scope.minutes]:QUOTA_MINUTES;for(const minutes of minutesToRender)card.append(renderSubscriptionWindow(scope.rows.get(minutes)||null,{...scope,minutes},now));
@@ -203,7 +204,6 @@ function renderSubscriptions(){
   for(const scope of primary)grid.append(renderSubscriptionScope(scope,now,scope.harness==='codex'?codexLabel:null));
   if(primary.length)box.append(grid);
   if(other.length){const history=el('details',undefined,'quota-history');history.open=historyOpen;history.append(el('summary',t('sub_history',{n:fmt(other.length)})));const historyGrid=el('div',undefined,'quota-scopes quota-history-scopes');for(const scope of other)historyGrid.append(renderSubscriptionScope(scope,now,null));history.append(historyGrid);box.append(history)}
-  if(!primary.length&&!other.length)box.append(el('div',undefined,'empty quota-status-empty'),el('span',t('sub_empty_p')));
   updateQuotaCountdowns(now);
 }
 function setView(view,writeHash=true){

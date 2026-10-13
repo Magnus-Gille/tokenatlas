@@ -96,7 +96,7 @@ async function main() {
   const accountPage=await accountContext.newPage();await accountPage.goto(`file://${accountFile}`);await ready(accountPage,[]);await accountContext.setOffline(true);await accountPage.click('[data-lang="sv"]');
   assert.equal(await accountPage.locator('.quota-scope').count(),3,'counter numbers must not pair five-hour and weekly accounts');
   assert.equal(await accountPage.locator('.quota-scope .quota-window').count(),3);
-  assert.match(await accountPage.locator('#subscriptions-body').innerText(),/konto 2 \(härlett inom detta kvotfönster\)/);
+  assert.match(await accountPage.locator('#subscriptions-body').innerText(),/kvotgrupp 2 \(härledd inom detta tidsfönster\)/);
   if(screenshots)await accountPage.locator('#subscriptions').screenshot({path:path.join(screenshots,'plans-inferred-mobile-sv.png')});
   await accountContext.close();
   if (screenshots) {
