@@ -22,7 +22,7 @@
 .glossary{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:12px 20px;margin:12px 0 0}.glossary summary{cursor:pointer;font-weight:600}.glossary dl{margin:10px 0 0}.glossary dt{font-weight:600;margin-top:8px}.glossary dd{margin:2px 0 0;color:var(--muted);line-height:1.5}
 @media(max-width:640px){.glance{padding:15px}.glance-list{font-size:15px;padding-left:18px}.glossary{padding:12px 15px}}
 .view-toggle{display:flex;gap:3px;padding:3px;background:var(--bg);border-radius:10px}.view-toggle button{border:0;background:transparent;font-size:12px;padding:6px 10px}.view-toggle button.active{background:var(--ink)}
-.quota-status{margin:20px 0 0}.quota-status .panel-top{margin-bottom:14px}.quota-status-intro{margin:6px 0 0;max-width:760px}.quota-scopes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.quota-scope{border:1px solid var(--line);border-radius:11px;padding:15px;min-width:0}.quota-scope h3{overflow-wrap:anywhere}.quota-scope-meta{margin:3px 0 12px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.quota-window{border-top:1px solid var(--line);padding:10px 0 0;margin-top:10px}.quota-window:first-child{border-top:0;padding-top:0;margin-top:0}.quota-window-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline}.quota-window-label{font-size:12px;font-weight:650}.quota-values{font-size:15px;line-height:1.45}.quota-values strong{font-weight:650}.quota-meta{font-size:11px;color:var(--muted);margin-top:4px;overflow-wrap:anywhere}.quota-stale{color:#8a5a1d}.quota-status-empty{padding:22px 10px}.quota-status-empty strong{font-size:16px}.quota-focus main> :not(#subscriptions){display:none}.quota-focus footer{display:none}.quota-focus #subscriptions{margin-top:24px}
+.quota-status{margin:20px 0 0}.quota-status .panel-top{margin-bottom:14px}.quota-status-intro{margin:6px 0 0;max-width:760px}.quota-scopes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.quota-primary-scopes{margin-bottom:14px}.quota-scope{border:1px solid var(--line);border-radius:11px;padding:15px;min-width:0}.quota-primary-scopes .quota-scope{border-color:#b9cbbd;box-shadow:0 2px 8px rgba(32,52,47,.06)}.quota-scope h3{overflow-wrap:anywhere}.quota-scope-kicker{margin:0 0 5px;color:var(--green);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}.quota-scope-meta{margin:3px 0 12px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.quota-history{margin-top:8px;border-top:1px solid var(--line);padding-top:12px}.quota-history summary{cursor:pointer;color:var(--ink);font-weight:650}.quota-history-scopes{margin-top:12px}.quota-window{border-top:1px solid var(--line);padding:10px 0 0;margin-top:10px}.quota-window:first-child{border-top:0;padding-top:0;margin-top:0}.quota-window-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline}.quota-window-label{font-size:12px;font-weight:650}.quota-values{font-size:15px;line-height:1.45}.quota-values strong{font-weight:650}.quota-meta{font-size:11px;color:var(--muted);margin-top:4px;overflow-wrap:anywhere}.quota-stale{color:#8a5a1d}.quota-status-empty{padding:22px 10px}.quota-status-empty strong{font-size:16px}.quota-focus main> :not(#subscriptions){display:none}.quota-focus footer{display:none}.quota-focus #subscriptions{margin-top:24px}
 @media(max-width:640px){.view-toggle{order:3}.quota-scopes{grid-template-columns:1fr}.quota-status .panel-top{align-items:stretch}.quota-status .panel-top .view-toggle{width:100%}.quota-status .panel-top .view-toggle button{flex:1}.quota-scope{padding:13px}}
 .usage-table{width:100%;table-layout:fixed;border-collapse:collapse}.usage-table th,.usage-table td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left}.usage-table td:nth-child(n+2),.usage-table th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}.work-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.work-card{border:1px solid var(--line);border-radius:10px;padding:15px}.work-card h3{overflow-wrap:anywhere}.work-card p{margin:5px 0}.work-turn{border-top:1px solid var(--line);padding:9px 0;font-size:12px}.usage-note{margin-top:12px}
 .plan-facts-table td:nth-child(n+2),.plan-facts-table th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}.plan-facts-table td:first-child{font-weight:600}.plan-note{margin-top:12px}
@@ -120,6 +120,30 @@ function quotaRows(){
   }
   return [...latest.values()];
 }
+const quotaObservedStamp=row=>row&&row.observed_at?Date.parse(row.observed_at):-Infinity;
+function subscriptionScopes(rows){
+  const scopes=new Map();
+  for(const row of rows){
+    const inferred=Number.isInteger(row.inferred_account),key=JSON.stringify([row.harness,row.account,row.plan_type,inferred?row.inferred_account:null,inferred?row.minutes:null]);
+    let scope=scopes.get(key);
+    if(!scope){scope={key,harness:row.harness,account:row.account,plan_type:row.plan_type,inferred_account:row.inferred_account,minutes:inferred?row.minutes:null,rows:new Map,latestObservedAt:null,latestObservedStamp:-Infinity};scopes.set(key,scope)}
+    scopes.get(key).rows.set(row.minutes,row);
+    const stamp=quotaObservedStamp(row);
+    if(Number.isFinite(stamp)&&(stamp>scope.latestObservedStamp||stamp===scope.latestObservedStamp&&String(row.observed_at)<String(scope.latestObservedAt||''))){scope.latestObservedStamp=stamp;scope.latestObservedAt=row.observed_at}
+  }
+  return [...scopes.values()];
+}
+function subscriptionScopeStamp(scope){return Number.isFinite(scope.latestObservedStamp)?scope.latestObservedStamp:(scope.latestObservedAt?Date.parse(scope.latestObservedAt):-Infinity)}
+function sortSubscriptionScopes(scopes){return [...scopes].sort((a,b)=>{
+  const byTime=subscriptionScopeStamp(b)-subscriptionScopeStamp(a);if(byTime)return byTime;
+  for(const field of ['harness','account','plan_type']){const av=String(a[field]??''),bv=String(b[field]??'');if(av!==bv)return av<bv?-1:1}
+  return (a.inferred_account??-1)-(b.inferred_account??-1)||(a.minutes??-1)-(b.minutes??-1);
+})}
+function partitionSubscriptionScopes(scopes){
+  const codex=scopes.filter(scope=>scope.harness==='codex'),latest=codex.reduce((max,scope)=>Math.max(max,subscriptionScopeStamp(scope)),-Infinity);
+  const primaryCodex=new Set(latest===-Infinity?[]:codex.filter(scope=>subscriptionScopeStamp(scope)===latest));
+  return {primary:[...sortSubscriptionScopes(codex.filter(scope=>primaryCodex.has(scope))),...scopes.filter(scope=>scope.harness==='claude')],other:sortSubscriptionScopes(codex.filter(scope=>!primaryCodex.has(scope)))};
+}
 function quotaCountdown(ms){
   if(ms<=0)return t('sub_expired');
   const total=Math.floor(ms/1000),days=Math.floor(total/86400),hours=Math.floor(total%86400/3600),minutes=Math.floor(total%3600/60);
@@ -157,18 +181,30 @@ function renderSubscriptionWindow(row,scope,now){
   }else meta.append(el('span',t('sub_no_reading')));
   win.append(meta);return win;
 }
+function renderSubscriptionScope(scope,now,codexLabel){
+  const card=el('article',undefined,'quota-scope');card.dataset.scope=JSON.stringify([scope.harness,scope.account,scope.plan_type]);
+  if(codexLabel)card.append(el('p',codexLabel,'quota-scope-kicker'));
+  const heading=el('h3',scope.harness==='claude'?'Claude Code':'Codex'),meta=el('p',undefined,'quota-scope-meta');
+  const limit=scope.account?quotaLimitLabel(scope.account):null,plan=scope.plan_type?subscriptionPlanName(scope.plan_type):t('plan_unknown'),planText=el('span',plan);if(scope.plan_type)planText.title=planRaw(scope.plan_type);
+  if(scope.latestObservedAt)meta.append(t('sub_latest_observed',{at:quotaDate(scope.latestObservedAt)}),' · ');
+  else if(scope.harness==='codex')meta.append(el('span',t('sub_undated'),'quota-stale'),' · ');
+  meta.append(limit?t('sub_limit',{name:limit}):t('sub_limit_unknown'),' · ',el('span',t('sub_plan_label')+': '),planText);if(Number.isInteger(scope.inferred_account))meta.append(' · ',el('span',t('sub_inferred',{n:scope.inferred_account})));
+  card.append(heading,meta);
+  const minutesToRender=Number.isInteger(scope.inferred_account)?[scope.minutes]:QUOTA_MINUTES;for(const minutes of minutesToRender)card.append(renderSubscriptionWindow(scope.rows.get(minutes)||null,{...scope,minutes},now));
+  return card;
+}
 function renderSubscriptions(){
-  const box=$('subscriptions-body');if(!box)return;box.replaceChildren();const rows=quotaRows();
+  const box=$('subscriptions-body');if(!box)return;const historyOpen=box.querySelector('.quota-history')?.open===true;box.replaceChildren();const rows=quotaRows();
   if(!rows.length){const empty=el('div',undefined,'empty quota-status-empty');empty.append(el('strong',t('sub_empty')),el('span',t('sub_empty_p')));box.append(empty);updateQuotaCountdowns();return}
-  const scopes=new Map();for(const row of rows){const inferred=Number.isInteger(row.inferred_account),key=JSON.stringify([row.harness,row.account,row.plan_type,inferred?row.inferred_account:null,inferred?row.minutes:null]);if(!scopes.has(key))scopes.set(key,{harness:row.harness,account:row.account,plan_type:row.plan_type,inferred_account:row.inferred_account,minutes:inferred?row.minutes:null,rows:new Map});scopes.get(key).rows.set(row.minutes,row)}
-  const grid=el('div',undefined,'quota-scopes'),now=Date.now();
-  for(const scope of scopes.values()){
-    const card=el('article',undefined,'quota-scope');card.dataset.scope=JSON.stringify([scope.harness,scope.account,scope.plan_type]);
-    const heading=el('h3',scope.harness==='claude'?'Claude Code':'Codex'),meta=el('p',undefined,'quota-scope-meta');
-    const limit=scope.account?quotaLimitLabel(scope.account):null,plan=scope.plan_type?subscriptionPlanName(scope.plan_type):t('plan_unknown'),planText=el('span',plan);if(scope.plan_type)planText.title=planRaw(scope.plan_type);meta.append(limit?t('sub_limit',{name:limit}):t('sub_limit_unknown'),' · ',el('span',t('sub_plan_label')+': '),planText);if(Number.isInteger(scope.inferred_account))meta.append(' · ',el('span',t('sub_inferred',{n:scope.inferred_account})));card.append(heading,meta);
-    const minutesToRender=Number.isInteger(scope.inferred_account)?[scope.minutes]:QUOTA_MINUTES;for(const minutes of minutesToRender)card.append(renderSubscriptionWindow(scope.rows.get(minutes)||null,{...scope,minutes},now));grid.append(card);
-  }
-  box.append(grid);updateQuotaCountdowns(now);
+  const {primary,other}=partitionSubscriptionScopes(subscriptionScopes(rows)),now=Date.now(),codexPrimary=primary.filter(scope=>scope.harness==='codex'),hasCodex=rows.some(row=>row.harness==='codex');
+  box.append(el('p',t('sub_identity_note'),'small muted quota-identity-note'));
+  if(hasCodex&&!codexPrimary.length)box.append(el('p',t('sub_no_dated_codex'),'notice quota-no-dated'));
+  const grid=el('div',undefined,'quota-scopes quota-primary-scopes'),codexLabel=codexPrimary.length>1?t('sub_latest_codex_plural'):t('sub_latest_codex');
+  if(codexPrimary.length>1)box.append(el('p',t('sub_latest_codex_tie'),'small muted quota-tie-note'));
+  for(const scope of primary)grid.append(renderSubscriptionScope(scope,now,scope.harness==='codex'?codexLabel:null));
+  if(primary.length)box.append(grid);
+  if(other.length){const history=el('details',undefined,'quota-history');history.open=historyOpen;history.append(el('summary',t('sub_history',{n:fmt(other.length)})));const historyGrid=el('div',undefined,'quota-scopes quota-history-scopes');for(const scope of other)historyGrid.append(renderSubscriptionScope(scope,now,null));history.append(historyGrid);box.append(history)}
+  updateQuotaCountdowns(now);
 }
 function setView(view,writeHash=true){
   const subscriptions=view==='subscriptions';document.body.classList.toggle('quota-focus',subscriptions);
@@ -940,6 +976,6 @@ const problems=imps.filter(i=>i.status!=='ok'||importDiag(i)>0);if(problems.leng
 const all=el('details',undefined,'import-all');all.append(el('summary',t('imp_all',{n:fmt(imps.length)})));for(const i of imps)all.append(el('p',importLine(i)));box.append(all)}
 function renderCoverage(){const sources=$('sources');sources.replaceChildren();for(const range of DATA.coverage.ranges||[]){const d=el('div',undefined,'source');d.append(el('strong',label(range.harness)),el('p',t('src_calls',{n:fmt(range.observations)})),el('p',range.first_event.slice(0,16).replace('T',' ')+' — '+range.last_event.slice(0,16).replace('T',' ')+' UTC'));const imports=(DATA.coverage.imports||[]).filter(i=>i.harness===range.harness);appendImports(d,imports,DATA.coverage.files_by_harness?DATA.coverage.files_by_harness[range.harness]||{files:0}:null);sources.append(d)}if(!(DATA.coverage.ranges||[]).length)sources.append(el('p',t('no_src'),'muted'));if((DATA.coverage.imports||[]).length)sources.append(el('p',t('diag_note'),'small muted'));sources.append(el('p',t('missing_src',{n:fmt(DATA.coverage.missing_source_files||0)}),'small muted'));$('privacy').textContent=t(DATA.privacy==='redacted'?'priv_shared':'priv_local');$('generated').textContent=t('generated',{t:DATA.generated_at.slice(0,16).replace('T',' '),tz:DATA.timezone});$('saved-at').textContent=DATA.saved_at?' · '+(DATA.reopen?t('saved_at_reopen',{path:DATA.saved_at,cmd:DATA.reopen}):t('saved_at',{path:DATA.saved_at})):''}
 {const top=$('to-top'),sync=()=>top.classList.toggle('hidden',window.scrollY<window.innerHeight*.9);addEventListener('scroll',sync,{passive:true});addEventListener('resize',sync);top.onclick=()=>window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});sync()}
-window.UsageReport={topPrompts,cr,short,analyticsRows,analyticsSeries,analyticsEfficiency,analyticsWeekly,get all(){return ALL},data:DATA,aggregate,cacheComparison,filterRecords,groupBuckets,csvCell,getSelected:()=>selected,energyOf,fmtE,referenceCost,glanceFacts,glanceText,glanceItems,efficiency:TokenEfficiency,get efficiencyBundle(){return this._efficiencyBundle||null},set efficiencyBundle(value){this._efficiencyBundle=value},efficiencyScenario:null};setLang(pick(DATA.lang),false);setView(location.hash.slice(1)==='subscriptions'?'subscriptions':'overview',false);window.reportReady=true}
+window.UsageReport={topPrompts,cr,short,analyticsRows,analyticsSeries,analyticsEfficiency,analyticsWeekly,subscriptionScopes,partitionSubscriptionScopes,get all(){return ALL},data:DATA,aggregate,cacheComparison,filterRecords,groupBuckets,csvCell,getSelected:()=>selected,energyOf,fmtE,referenceCost,glanceFacts,glanceText,glanceItems,efficiency:TokenEfficiency,get efficiencyBundle(){return this._efficiencyBundle||null},set efficiencyBundle(value){this._efficiencyBundle=value},efficiencyScenario:null};setLang(pick(DATA.lang),false);setView(location.hash.slice(1)==='subscriptions'?'subscriptions':'overview',false);window.reportReady=true}
 decode('report-i18n').then(d=>{I18N=d;return decode('report-data')}).then(main).catch(fail);
 </script></body></html>
