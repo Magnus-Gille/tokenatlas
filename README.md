@@ -58,6 +58,15 @@ Off until you opt in:
 - other machines: `tokenatlas collect --remote tag:host`, which needs ssh access and TokenAtlas on that machine
   (see [Other machines](docs/remote-machines.md)).
 
+## Coding agents and automation
+
+See the [agent CLI guide](docs/agents.md) for task-to-command recipes, stable JSON
+fields and exit codes. Reporting commands accept `--json`, including `doctor`.
+For headless use, `open --no-browser` / `show --print-path` return only the path;
+`TOKENATLAS_NO_BROWSER=1` disables browser launch for both. Add `--json` for a
+versioned path receipt. The [synthetic usability eval](docs/agent-eval.md) includes
+a ten-task fixture and a separate small-model evaluation protocol.
+
 ## Durable local usage history
 
 `tokenatlas` imports Claude, Codex, Pi, and OpenCode observations into a local SQLite

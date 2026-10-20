@@ -111,13 +111,13 @@ class RefreshAll(Base):
         self.assertEqual(by['claude']['status'], 'ok')
         self.assertEqual(by['claude']['observations_seen'], 1)
 
-    def test_partial_harness_exits_2(self):
+    def test_partial_harness_exits_1(self):
         path = self.claude()
         with path.open('a') as f:
             f.write('{not json\n')
         code, out, _ = self.run_cli('refresh', '--all')
         result = json.loads(out)
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 1)
         self.assertEqual(result['status'], 'partial')
 
     def test_root_with_all_rejected_and_one_required(self):
@@ -137,7 +137,7 @@ class RefreshErrors(Base):
         code, out, _ = self.run_cli('refresh', '--all')
         by = {x['harness']: x for x in json.loads(out)['harnesses']}
         self.assertNotEqual(by['codex']['status'], 'absent')
-        self.assertEqual(code, 2, out)
+        self.assertEqual(code, 1, out)
 
     def test_wrong_type_root_is_not_absent(self):
         self.claude()
@@ -146,7 +146,7 @@ class RefreshErrors(Base):
         code, out, _ = self.run_cli('refresh', '--all')
         by = {x['harness']: x for x in json.loads(out)['harnesses']}
         self.assertNotEqual(by['codex']['status'], 'absent')
-        self.assertEqual(code, 2, out)
+        self.assertEqual(code, 1, out)
 
     @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0), 'needs POSIX non-root')
     def test_nested_cowork_error_marks_claude_partial(self):
@@ -159,7 +159,7 @@ class RefreshErrors(Base):
         claude = {x['harness']: x for x in json.loads(out)['harnesses']}['claude']
         self.assertIn(claude['status'], ('partial', 'missing', 'error'))
         self.assertTrue(any('PermissionError' in e for e in claude['errors']), claude)
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 1)
         self.assertEqual(why.cowork_roots(), [why.COWORK_SESSIONS / 'o1/a/local_1/.claude/projects'])
 
     @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0), 'needs POSIX non-root')
@@ -173,7 +173,7 @@ class RefreshErrors(Base):
         result = json.loads(out)
         self.assertNotEqual(result['status'], 'ok')
         self.assertTrue(any('PermissionError' in e for e in result['errors']), result)
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 1)
 
     def test_wrong_type_cowork_projects_is_an_error(self):
         self.claude()
@@ -185,7 +185,7 @@ class RefreshErrors(Base):
         claude = {x['harness']: x for x in json.loads(out)['harnesses']}['claude']
         self.assertNotEqual(claude['status'], 'ok')
         self.assertEqual([e for e in claude['errors'] if 'local_' in e], [f'{bad}: not a directory'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 1)
 
     @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0), 'needs POSIX non-root')
     def test_unreadable_cowork_projects_is_an_error(self):
@@ -197,7 +197,7 @@ class RefreshErrors(Base):
         code, out, _ = self.run_cli('refresh', '--all')
         claude = {x['harness']: x for x in json.loads(out)['harnesses']}['claude']
         self.assertTrue(any('PermissionError' in e for e in claude['errors']), claude)
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 1)
 
     def test_oserror_in_one_harness_does_not_stop_others(self):
         demo.build_home(self.home, 1)
@@ -215,7 +215,7 @@ class RefreshErrors(Base):
         for h in ('claude', 'pi', 'opencode'):
             self.assertEqual(by[h]['status'], 'ok')
         self.assertNotEqual(result['status'], 'ok')
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 1)
 
     @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0), 'needs POSIX non-root')
     def test_unlistable_cowork_marks_claude_partial(self):
@@ -227,7 +227,7 @@ class RefreshErrors(Base):
         claude = {x['harness']: x for x in json.loads(out)['harnesses']}['claude']
         self.assertNotEqual(claude['status'], 'ok')
         self.assertTrue(claude['errors'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 1)
 
 
 class Revision(Base):
@@ -313,7 +313,7 @@ class ConditionalReport(Base):
         return s.st_mtime_ns, s.st_ino
 
     def assertSkipped(self, result, reason):
-        self.assertEqual(result, {'html': str(self.html.resolve()), 'skipped': True, 'reason': reason})
+        self.assertEqual(result, {'schema':'tokenatlas.report/1', 'html': str(self.html.resolve()), 'skipped': True, 'reason': reason})
 
     def test_state_marker_in_html(self):
         self.report()
@@ -634,12 +634,12 @@ class BrowserFailure(Base):
         super().setUp()
         write_claude(why.CLAUDE_PROJECTS / 'proj/a.jsonl')
 
-    def test_false_return_and_error_exit_2(self):
+    def test_false_return_and_error_exit_1(self):
         target = Path(self.tmp.name) / 'r.html'
         for kw in ({'return_value': False}, {'side_effect': __import__('webbrowser').Error('no runner')}):
             with self.subTest(kw=kw), patch('webbrowser.open', **kw):
                 code, _, err = self.run_cli('open', '--html', str(target))
-                self.assertEqual(code, 2)
+                self.assertEqual(code, 1)
                 self.assertIn(str(target), err)
 
 

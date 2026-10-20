@@ -1075,6 +1075,26 @@ class RoundSix(unittest.TestCase):
         found = re.search(r'id="report-data"[^>]*>([^<]+)<', out.read_text(encoding='utf-8')).group(1)
         return json.loads(gzip.decompress(base64.b64decode(found)).decode())
 
+    def test_empty_filtered_report_returns_no_data_without_reading_or_writing_html(self):
+        import contextlib
+        import io
+        from tokenatlas.__main__ import main
+
+        self.refresh(session_rows())
+        fresh = self.root / 'fresh.html'
+        stale = self.root / 'stale.html'
+        stale.write_text('previous report')
+        for path in (fresh, stale):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(['--db', self.db, 'report', '--html', str(path), '--project', '/does/not/exist', '--json'])
+            self.assertEqual((code, out.getvalue()), (4, ''), path)
+            envelope = json.loads(err.getvalue())
+            self.assertEqual((envelope['schema'], envelope['ok'], envelope['error']['code']),
+                             ('tokenatlas.report/1', False, 'no_data'))
+        self.assertFalse(fresh.exists())
+        self.assertEqual(stale.read_text(), 'previous report')
+
     def test_statusline_cache_does_not_count_a_rejection(self):
         from tokenatlas import statusline
         write(self.root / 'logs', [user('t1', 0), call('a', 1, 5000), rejected('r1', 2)])
@@ -1133,14 +1153,17 @@ class Cli(unittest.TestCase):
             self.assertIn('[Hit the 5-hour limit]', run('top')[1])
             def payload(*extra):
                 out = root / 'r.html'
-                run('report', '--html', str(out), *extra)
+                self.assertEqual(run('report', '--html', str(out), *extra)[0], 0)
                 page = out.read_text(encoding='utf-8')
                 found = re.search(r'id="report-data"[^>]*>([^<]+)<', page).group(1)
                 return json.loads(gzip.decompress(base64.b64decode(found)).decode())
             self.assertEqual(len(payload().get('limit_hits', [])), 1)
             self.assertEqual(len(payload('--harness', 'claude').get('limit_hits', [])), 1)
-            self.assertNotIn('limit_hits', payload('--harness', 'codex'))
-            self.assertNotIn('limit_hits', payload('--start', '2026-09-05T00:00:00+00:00'))
+            for index, empty_filter in enumerate((['--harness', 'codex'], ['--start', '2026-09-05T00:00:00+00:00'])):
+                empty_output = root / f'empty-{index}.html'
+                code, text = run('report', '--html', str(empty_output), *empty_filter)
+                self.assertEqual((code, text), (4, ''))
+                self.assertFalse(empty_output.exists())
             self.assertEqual(len(payload('--start', '2026-09-01T00:00:00+00:00', '--end', '2026-09-10T00:00:00+00:00').get('limit_hits', [])), 1)
             code, text = run('insights', '--json')
             self.assertTrue(any(f['id'] == 'limit_hits' for f in json.loads(text)['facts']))

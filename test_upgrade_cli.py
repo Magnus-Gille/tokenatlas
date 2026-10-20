@@ -50,9 +50,8 @@ class UpgradeCliTests(unittest.TestCase):
              patch('tokenatlas.history.History') as history, \
              patch('sqlite3.connect') as connect, \
              patch('sys.stderr'):
-            with self.assertRaises(SystemExit) as raised:
-                cli.main(['--db', '/tmp/history.sqlite3', 'upgrade', '--check'])
-        self.assertEqual(raised.exception.code, 2)
+            code=cli.main(['--db', '/tmp/history.sqlite3', 'upgrade', '--check'])
+        self.assertEqual(code, 2)
         upgrade.run.assert_not_called()
         default_db.assert_not_called()
         history.assert_not_called()
@@ -63,9 +62,8 @@ class UpgradeCliTests(unittest.TestCase):
         upgrade.run = unittest.mock.Mock()
         with patch.dict(sys.modules, {'tokenatlas.upgrade': upgrade}), \
              patch.object(tokenatlas, 'upgrade', upgrade, create=True), patch('sys.stderr'):
-            with self.assertRaises(SystemExit) as raised:
-                cli.main(['upgrade', '--check', '--version', '1.20.0'])
-        self.assertEqual(raised.exception.code, 2)
+            code=cli.main(['upgrade', '--check', '--version', '1.20.0'])
+        self.assertEqual(code, 2)
         upgrade.run.assert_not_called()
 
 

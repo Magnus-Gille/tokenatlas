@@ -1,4 +1,5 @@
 """Session trees, outcome ratings and cost per passed result; local only, no network or LLM calls."""
+from tokenatlas.cli_contract import NotFound
 import errno
 import json
 import os
@@ -101,7 +102,7 @@ def _resolve(records, root):
         return prefix, rest
     found = sorted({(r['harness'], r['session']) for r in records if r['session'] == root})
     if not found:
-        raise ValueError(f'no session {root!r} in history')
+        raise NotFound(f'no session {root!r} in history')
     if len(found) > 1:
         raise ValueError(f'session {root!r} is ambiguous; use one of: ' + ', '.join(f'{h}:{s}' for h, s in found))
     return found[0]
@@ -146,7 +147,7 @@ def build_tree(records, root, *, infer=True, price=None):
             if r.get('parent_session'):
                 parents.setdefault((r['harness'], r['session']), set()).add(r['parent_session'])
     if (harness, session) not in rows_of and session not in subs:
-        raise ValueError(f'no session {root!r} in history')
+        raise NotFound(f'no session {root!r} in history')
     visited = set()
 
     def restat(n):

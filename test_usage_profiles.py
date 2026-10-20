@@ -36,9 +36,9 @@ class UsageProfileTests(unittest.TestCase):
             db=Path(directory)/'history.sqlite3';path=usage_profiles.path_for(db)
             path.write_text('not json');path.chmod(0o600)
             stderr=io.StringIO()
-            with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
-                __main__.main(['--db',str(db),'plan','set','--harness','claude','max-5x'])
-            self.assertEqual(error.exception.code,2)
+            with contextlib.redirect_stderr(stderr):
+                code=__main__.main(['--db',str(db),'plan','set','--harness','claude','max-5x'])
+            self.assertEqual(code,2)
             self.assertIn('usage:',stderr.getvalue())
             self.assertEqual(path.read_text(),'not json')
 

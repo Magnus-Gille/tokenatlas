@@ -728,9 +728,11 @@ def explain_empty(args, total, newest, skipped_roots, scanned):
 def run(args):
     """`overhead` command: optional rescan of the default roots, then the report; returns the exit status."""
     from tokenatlas import why
+    from tokenatlas.cli_contract import NotFound, emit, iso_date
+    if args.since:args.since=iso_date(args.since,'since').isoformat()
     from tokenatlas.history import History
     if not args.refresh and not args.db.expanduser().is_file():
-        raise ValueError('history database does not exist; run refresh or overhead --refresh first')
+        raise NotFound('history database does not exist; run refresh or overhead --refresh first')
     roots = {h: why.harness_root(h)[0] for h in ('claude', 'codex', 'pi', 'opencode')}
     scanned, skipped = [], []
     with History(args.db, read_only=not args.refresh) as history:
@@ -755,5 +757,6 @@ def run(args):
         result['reason_code'], result['reason'] = code, text
         if args.json:
             print('overhead: ' + text, file=sys.stderr)
-    print(json.dumps(result, indent=2, sort_keys=True) if args.json else render(result))
+    if args.json:emit('overhead',result)
+    else:print(render(result))
     return 0
