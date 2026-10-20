@@ -1,4 +1,5 @@
 """Explicit, conservative package-manager upgrade. Never opens usage history."""
+import contextlib
 import importlib.metadata as metadata
 import importlib.util
 import hashlib
@@ -300,11 +301,16 @@ def mutate(installation, target):
 
 
 def run(args):
+    from tokenatlas.cli_contract import CLIError, emit
+    json_mode=getattr(args,'json',False)
+    def fail(exc,status):
+        if json_mode:raise CLIError(str(exc),status) from exc
+        print(terminal_safe(exc),file=sys.stderr)
+        return status
     try:
         target = validate_version(args.version) if args.version else None
     except ValueError as exc:
-        print(terminal_safe(exc),file=sys.stderr)
-        return 2
+        return fail(exc,2)
     try:
         try:
             installation = detect()
@@ -319,15 +325,20 @@ def run(args):
                 target = latest_version()
             except ValueError as exc:
                 raise Failed(str(exc)) from exc
-        print(terminal_safe(f'Current: {__version__}; target: {target}; {details}'))
+        result=dict(current=__version__,target=target,installation=None if installation is None else dict(manager=installation.manager,prefix=str(installation.prefix),python=str(installation.python)),details=details)
+        if not json_mode:print(terminal_safe(f'Current: {__version__}; target: {target}; {details}'))
         if args.check or target == __version__:
+            if json_mode:emit('upgrade',dict(result,status='checked' if args.check else 'unchanged'))
             return 0
         if args.version is None and tuple(map(int,target.split('.'))) < tuple(map(int,__version__.split('.'))):
-            print('Already newer than the latest stable release; use --version for an intentional rollback.')
+            if json_mode:emit('upgrade',dict(result,status='unchanged',reason='already newer than latest stable'))
+            else:print('Already newer than the latest stable release; use --version for an intentional rollback.')
             return 0
         if os.name == 'nt' and Path(sys.argv[0]).suffix.lower() == '.exe':
             raise Unsupported(f'Windows cannot replace the running console launcher. Run: "{installation.python}" -m tokenatlas upgrade --version {target} --yes')
         if not args.yes:
+            if json_mode:
+                raise Unsupported('JSON upgrade requires --yes; use --check to inspect without changing anything')
             if not sys.stdin.isatty():
                 raise Unsupported('noninteractive upgrade requires --yes; use --check to inspect without changing anything')
             try:
@@ -336,18 +347,17 @@ def run(args):
                 raise Unsupported('no confirmation received; installation was not changed; use --yes for an intentional noninteractive upgrade') from exc
             if answer.strip().lower() not in ('y','yes'):
                 raise Unsupported('upgrade cancelled; installation was not changed')
-        print(terminal_safe('Command: '+shlex.join(command(installation,target))),flush=True)
+        print(terminal_safe('Command: '+shlex.join(command(installation,target))),file=sys.stderr if json_mode else sys.stdout,flush=True)
         with installation_lock(installation.prefix):
             if detect() != installation:
                 raise Unsupported('installation changed while waiting; rerun upgrade from the current CLI')
-            mutate(installation,target)
+            with contextlib.redirect_stdout(sys.stderr) if json_mode else contextlib.nullcontext():
+                mutate(installation,target)
+        if json_mode:emit('upgrade',dict(result,status='installed'))
         return 0
     except Busy as exc:
-        print(terminal_safe(exc),file=sys.stderr)
-        return 3
+        return fail(exc,1)
     except Unsupported as exc:
-        print(terminal_safe(exc),file=sys.stderr)
-        return 2
+        return fail(exc,2)
     except (Failed,OSError,subprocess.SubprocessError) as exc:
-        print(terminal_safe(exc),file=sys.stderr)
-        return 1
+        return fail(exc,1)

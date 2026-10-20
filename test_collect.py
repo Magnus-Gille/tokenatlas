@@ -97,7 +97,7 @@ class CollectTest(CollectBase):
     def test_no_hosts_runs_refresh_and_report_only(self):
         proc = self.collect()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertEqual(self.steps(proc.stdout), ['refresh', 'report'])
+        self.assertEqual(self.steps(proc.stderr), ['refresh', 'report'])
         self.assertTrue((self.state / 'report.html').exists())
         self.assertEqual(self.sync_calls(), [])
         self.assertTrue((self.state / 'collect.lock').exists(), 'the lock file is kept')
@@ -108,12 +108,12 @@ class CollectTest(CollectBase):
         (self.state / 'top-prompts.json').chmod(0o600)
         proc = self.collect('--remote', 'pi:myhost', '--remote-sync', str(self.sync))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertEqual(self.steps(proc.stdout), ['refresh', 'top', 'report', 'remote sync', 'report after sync'])
+        self.assertEqual(self.steps(proc.stderr), ['refresh', 'top', 'report', 'remote sync', 'report after sync'])
         calls = self.sync_calls()
         self.assertEqual(len(calls), 1)
         self.assertIn('hosts=pi:myhost', calls[0])
         self.assertIn('report_exists=1', calls[0], 'the first report was built before the sync')
-        self.assertRegex(proc.stdout, r'refresh exit=0 \(\d+\.\ds\)')
+        self.assertRegex(proc.stderr, r'refresh exit=0 \(\d+\.\ds\)')
 
     def test_top_keeps_the_stored_k_and_by(self):
         from tokenatlas import prompt_store
@@ -123,7 +123,7 @@ class CollectTest(CollectBase):
             store.chmod(0o600)
             proc = self.collect()
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertIn('top', self.steps(proc.stdout))
+            self.assertIn('top', self.steps(proc.stderr))
             self.assertEqual(prompt_store.load_meta(store)[1:], (k, by))
 
     def test_top_is_skipped_and_the_store_untouched_without_a_valid_choice(self):
@@ -134,8 +134,8 @@ class CollectTest(CollectBase):
             store.chmod(0o600)
             proc = self.collect()
             self.assertEqual(proc.returncode, 1, (k, by, proc.stdout + proc.stderr))
-            self.assertIn('top: skipped: %s has no valid recorded k/by' % store, proc.stdout)
-            self.assertNotIn('top', self.steps(proc.stdout))
+            self.assertIn('top: skipped: %s has no valid recorded k/by' % store, proc.stderr)
+            self.assertNotIn('top', self.steps(proc.stderr))
             self.assertEqual(store.read_bytes(), raw, (k, by))
 
     @unittest.skipIf(os.name == 'nt', 'POSIX permission bits')
@@ -146,26 +146,26 @@ class CollectTest(CollectBase):
         store.chmod(0o644)
         proc = self.collect()
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn('top: skipped:', proc.stdout)
-        self.assertNotIn('top', self.steps(proc.stdout))
+        self.assertIn('top: skipped:', proc.stderr)
+        self.assertNotIn('top', self.steps(proc.stderr))
         self.assertEqual(store.read_bytes(), raw)
 
     def test_top_only_when_opted_in(self):
         proc = self.collect()
-        self.assertNotIn('top', self.steps(proc.stdout))
+        self.assertNotIn('top', self.steps(proc.stderr))
 
     @unittest.skipIf(os.name == 'nt', 'the remote sync is a bash script; collect skips it on Windows')
     def test_second_report_runs_when_sync_fails(self):
         proc = self.collect('--remote', 'pi:myhost', '--remote-sync', str(self.sync), FAKE_MODE='fail')
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertEqual(self.steps(proc.stdout), ['refresh', 'report', 'remote sync', 'report after sync'])
-        self.assertIn('remote sync exit=3', proc.stdout)
+        self.assertEqual(self.steps(proc.stderr), ['refresh', 'report', 'remote sync', 'report after sync'])
+        self.assertIn('remote sync exit=3', proc.stderr)
 
     @unittest.skipIf(os.name == 'nt', 'the remote sync is a bash script; collect skips it on Windows')
     def test_no_report_skips_both_reports(self):
         proc = self.collect('--no-report', '--remote', 'pi:myhost', '--remote-sync', str(self.sync))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertEqual(self.steps(proc.stdout), ['refresh', 'remote sync'])
+        self.assertEqual(self.steps(proc.stderr), ['refresh', 'remote sync'])
         self.assertFalse((self.state / 'report.html').exists())
 
     @unittest.skipIf(os.name == 'nt', 'the remote sync is a bash script; collect skips it on Windows')
@@ -188,7 +188,7 @@ class CollectTest(CollectBase):
     def test_missing_sync_script_is_a_failure(self):
         proc = self.collect('--remote', 'pi:myhost', '--remote-sync', str(self.tmp / 'nope.sh'))
         self.assertEqual(proc.returncode, 1, proc.stdout)
-        self.assertEqual(self.steps(proc.stdout)[-1], 'report after sync')
+        self.assertEqual(self.steps(proc.stderr)[-1], 'report after sync')
 
     @unittest.skipUnless(POSIX, 'process groups are POSIX only')
     def test_sync_timeout_kills_process_group_and_still_reports(self):
@@ -196,8 +196,8 @@ class CollectTest(CollectBase):
         proc = self.collect('--remote', 'pi:myhost', '--remote-sync', str(self.sync), '--sync-timeout', '2', FAKE_MODE='hang')
         self.assertLess(time.monotonic() - start, 30)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn('remote sync: timeout after 2s', proc.stdout)
-        self.assertEqual(self.steps(proc.stdout)[-1], 'report after sync')
+        self.assertIn('remote sync: timeout after 2s', proc.stderr)
+        self.assertEqual(self.steps(proc.stderr)[-1], 'report after sync')
         pid = int(self.child_pid.read_text())
         time.sleep(0.3)
         self.assertFalse(alive(pid), 'the sleeping grandchild survived the timeout')
@@ -234,7 +234,7 @@ class CollectTest(CollectBase):
         proc.wait()
         second = self.collect()
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
-        self.assertIn('already running', second.stdout)
+        self.assertIn('already running', second.stderr)
         self.assertTrue(alive(child))
 
     @unittest.skipUnless(POSIX, 'signals and process groups are POSIX only')
@@ -261,7 +261,7 @@ class CollectTest(CollectBase):
             (bindir / name).chmod(0o755)
         self.addCleanup(lambda: [kill_quietly(int(x)) for x in pids.read_text().split() if alive_or_unknown(int(x))] if pids.exists() else None)
         proc = self.collect('--remote', 'a:h1', '--sync-timeout', '3', PATH=f'{bindir}:/usr/bin:/bin', timeout=60)
-        self.assertIn('remote sync: timeout after 3s', proc.stdout, proc.stdout + proc.stderr)
+        self.assertIn('remote sync: timeout after 3s', proc.stderr, proc.stdout + proc.stderr)
         self.assertEqual(proc.returncode, 1)
         time.sleep(0.3)
         found = [int(x) for x in pids.read_text().split()]
@@ -271,7 +271,7 @@ class CollectTest(CollectBase):
     @unittest.skipUnless(os.name == 'nt', 'Windows behaviour')
     def test_windows_skips_remote_sync_but_reports(self):
         proc = self.collect('--remote-sync', str(self.sync), REMOTE_HOSTS_OVERRIDE='a:h1')
-        self.assertIn('remote sync skipped', proc.stdout)
+        self.assertIn('remote sync skipped', proc.stderr)
         self.assertFalse(self.calls.exists() and self.sync_calls(), proc.stdout)
 
 
@@ -291,8 +291,8 @@ class CollectLockTest(CollectBase):
         self.hold()
         proc = self.collect('--remote', 'pi:myhost', '--remote-sync', str(self.sync))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn('collect: already running', proc.stdout)
-        self.assertEqual(self.steps(proc.stdout), [])
+        self.assertIn('collect: already running', proc.stderr)
+        self.assertEqual(self.steps(proc.stderr), [])
         self.assertEqual(self.sync_calls(), [])
         self.assertFalse((self.state / 'report.html').exists())
 
@@ -302,13 +302,13 @@ class CollectLockTest(CollectBase):
         holder.wait()
         proc = self.collect()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertNotIn('already running', proc.stdout)
-        self.assertEqual(self.steps(proc.stdout), ['refresh', 'report'])
+        self.assertNotIn('already running', proc.stderr)
+        self.assertEqual(self.steps(proc.stderr), ['refresh', 'report'])
 
     def test_lock_released_after_normal_run(self):
         self.collect()
         proc = self.collect()
-        self.assertEqual(self.steps(proc.stdout), ['refresh', 'report'])
+        self.assertEqual(self.steps(proc.stderr), ['refresh', 'report'])
 
 
 WIN_HOLDER = '''import msvcrt,sys
@@ -324,12 +324,12 @@ class CollectWindowsLockTest(CollectBase):
         self.assertEqual(holder.stdout.readline().strip(), 'held')
         busy = self.collect()
         self.assertEqual(busy.returncode, 0, busy.stdout + busy.stderr)
-        self.assertIn('already running', busy.stdout)
+        self.assertIn('already running', busy.stderr)
         holder.stdin.close()
         holder.wait(timeout=20)
         proc = self.collect()
-        self.assertNotIn('already running', proc.stdout)
-        self.assertEqual(self.steps(proc.stdout), ['refresh', 'report'])
+        self.assertNotIn('already running', proc.stderr)
+        self.assertEqual(self.steps(proc.stderr), ['refresh', 'report'])
 
 
 

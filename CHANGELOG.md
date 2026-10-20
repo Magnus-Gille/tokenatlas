@@ -4,9 +4,18 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Added
+
+- Agent-facing `--json` receipts across reporting/configuration commands, including doctor, refresh, report, collect, rate, snapshot, import, open/show and upgrade. CLI JSON has a versioned `tokenatlas.<command>/1` schema. Existing `top` and `insights` field names are retained and documented in `docs/agents.md`; renaming/removing these fields requires a schema-version change and a breaking-change entry here.
+- Actionable examples and option/default descriptions in command help, linked agent documentation, and a reproducible ten-task synthetic CLI smoke/evaluation harness (independent model evaluation still required).
+- Headless `open --no-browser`, `show --print-path` and `TOKENATLAS_NO_BROWSER=1`; JSON mode returns a path receipt instead of a bare path.
+
 ### Changed
 
 - The subscriptions view highlights the latest saved Codex reading and keeps older or other readings in a collapsed section with dates. Equally recent scopes remain visible; separate readings do not establish separate accounts (#168).
+
+- **Breaking error-contract change:** missing entities now exit 3 and empty analytics selections exit 4, instead of usage exit 2. Partial refreshes and browser/runtime failures exit 1. JSON errors use an `ok: false` envelope on stderr, with code, message and hint (and optional diagnostic details). Collection diagnostics move from stdout to stderr in human mode; JSON mode includes them in the receipt/error details. Existing JSON results gain an additive schema key.
+- CLI ISO date/time inputs now explain accepted formats and accept date-only/local timestamps using the documented command timezone.
 
 ### Fixed
 

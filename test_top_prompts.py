@@ -252,8 +252,12 @@ class Cli(Base):
         self.assertIn('n/a', self.top()[1])
 
     def test_filters(self):
-        self.assertEqual(json.loads(self.top('--json', '--harness', 'codex')[1])['prompts'], [])
-        self.assertEqual(json.loads(self.top('--json', '--project', '/nope')[1])['prompts'], [])
+        for args in (('--harness', 'codex'), ('--project', '/nope')):
+            code, out, err = self.top('--json', *args)
+            self.assertEqual((code, out), (4, ''), args)
+            envelope = json.loads(err)
+            self.assertEqual((envelope['schema'], envelope['ok'], envelope['error']['code']),
+                             ('tokenatlas.top/1', False, 'no_data'))
         res = json.loads(self.top('--json', '--start', '2026-09-03T10:30:00+00:00')[1])
         self.assertEqual([p['turn_id'] for p in res['prompts']], ['u2'])
         res = json.loads(self.top('--json', '--end', '2026-09-03T10:30:00+00:00')[1])
@@ -266,12 +270,22 @@ class Cli(Base):
         self.assertEqual(res['unattributed_observations'], 0)
 
     def test_errors(self):
-        self.assertEqual(self.top('--start', '2026-09-03T10:30:00')[0], 2)
+        naive = self.top('--json', '--start', '2026-09-03T10:00:00')
+        aware = self.top('--json', '--start', '2026-09-03T10:00:00+00:00')
+        self.assertEqual((naive[0], aware[0]), (0, 0))
+        self.assertEqual(json.loads(naive[1]), json.loads(aware[1]))
+        malformed = self.top('--json', '--start', 'not-a-date')
+        self.assertEqual((malformed[0], malformed[1]), (2, ''))
+        self.assertEqual(json.loads(malformed[2])['error']['code'], 'usage')
         self.assertEqual(self.top('-n', '0')[0], 2)
         self.db.unlink() if self.db.exists() else None
         for p in self.db.parent.glob('history.sqlite3*'):
             p.unlink()
-        self.assertEqual(self.top()[0], 2)
+        code, out, err = self.top('--json')
+        self.assertEqual((code, out), (3, ''))
+        envelope = json.loads(err)
+        self.assertEqual((envelope['schema'], envelope['ok'], envelope['error']['code']),
+                         ('tokenatlas.top/1', False, 'not_found'))
 
 
 def pi_rows(extra_user=True):

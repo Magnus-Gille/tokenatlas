@@ -949,7 +949,9 @@ def _run_wrapped(args, db, stdin, now):
 
 def run(argv, db=None, stdin=None, now=None):
     """Entry point: print one line and return 0, whatever happens. It records quota readings unless --no-record-quota or TOKENATLAS_NO_QUOTA=1 (record_quota); --record-quota is a no-op."""
-    parser = argparse.ArgumentParser(prog='tokenatlas statusline', description='Claude Code statusline: reads its JSON payload on stdin and the cache refresh writes; no network.')
+    from tokenatlas.cli_contract import EXAMPLES, HelpFormatter
+    parser = argparse.ArgumentParser(prog='tokenatlas statusline', description='Claude Code statusline: reads its JSON payload on stdin and the cache refresh writes; no network.',
+                                     formatter_class=HelpFormatter,epilog='Examples:\n  '+EXAMPLES['statusline'])
     parser.add_argument('--setup', action='store_true', help="Print the statusLine snippet for Claude Code's settings and its location, without editing it.")
     parser.add_argument('--record-quota', action='store_true', help='Accepted for compatibility; recording is on by default.')
     parser.add_argument('--no-record-quota', action='store_true', help=f'Do not append the 5-hour and weekly quota readings to {QUOTA_NAME} next to the history (also TOKENATLAS_NO_QUOTA=1).')
@@ -957,7 +959,7 @@ def run(argv, db=None, stdin=None, now=None):
     parser.add_argument('--wrap-timeout', type=_wrap_timeout, default=5, metavar='SECONDS', help='Wrapped command deadline (default 5 seconds; at most 60).')
     parser.add_argument('--wrap-shell', choices=('sh', 'bash', 'powershell', 'cmd'), help='Shell Claude uses for the original command. With --setup --wrap: sh by default on POSIX; required on Windows (Git Bash or PowerShell).')
     parser.add_argument('--wrap-shell-base64', help=argparse.SUPPRESS)
-    parser.add_argument('command', nargs=argparse.REMAINDER)
+    parser.add_argument('command', nargs=argparse.REMAINDER, help='Command to run with --wrap after --; default none.')
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:  # --help exits 0 after printing; a bad option must not break the status bar: fallback line, exit 0

@@ -655,12 +655,20 @@ class Cli(Base):
         self.assertEqual(res['requests'], 1)
         self.assertEqual(res['window']['start'], '2026-09-03T10:30:00+00:00')
         self.assertEqual(json.loads(self.insights('--json', '--days', '36500')[1])['requests'], 3)
-        code, out, _ = self.insights('--days', '1')
-        self.assertEqual(code, 0)
-        self.assertIn('no cost facts', out.lower())
+        code, out, err = self.insights('--json', '--days', '1')
+        self.assertEqual((code, out), (4, ''))
+        envelope = json.loads(err)
+        self.assertEqual((envelope['schema'], envelope['ok'], envelope['error']['code']),
+                         ('tokenatlas.insights/1', False, 'no_data'))
         self.assertEqual(self.insights('--days', '1', '--start', '2026-09-03T10:30:00+00:00')[0], 2)
         self.assertEqual(self.insights('--days', '0')[0], 2)
-        self.assertEqual(self.insights('--start', '2026-09-03T10:30:00')[0], 2)
+        naive = self.insights('--json', '--start', '2026-09-03T10:00:00')
+        aware = self.insights('--json', '--start', '2026-09-03T10:00:00+00:00')
+        self.assertEqual((naive[0], aware[0]), (0, 0))
+        self.assertEqual(json.loads(naive[1]), json.loads(aware[1]))
+        malformed = self.insights('--json', '--start', 'not-a-date')
+        self.assertEqual((malformed[0], malformed[1]), (2, ''))
+        self.assertEqual(json.loads(malformed[2])['error']['code'], 'usage')
 
 
 
