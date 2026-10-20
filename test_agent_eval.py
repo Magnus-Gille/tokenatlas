@@ -14,7 +14,7 @@ class AgentEval(unittest.TestCase):
             root = Path(tmp) / 'eval'
             env, db = agent_eval.prepare(root)
             self.assertEqual(env['TOKENATLAS_NO_BROWSER'], '1')
-            self.assertTrue(db.is_relative_to(root))
+            self.assertTrue(db.is_relative_to(root.resolve()))
             self.assertEqual(len(json.loads((root / 'tasks.json').read_text())), 10)
             summary = agent_eval.baseline(root, env, db)
             self.assertEqual(summary['passed'], 10, summary)
