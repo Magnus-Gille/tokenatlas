@@ -149,7 +149,93 @@ finds nothing new leaves the revision alone; a re-import of identical rows with 
 `tokenatlas open` reuses a background report built with
 `report --html $XDG_STATE_HOME/tokenatlas/report.html --private` when nothing changed, and only opens it.
 
-The report is available in Swedish and English. `--lang auto|sv|en` (on `report` and `open`, default `auto`) picks the language: `auto` follows the browser (`sv` gives Swedish, anything else English). The SV/EN toggle in the report header switches live and remembers the choice in the browser when storage is available; an explicit `--lang` wins over a remembered choice. `--lang` is part of the report identity, so changing it rebuilds a conditional report.
+The report is available in Swedish and English. `--lang auto|sv|en` (on `report` and `open`, default `auto`) picks the language: `auto` uses the saved view language, if set, then the browser (`sv` gives Swedish, anything else English). The SV/EN toggle in the report header switches live and remembers the choice in the browser when storage is available; an explicit `--lang` wins over a remembered choice. `--lang` is part of the report identity, so changing it rebuilds a conditional report.
+
+### Choosing what the report shows
+
+Save your usual report layout and opening filters with `tokenatlas view`. This changes
+HTML built by `report`, `open`, and scheduled `collect`; it does not change collection,
+delete data, or filter command-line analytics. Existing HTML stays as it was until rebuilt
+(`show` opens the existing file without rebuilding).
+
+```sh
+tokenatlas view                         # current layout and available section ids
+tokenatlas view --json                  # versioned, machine-readable configuration
+tokenatlas view set --sections glance,turns,limits,quota-windows,facts
+tokenatlas view hide energy sessions
+tokenatlas view show energy             # append to the current order, without duplicates
+tokenatlas view default --period 30d --harness codex --plan team
+tokenatlas view default --plan ''       # clear one saved default
+tokenatlas view set --top 20 --lang sv --money-first
+tokenatlas view preset subscription     # also api-cost, minimal, full
+tokenatlas view export > my-view.json
+tokenatlas view import my-view.json
+tokenatlas view reset                   # everything, original order, no saved defaults
+```
+
+`set --sections` replaces the selection **in the given order**. Use `--sections ''`
+for no sections. `hide` preserves the remaining order; `show` appends in argument order.
+Presets replace the entire view, including filters and display options: `subscription`
+puts limit hits and quota windows first; `api-cost` puts cost facts and turns first;
+`minimal` shows glance, KPIs and turns; `full` restores all sections in the original order.
+`--top` controls the costliest-turn count (1–10000, default 10). `--money-first` moves
+cost to the first turn column; `--no-money-first` restores the original column order.
+
+Stable section ids, in the default order:
+
+| Id | Report content |
+| --- | --- |
+| `glance` | At a glance |
+| `glossary` | Terms (initially collapsed) |
+| `kpis` | Token KPIs |
+| `analytics` | Request analytics |
+| `efficiency` | Token efficiency |
+| `turns` | Costliest turns |
+| `limits` | Limit hits and quota calibration |
+| `quota-windows` | Quota windows |
+| `facts` | Cost facts |
+| `plan-facts` | Plan facts |
+| `usage` | Clients and local inference |
+| `work` | Work context |
+| `energy` | Energy estimate |
+| `charts` | Timeline and ranking |
+| `cache` | Cache comparisons |
+| `sessions` | Sessions |
+| `coverage` | Data coverage |
+
+The original layout nests efficiency inside analytics and quota windows inside limits.
+Custom layouts can select and order either child independently, even without its parent.
+Empty, data-dependent sections may still be absent when there is nothing to show.
+The page header, filters, diagnostic notices, footer and separate Subscriptions view
+remain available regardless of the section selection.
+
+Opening defaults support `--period` (`all` or a day count such as `7d` or `30d`),
+`--harness`, `--plan`, `--project` (exact full project identity), `--session`, `--model`,
+`--effort`, `--provider`, `--agent`, `--thread-kind`, `--search`, and `--account`
+(the latter filters quota windows only; request records do not have an account field).
+A period ends on the snapshot's latest local observation date, including that day.
+These are ordinary page filters: clear them with **Reset filters**. A saved value absent
+from a snapshot remains selected with zero matches rather than silently showing all data.
+Language changes preserve current selections, including filters you have cleared.
+For language, explicit `--lang sv`/`en` on `report`, `open`, or `collect` wins;
+omitted/`auto` uses the saved view language, then the page's remembered/browser choice.
+`view set --lang auto` removes the saved language preference.
+
+The page notes that a saved view is active, names `tokenatlas view` for customisation,
+and offers **Show everything and clear filters**. That restores the original layout
+and nesting for this page only; it does not overwrite your saved file. Hiding a section
+is **not redaction**: the offline report still contains the underlying data for recovery.
+Shared reports keep the section selection/order and public defaults, but never embed
+project, session, account, agent or free-text search defaults. Custom model/plan/provider
+labels are omitted too unless they meet the report's existing public-name allowlist.
+
+Preferences live in `<state>/view.json` (version 1, written atomically with mode `0600`),
+next to the history database. `--db PATH` uses that database's directory instead.
+Unknown keys are ignored with a warning; malformed or unsupported configuration warns
+and falls back to the original layout. Invalid CLI/import section ids list the valid ids.
+The effective view participates in report identity, so changing it rebuilds even with
+`--if-changed` or `collect`'s age throttle. An exported view may contain private filter
+values; review it before sharing.
 
 `tokenatlas collect` does all of this in one scheduled command. Nothing to copy: the remote sync script
 ships inside the package (`tokenatlas/remote_sync.sh`; override with `--remote-sync PATH` or
@@ -803,6 +889,10 @@ existing retained source files are reparsed after parser fixes; lost source file
 Checks: `python3 -m unittest discover -v`. The release suite
 also builds and installs a wheel in an isolated environment. Optional local browser
 check: `PLAYWRIGHT_MODULE=/path/to/@playwright/test node test_report_browser.cjs /absolute/report.html`.
+Saved-view lifecycle regression (synthetic fixture, including recovery interactions and
+subscription/minimal at desktop and phone widths):
+`PLAYWRIGHT_MODULE=/path/to/playwright node test_view_browser.cjs`. Set `SCREENSHOT_DIR`
+to capture those preset layouts for visual review.
 Use an existing Playwright installation and its bundled browser; no browser dependency is installed
 by these commands. The browser test blocks network access and checks filters, totals, zoom, drilldown,
 exports and mobile overflow.

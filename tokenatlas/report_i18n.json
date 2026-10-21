@@ -1,5 +1,9 @@
 {
 "sv": {
+"view_active": "En sparad vy är aktiv.",
+"view_customise": "Anpassa med tokenatlas view i terminalen.",
+"view_everything": "Visa allt och rensa filter",
+"view_account": "Konto (kvotfönster)",
 "title": "TokenAtlas · Lokal tokenanvändning",
 "n_ov": "Översikt",
 "n_se": "Sessioner",
@@ -717,6 +721,10 @@
 "sub_empty_p": "Rapporten innehåller ännu inga sparade 5-timmars- eller 7-dagarsvärden."
 },
 "en": {
+"view_active": "A saved view is active.",
+"view_customise": "Customise with tokenatlas view in the terminal.",
+"view_everything": "Show everything and clear filters",
+"view_account": "Account (quota windows)",
 "title": "TokenAtlas · Local token usage",
 "n_ov": "Overview",
 "n_se": "Sessions",

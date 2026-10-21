@@ -86,6 +86,15 @@ EXAMPLES = {
     'profile provider add': 'tokenatlas profile provider add local --json',
     'profile provider remove': 'tokenatlas profile provider remove local --json',
     'profile provider show': 'tokenatlas profile provider show --json',
+    'view': 'tokenatlas view --json\n  tokenatlas view set --sections glance,turns,limits,quota-windows,facts\n  tokenatlas view default --period 30d --harness codex --plan team\n  tokenatlas view preset subscription\n  tokenatlas view export > my-view.json\n  tokenatlas view import my-view.json',
+    'view set': 'tokenatlas view set --top 20 --lang sv --money-first',
+    'view hide': 'tokenatlas view hide energy sessions',
+    'view show': 'tokenatlas view show energy',
+    'view default': 'tokenatlas view default --period 30d --harness codex --plan team',
+    'view preset': 'tokenatlas view preset minimal',
+    'view reset': 'tokenatlas view reset',
+    'view export': 'tokenatlas view export > my-view.json',
+    'view import': 'tokenatlas view import my-view.json',
     'doctor': 'tokenatlas doctor --json',
 }
 
