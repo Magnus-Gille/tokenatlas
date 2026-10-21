@@ -42,6 +42,11 @@ turns only, not unattributed usage. `report` token totals are not cost totals.
 Use exact `project_id` values for project filters, not directory basenames.
 `rate` outcomes are `pass`, `partial`, `redo`, `wrong`; only returned thread keys
 are rateable (the root is coordination). Listing and recording are noninteractive.
+`report --agent VALUE` matches the stored agent label or name exactly. For Claude
+transcripts, `attributionAgent` is preferred and `agentId` is the fallback when
+the label is absent. The path-derived Claude agent ID is exposed through the
+session/rate thread key instead; run `rate claude:SESSION_ID --json` to discover
+keys such as `claude:agent:AGENT_ID`, then use that key with `rate --thread`.
 
 Dates are ISO 8601, e.g. `2026-10-03`, `2026-10-03T14:00`, or
 `2026-10-03T14:00Z`. Start is inclusive, end exclusive. Without an offset,

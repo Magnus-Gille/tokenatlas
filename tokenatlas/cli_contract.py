@@ -94,7 +94,7 @@ DESCRIPTIONS = {
     'harness': 'Harness to select; omitted includes all where supported.',
     'granularity': 'Time bucket size.', 'timezone': 'IANA timezone for buckets and dates without offsets.',
     'session': 'Exact session ID filter.', 'turn': 'Exact turn ID filter.',
-    'effort': 'Exact reasoning effort filter.', 'provider': 'Exact provider filter.', 'agent': 'Exact agent ID filter.',
+    'effort': 'Exact reasoning effort filter.', 'provider': 'Exact provider filter.', 'agent': 'Exact stored agent label or name, which may differ from a thread ID. For thread IDs and ratings, use rate SESSION --json.',
     'out': 'Destination for the private SQLite snapshot.', 'snapshot': 'Source SQLite snapshot file.',
     'unit': 'Your unit-of-work label; omit to list rateable threads.',
     'thread': 'Thread key from rate output; repeat to combine threads into a unit.',
