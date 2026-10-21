@@ -218,13 +218,19 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
 
 
 def build_report(records, source_status, timezone_name='Europe/Stockholm', redact=True, prompt_texts=None, table=None, lang='auto',
-                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None, assigned=None, whole_assigned=None, profile=None):
+                 prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None, assigned=None, whole_assigned=None, profile=None, view=None):
     """prompt_texts ({(harness, session, turn_id): text or None} from prompt_store) and prompt_context ({key: turn_context dict}) are for
     prompt_inputs ({key: input count or None}) are for private reports only (any of them with redact=True raises);
     credit_table is the ChatGPT credit rate card behind `credit_classes` and the credits fact (None = packaged credits.json); table is the price table behind the `price_classes` unit prices (None = packaged prices). `insights` holds the cost facts (insights.py) for the
     last 30 days before `now` (default: the current time) and for all given records, computed here and never following the page filters; model names
     go through the same redaction as the rows. A private report with texts or contexts also carries `prompt_resume` ({id: {command, codex_link}}, resume.py),
-    and demo=True marks it as a fictional demo (the page then explains instead of opening or copying)."""
+    and demo=True marks it as a fictional demo (the page then explains instead of opening or copying).
+    view=None loads the saved display defaults; callers with a custom state directory pass its view explicitly.
+    lang=auto (including omission) uses the saved language before browser detection; explicit sv/en wins."""
+    from tokenatlas import view as report_view
+    view = report_view.for_report(view, redact=redact)
+    # Automatic/omitted uses the saved preference; an explicit language wins.
+    lang = view['lang'] if lang == 'auto' else lang
     if lang not in LANGS:
         raise ValueError(f'unknown report language {lang!r}; use one of {", ".join(LANGS)}')
     if redact and (prompt_texts is not None or prompt_context is not None or prompt_inputs is not None):
@@ -410,7 +416,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
             full_tool_events=False, skills=False,
         ),
     )
-    report = dict(version=2, generated_at=now.isoformat(),
+    report = dict(version=2, generated_at=now.isoformat(), view=view,
                   timezone=timezone_name, lang=lang, privacy='redacted' if redact else 'local',
                   prices_retrieved=table.get('retrieved_on'),
                   columns=encode_columns(rows), coverage=coverage, analytics_metadata=analytics_metadata,

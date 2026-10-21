@@ -392,6 +392,8 @@ def _main(argv=None):
     parser.add_argument('--version',action='version',version=f'%(prog)s {__version__}')
     parser.add_argument('--db',type=Path,help='History database; default $XDG_STATE_HOME/tokenatlas/history.sqlite3.')
     commands=parser.add_subparsers(dest='command',required=True)
+    from tokenatlas import view
+    view.add_parser(commands)
     refresh=commands.add_parser('refresh',help='Import changed files; preserve retained observations.')
     which=refresh.add_mutually_exclusive_group(required=True)
     which.add_argument('--harness',choices=('claude','codex','pi','opencode'),help='Harness to import; required unless --all is given.')
@@ -400,7 +402,7 @@ def _main(argv=None):
     opener=commands.add_parser('open',help='Refresh, build the report (private by default) and open it in the browser.')
     opener.add_argument('--html',type=Path,help=f'Report path; default: report.html next to the database ({_state_base()/"tokenatlas"/"report.html"}).')  # no migration side effect
     opener.add_argument('--shared',action='store_true',help='Pseudonymize the report instead of keeping project labels.')
-    opener.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='Report language; auto follows the browser (Swedish for sv, otherwise English).')
+    opener.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='Report language; auto uses the saved view language, then the browser (Swedish for sv, otherwise English).')
     opener.add_argument('--no-browser',action='store_true',help='Print only the report path instead of launching a browser (also TOKENATLAS_NO_BROWSER=1). Omit --json for a plain path; --json returns a structured receipt instead.')
     opener.add_argument('--no-refresh',action='store_true',help='Use the saved history as it is.')
     shower=commands.add_parser('show',help='Open the latest report in the browser at once: no refresh, no rebuild (tokenatlas open refreshes it).')
@@ -428,7 +430,7 @@ def _main(argv=None):
     report.add_argument('--private',action='store_true',help='Keep project labels and session IDs in HTML; default HTML uses pseudonyms.')
     report.add_argument('--if-changed',action='store_true',help='With --html: skip when the history revision matches the existing report.')
     report.add_argument('--max-age',help='With --html: skip when the existing report is younger than this (90s, 30m, 1h, 2d).')
-    report.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='With --html: report language; auto follows the browser (Swedish for sv, otherwise English).')
+    report.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='With --html: report language; auto uses the saved view language, then the browser (Swedish for sv, otherwise English).')
     report.add_argument('--records',action='store_true',help='Include per-observation counters and source-file references. Reports contain private local paths.')
     for name,text in (('session','Show the session tree, per-model totals and outcomes for one root session.'),
                       ('rate','List threads of a session, or record an outcome rating for a unit.')):
@@ -551,6 +553,7 @@ def _main(argv=None):
         try:return _show(Path(args.html or (args.db.expanduser().parent if args.db else _state_base()/'tokenatlas')/'report.html').expanduser(),args.print_path,args.json)
         except (OSError,ValueError) as exc:raise
     if args.db is None:args.db=default_db()
+    if args.command=='view':return view.run(args)
     if args.command in ('plan','profile'):
         from tokenatlas import usage_profiles
         try:
@@ -693,6 +696,8 @@ def _main(argv=None):
                     profile=_usage_profile(args.db)
                     spec=_spec('redacted' if args.shared else 'local',DEFAULT_TIMEZONE,'day',{},args.lang)
                     spec['usage_profile']=profile
+                    saved_view=view.load(args.db)
+                    spec['view']=view.for_report(saved_view,redact=args.shared)
                     budget_token=_budget_token(args.db)
                     if budget_token:spec['budget_token']=budget_token
                     if not args.shared:spec['dest']=str(path.absolute())  # a private report names its file: a moved copy is rebuilt, never reused
@@ -708,7 +713,7 @@ def _main(argv=None):
                     texts,ctx=_visible(history,args.db,records,assigned=assigned,table=table) if not args.shared else (None,None)
                     budgets=_budgets(args.db,table,lambda:records)
                     with progress.step('Limit hits'):hits_all=_hits(history,records,events,assigned)  # one read of the limit events serves the hits and the quota windows
-                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned,profile=profile)
+                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned,profile=profile,view=saved_view)
                     payload['initial_granularity']='day'
                     if not args.shared:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db,always=True))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
@@ -847,6 +852,8 @@ def _main(argv=None):
                         profile=_usage_profile(args.db)
                         spec=_spec('local' if args.private else 'redacted',args.timezone,args.granularity,vars(args),args.lang)
                         spec['usage_profile']=profile
+                        saved_view=view.load(args.db)
+                        spec['view']=view.for_report(saved_view,redact=not args.private)
                         budget_token=_budget_token(args.db)
                         if budget_token:spec['budget_token']=budget_token
                         if args.private:spec['dest']=str(path.absolute())  # as in open: a private report names its file
@@ -892,7 +899,7 @@ def _main(argv=None):
                 if args.html:
                     texts,ctx=_visible(history,args.db,universe,assigned=whole_assigned,table=table) if args.private else (None,None)
                     budgets=_budgets(args.db,table,lambda:universe)
-                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile)
+                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile,view=saved_view)
                     payload['initial_granularity']=args.granularity
                     if args.private:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
