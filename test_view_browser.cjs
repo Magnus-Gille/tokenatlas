@@ -10,11 +10,12 @@ const {execFileSync} = require('node:child_process');
 const playwright = require(process.env.PLAYWRIGHT_MODULE || '/usr/local/lib/node_modules/@playwright/test');
 const html = execFileSync(process.env.PYTHON || 'python3', ['-c', 'from test_view import browser_fixture; print(browser_fixture())'], {cwd:__dirname, encoding:'utf8', maxBuffer:8*1024*1024});
 const presets = JSON.parse(execFileSync(process.env.PYTHON || 'python3', ['-c', 'import json; from tokenatlas.view import PRESETS; print(json.dumps(PRESETS))'], {cwd:__dirname, encoding:'utf8'}));
-function withView(view) {
+function withView(view, limitHit=null) {
   return html.replace(/(<script id="report-data"[^>]*>)([^<]+)(<\/script>)/, (_, a, b, c) => {
     const data = JSON.parse(zlib.gunzipSync(Buffer.from(b,'base64')));
     data.lang = 'en';
     data.view = {...data.view, ...view};
+    if(limitHit)data.limit_hits = [limitHit];
     return a + zlib.gzipSync(Buffer.from(JSON.stringify(data))).toString('base64') + c;
   });
 }
@@ -22,13 +23,13 @@ function withView(view) {
   const browser = await playwright[process.env.BROWSER_NAME || 'chromium'].launch({headless:true});
   const opened = [];
   const cleanupErrors = [];
-  async function pageFor(view, width=1440) {
+  async function pageFor(view, width=1440, limitHit=null) {
     const context = await browser.newContext({offline:true, viewport:{width,height:1000}, locale:'en-US'});
     opened.push(context);
     const page = await context.newPage(), errors=[], requests=[];
     page.on('pageerror', e=>errors.push(e.message));
     page.on('request', r=>{if(/^https?:/.test(r.url()))requests.push(r.url())});
-    await page.setContent(withView(view), {waitUntil:'load'});
+    await page.setContent(withView(view, limitHit), {waitUntil:'load'});
     await page.waitForFunction(()=>window.reportReady===true);
     return {context, page, errors, requests};
   }
@@ -78,6 +79,13 @@ function withView(view) {
     assert.equal(await page.locator('#analytics > #token-efficiency').count(),1,'restore original efficiency nesting');
     assert.equal(await page.locator('#glossary').getAttribute('open'),null);
     assert.deepEqual(errors,[]); assert.deepEqual(requests,[]);
+    const promptId = await page.evaluate(()=>UsageReport.topPrompts(UsageReport.all,10)[0].id);
+    const fallback = 'Top-ranked synthetic turn';
+    const limitHit = {
+      harness:'codex', at:'2026-09-20T10:00:00+00:00', reached:'five_hour',
+      window_minutes:300, resets_at:'2026-09-20T15:00:00+00:00', retries:1,
+      prompt:promptId, label:{at:'2026-09-20T10:00:00+00:00', harness:'codex', text:fallback}
+    };
     await closeView(context);
 
     // Empty selection, updates while detached, recovery, then real interactions
@@ -110,6 +118,28 @@ function withView(view) {
     assert.equal(await selected(p),40);
     assert.deepEqual(hidden.errors,[]); assert.deepEqual(hidden.requests,[]);
     await closeView(hidden.context);
+
+    // A limit hit for a ranked turn must remain readable while the turns
+    // section is hidden, then become a working anchor after show-everything.
+    const limitsOnly = await pageFor({sections:['limits'],defaults:{}},1440,limitHit);
+    try {
+      assert.equal(await limitsOnly.page.locator(`#limit-list a[href="#turn-${promptId}"]`).count(),0,
+        'initial hidden turns must not receive a broken limit-hit anchor');
+      assert.match(await limitsOnly.page.locator('#limit-list').innerText(),new RegExp(fallback),
+        'initial hidden turns must retain a readable limit-hit fallback');
+      await limitsOnly.page.locator('#harness').dispatchEvent('change');
+      assert.equal(await limitsOnly.page.locator(`#limit-list a[href="#turn-${promptId}"]`).count(),0,
+        'rerendered hidden turns must not receive a broken limit-hit anchor');
+      assert.match(await limitsOnly.page.locator('#limit-list').innerText(),new RegExp(fallback),
+        'rerendered hidden turns must retain a readable limit-hit fallback');
+      await limitsOnly.page.click('#show-everything');
+      const turnAnchor = limitsOnly.page.locator(`#limit-list a[href="#turn-${promptId}"]`);
+      assert.equal(await turnAnchor.count(),1,'visible turns should receive a limit-hit anchor');
+      assert.equal(await turnAnchor.evaluate(anchor=>{
+        const target=document.querySelector(anchor.getAttribute('href'));
+        return Boolean(target && target.isConnected);
+      }),true,'limit-hit anchor should target a connected turn card');
+    } finally {await closeView(limitsOnly.context)}
 
     // Preset layout and horizontal overflow checks at desktop and phone width.
     const domIds = {'limits':'limit-hits','facts':'cost-facts','turns':'prompts'};
