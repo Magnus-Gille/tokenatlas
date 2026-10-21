@@ -718,10 +718,10 @@ def run(args) -> int:
     remotes = _remote_pairs(args.remote)
     platform = _platform()
     if args.status:
-        print(json.dumps(status(platform), indent=2, sort_keys=True))
+        print(json.dumps(dict(status(platform),schema='tokenatlas.schedule/1'), indent=2, sort_keys=True))
         return 0
     if args.remove:
-        print(json.dumps(_remove(platform, args.dry_run), indent=2, sort_keys=True))
+        print(json.dumps(dict(_remove(platform, args.dry_run),schema='tokenatlas.schedule/1'), indent=2, sort_keys=True))
         return 0
     backend = _backend(platform, args.dry_run)
     db = _resolved_db(getattr(args, "db", None))
@@ -741,5 +741,5 @@ def run(args) -> int:
             warnings.append("Another TokenAtlas collect cron schedule may also be installed; review it to avoid duplicate runs.")
     result = _install(interval, remotes, backend, platform, args.dry_run, db)
     result['warnings'] = [*result.get('warnings', []), *warnings]
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(json.dumps(dict(result,schema='tokenatlas.schedule/1'), indent=2, sort_keys=True))
     return 0

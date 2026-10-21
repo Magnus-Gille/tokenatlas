@@ -610,20 +610,29 @@ def mark_turns(items, derived, costs):
 
 def run(args, db, records_fn, table_fn, out, auto_fn=None, cap_fn=None):
     """The `quota` command; `records_fn()` and `table_fn()` are only called by calibrate; `auto_fn(keep)` -> (automatic budgets, skipped) and `cap_fn(auto, manual)` -> turns the used ones do not fit are called by show."""
+    from tokenatlas.cli_contract import payload
+    json_mode=getattr(args,'json',False)
+    def result(data):out(json.dumps(payload('quota',data),indent=2,sort_keys=True))
     path = path_for(db)
     now = datetime.now(timezone.utc)
     if args.quota == 'calibrate':
         reading = make_reading(records_fn(), table_fn(), args.harness, args.window, args.used, args.resets, args.at, now, args.plan)
         add_reading(path, reading)
         budget = reading['cost_usd'] / reading['used']
+        if json_mode:
+            result(dict(reading=reading,budget_usd=budget,file=str(path)));return
         out(f"stored a {args.window} {args.harness}{' ' + reading['plan'] if reading['plan'] else ''} reading: {reading['used'] * 100:g}% used, ${reading['cost_usd']:,.2f} list price seen"
             f"{' (approximate: no --resets, so the window is the last ' + args.window + ')' if reading['approximate'] else ''} -> about ${budget:,.0f} for the window.\n"
             'This is a calibration of list price, not an exact limit; see `tokenatlas quota show`.')
     elif args.quota == 'set':
         set_budget(path, args.harness, args.window, args.budget_usd, now, args.plan)
+        if json_mode:
+            result(dict(harness=args.harness,window=args.window,budget_usd=args.budget_usd,plan=args.plan,file=str(path)));return
         out(f'stored a manual {args.window} {args.harness} budget of ${args.budget_usd:,.2f}')
     elif args.quota == 'forget':
-        out(f'forgot {forget(path, args.harness, args.window)} entries')
+        count=forget(path, args.harness, args.window)
+        if json_mode:result(dict(forgotten=count,file=str(path)))
+        else:out(f'forgot {count} entries')
     else:
         if args.keep < 1:
             raise ValueError('--keep must be at least 1')
@@ -639,7 +648,7 @@ def run(args, db, records_fn, table_fn, out, auto_fn=None, cap_fn=None):
         unfit = cap_fn(auto, derived) if cap_fn and auto else 0
         bad = invalid_entries(data)
         if args.json:
-            out(json.dumps(dict(derived=public(derived), automatic=[dict(x, status=auto_status(derived, (x['harness'], x['minutes'], x['plan']), auto[(x['harness'], x['minutes'], x['plan'])])) for x in public(auto)], automatic_skipped=skipped, automatic_turns_over_100_percent=unfit, readings=data['readings'], budgets=data['budgets'], keep_windows=args.keep, file=str(path), invalid_entries=bad), indent=2, sort_keys=True))
+            result(dict(derived=public(derived), automatic=[dict(x, status=auto_status(derived, (x['harness'], x['minutes'], x['plan']), auto[(x['harness'], x['minutes'], x['plan'])])) for x in public(auto)], automatic_skipped=skipped, automatic_turns_over_100_percent=unfit, readings=data['readings'], budgets=data['budgets'], keep_windows=args.keep, file=str(path), invalid_entries=bad))
         else:
             stale = sum(_valid(x) and x.get('table') != table_id(table_fn()) for x in data['readings']) if table_fn else 0
             out(render(data, derived, now, args.keep, auto, skipped, unfit) + (f'\nnote: {stale} reading{"s" * (stale != 1)} priced with another price table; `top` and the report reprice from the history' if stale else '')

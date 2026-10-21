@@ -573,9 +573,9 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(main(['--db', str(db), 'overhead', '--harness', 'claude']), 0)
             self.assertIn('estimate', out.getvalue())
             self.assertIn('pdf', out.getvalue())
-            with self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()):
-                main(['--db', str(Path(tmp) / 'missing.sqlite3'), 'overhead'])
-            self.assertEqual(ctx.exception.code, 2)
+            with redirect_stdout(io.StringIO()):
+                code=main(['--db', str(Path(tmp) / 'missing.sqlite3'), 'overhead'])
+            self.assertEqual(code, 3)
 
 
 if __name__ == '__main__':

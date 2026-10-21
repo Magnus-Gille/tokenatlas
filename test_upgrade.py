@@ -88,7 +88,7 @@ class UpgradeTests(unittest.TestCase):
     def test_busy_install_does_not_mutate(self):
         with installation_lock(self.prefix), patch.object(upgrade,'detect',return_value=self.install), patch.object(upgrade,'mutate') as mutate:
             rc, _, _ = self.invoke(SimpleNamespace(check=False,version='1.20.0',yes=True))
-        self.assertEqual(rc, 3)
+        self.assertEqual(rc, 1)
         mutate.assert_not_called()
 
     def test_manager_commands_use_pinned_package_and_exact_environment(self):

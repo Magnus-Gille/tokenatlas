@@ -399,8 +399,8 @@ class Cli(Base):
         self.assertNotIn(SECRET, self.top('--json')[1])
         withtext = json.loads(self.top('--json', '--with-text')[1])
         self.assertEqual([p['text'] for p in withtext['prompts']], ['secret u3', 'secret u2', None][:len(withtext['prompts'])])
-        code, out, _ = self.top('--forget-text')
-        self.assertEqual((code, json.loads(out)), (0, {'forgotten': str(self.store)}))
+        code, out, _ = self.top('--forget-text', '--json')
+        self.assertEqual((code, json.loads(out)), (0, {'forgotten': str(self.store), 'schema': 'tokenatlas.top/1'}))
         self.assertFalse(self.store.exists())
         self.assertNotIn(SECRET, self.top()[1])
         self.assertTrue(all(p['text'] is None for p in json.loads(self.top('--json', '--with-text')[1])['prompts']))
@@ -408,7 +408,9 @@ class Cli(Base):
     def test_keep_text_needs_a_database(self):
         for p in self.db.parent.glob('history.sqlite3*'):
             p.unlink()
-        self.assertEqual(self.top('--keep-text')[0], 2)
+        code, out, err = self.top('--keep-text', '--json')
+        self.assertEqual((code, out), (3, ''))
+        self.assertEqual(json.loads(err)['error']['code'], 'not_found')
         self.assertFalse(self.store.exists())
 
     def test_snapshot_never_contains_stored_text(self):
