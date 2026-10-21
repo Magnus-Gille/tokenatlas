@@ -35,7 +35,7 @@ class ViewCLI(Base):
         code, out, err = self.view('export')
         self.assertEqual(code, 0, err)
         exported = self.state / 'export.json'
-        exported.write_text(out)
+        exported.write_text(out, encoding='utf-8')
         self.assertEqual(self.view('reset')[0], 0)
         self.assertFalse(path.exists())
         self.assertEqual(self.view('import', str(exported))[0], 0)
@@ -52,7 +52,7 @@ class ViewCLI(Base):
         self.assertIn('Valid sections:', err)
         self.assertIn('quota-windows', err)
         self.db.parent.mkdir(parents=True, exist_ok=True)
-        (self.db.parent / 'view.json').write_text('{bad')
+        (self.db.parent / 'view.json').write_text('{bad', encoding='utf-8')
         code, out, err = self.view('--json')
         self.assertEqual(code, 0, err)
         self.assertIn('warning:', err)
@@ -66,7 +66,7 @@ class ViewCLI(Base):
 
     def test_unknown_keys_warn_but_round_trip_known_fields(self):
         self.db.parent.mkdir(parents=True, exist_ok=True)
-        (self.db.parent / 'view.json').write_text(json.dumps({'version': 1, 'future': 4, 'defaults': {'future_filter': 'x', 'harness': 'codex'}}))
+        (self.db.parent / 'view.json').write_text(json.dumps({'version': 1, 'future': 4, 'defaults': {'future_filter': 'x', 'harness': 'codex'}}), encoding='utf-8')
         code, out, err = self.view('--json')
         self.assertEqual(code, 0, err)
         self.assertIn('future', err)
@@ -108,10 +108,10 @@ class ViewCLI(Base):
         for command, flags in [('report', ['--private', '--if-changed']), ('open', ['--no-refresh', '--no-browser'])]:
             code, out, err = self.run_cli(command, '--html', str(html), *flags, '--json')
             self.assertEqual(code, 0, err)
-            self.assertEqual(payload(html.read_text())['lang'], 'sv')
+            self.assertEqual(payload(html.read_text(encoding='utf-8'))['lang'], 'sv')
             code, out, err = self.run_cli(command, '--html', str(html), *flags, '--lang', 'en', '--json')
             self.assertEqual(code, 0, err)
-            self.assertEqual(payload(html.read_text())['lang'], 'en')
+            self.assertEqual(payload(html.read_text(encoding='utf-8'))['lang'], 'en')
         self.assertEqual(self.run_cli('report', '--html', str(html), '--private', '--if-changed', '--json')[0], 0)
         before = report.read_report_state(html)
         self.assertEqual(self.view('show', 'energy')[0], 0)
@@ -126,10 +126,10 @@ class ViewCLI(Base):
         bad = self.state / 'bad-view.json'
         for value in ({'sections': ['not-a-section']}, {'top': 0}, {'version': 9}, {'defaults': []}, {'money_first': 'true'}):
             with self.subTest(value=value):
-                bad.write_text(json.dumps(value))
+                bad.write_text(json.dumps(value), encoding='utf-8')
                 self.assertEqual(self.view('import', str(bad))[0], 2)
                 self.assertEqual((self.db.parent / 'view.json').read_bytes(), before)
-        (self.db.parent / 'view.json').write_text('not json')
+        (self.db.parent / 'view.json').write_text('not json', encoding='utf-8')
         self.assertEqual(self.view('reset')[0], 0)
         self.assertFalse((self.db.parent / 'view.json').exists())
 
@@ -147,8 +147,8 @@ class ViewCLI(Base):
         target = other.parent / 'report.html'
         code, out, err = self.run_cli('--db', str(other), 'report', '--html', str(target), '--private')
         self.assertEqual(code, 0, err)
-        self.assertEqual(payload(target.read_text())['lang'], 'en')
-        self.assertEqual(payload(target.read_text())['view']['defaults'], {})
+        self.assertEqual(payload(target.read_text(encoding='utf-8'))['lang'], 'en')
+        self.assertEqual(payload(target.read_text(encoding='utf-8'))['view']['defaults'], {})
 
     def test_scheduled_collect_applies_view_and_rebuilds_when_it_changes(self):
         from tokenatlas import collect
@@ -162,8 +162,8 @@ class ViewCLI(Base):
             code, out, err = self.run_cli('collect', '--json')
             self.assertEqual(code, 0, err)
             target = self.db.parent / 'report.html'
-            self.assertEqual(payload(target.read_text())['view']['sections'], ['glance', 'kpis', 'turns'])
-            self.assertEqual(payload(target.read_text())['lang'], 'sv')
+            self.assertEqual(payload(target.read_text(encoding='utf-8'))['view']['sections'], ['glance', 'kpis', 'turns'])
+            self.assertEqual(payload(target.read_text(encoding='utf-8'))['lang'], 'sv')
             before = report.read_report_state(target)
             self.assertEqual(self.view('show', 'energy')[0], 0)
             code, out, err = self.run_cli('collect', '--json')
@@ -175,7 +175,7 @@ class PageSourceContract(unittest.TestCase):
     """Offline wiring checks, not DOM execution or visual acceptance."""
     def test_layout_recovery_and_filter_wiring(self):
         from pathlib import Path
-        text = Path('tokenatlas/report_template.html').read_text()
+        text = Path('tokenatlas/report_template.html').read_text(encoding='utf-8')
         self.assertIn('function applySavedView(', text)
         self.assertIn('function restoreSections(', text)
         self.assertIn("$('show-everything').onclick", text)
@@ -187,19 +187,19 @@ class PageSourceContract(unittest.TestCase):
         import re
         from pathlib import Path
         from tokenatlas import view
-        text = Path('tokenatlas/report_template.html').read_text()
+        text = Path('tokenatlas/report_template.html').read_text(encoding='utf-8')
         mapping = re.search(r'const sectionIds=\{([^}]+)\}', text).group(1)
         keys = [part.split(':')[0].strip("'") for part in mapping.split(',')]
         self.assertEqual(keys, list(view.SECTIONS))
 
     def test_translations_and_collapsed_glossary(self):
         from pathlib import Path
-        data = json.loads(Path('tokenatlas/report_i18n.json').read_text())
+        data = json.loads(Path('tokenatlas/report_i18n.json').read_text(encoding='utf-8'))
         for lang in ('sv', 'en'):
             self.assertIn('view_active', data[lang])
             self.assertIn('tokenatlas view', data[lang]['view_customise'])
             self.assertIn('view_everything', data[lang])
-        self.assertIn('<details class="glossary" id="glossary">', Path('tokenatlas/report_template.html').read_text())
+        self.assertIn('<details class="glossary" id="glossary">', Path('tokenatlas/report_template.html').read_text(encoding='utf-8'))
 
 
 def browser_fixture():
