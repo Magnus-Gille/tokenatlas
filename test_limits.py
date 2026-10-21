@@ -1170,6 +1170,27 @@ class Cli(unittest.TestCase):
 
 
 class CliScope(unittest.TestCase):
+    def test_retry_only_scope_does_not_render_a_merged_hit(self):
+        import contextlib
+        import io
+        from tokenatlas.__main__ import main
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root / 'logs', [user('t1', 0), rejected('r1', 1, 'mystery_window'), user('t2', 30), rejected('r2', 31, 'mystery_window')])
+            db = str(root / 'state' / 'h.sqlite3')
+            def run(*args):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    return main(['--db', db, *args])
+            self.assertEqual(run('refresh', '--harness', 'claude', '--root', str(root / 'logs')), 0)
+            positive = root / 'retry-t1.html'
+            self.assertEqual(run('report', '--html', str(positive), '--turn', 't1'), 0)
+            self.assertTrue(positive.exists())
+            self.assertEqual(run('report', '--turn', 't1', '--json'), 4)
+            for index, extra in enumerate((('--turn', 't2'), ('--start', stamp(3)))):
+                out = root / f'retry-{index}.html'
+                self.assertEqual(run('report', '--html', str(out), *extra), 4, extra)
+                self.assertFalse(out.exists())
+
     def test_scoped_reports_keep_rejection_only_turns_and_filter_by_provider(self):
         import contextlib
         import io
@@ -1187,9 +1208,13 @@ class CliScope(unittest.TestCase):
                     return main(['--db', db, *args])
             self.assertEqual(run('refresh', '--harness', 'claude', '--root', str(root / 'logs')), 0)
             self.assertEqual(run('refresh', '--harness', 'codex', '--root', str(root / 'codex')), 0)
+            report_index = 0
             def hits(*extra):
-                out = root / 'r.html'
-                run('report', '--html', str(out), *extra)
+                nonlocal report_index
+                out = root / f'r-{report_index}.html'
+                report_index += 1
+                code = run('report', '--html', str(out), *extra)
+                self.assertEqual(code, 0, extra)
                 found = re.search(r'id="report-data"[^>]*>([^<]+)<', out.read_text(encoding='utf-8')).group(1)
                 return [h['harness'] for h in json.loads(gzip.decompress(base64.b64decode(found)).decode()).get('limit_hits', [])]
             self.assertEqual(sorted(hits()), ['claude', 'codex'])
@@ -1197,6 +1222,10 @@ class CliScope(unittest.TestCase):
                 self.assertEqual(hits(*extra), ['claude'], extra)
             self.assertEqual(hits('--provider', 'anthropic'), ['claude'])
             self.assertEqual(hits('--provider', 'openai'), ['codex'])
+            unmatched = root / f'r-{report_index}.html'
+            report_index += 1
+            self.assertEqual(run('report', '--html', str(unmatched), '--model', 'does-not-match'), 4)
+            self.assertFalse(unmatched.exists())
 
 
 if __name__ == '__main__':

@@ -401,11 +401,11 @@ def _main(argv=None):
     opener.add_argument('--html',type=Path,help=f'Report path; default: report.html next to the database ({_state_base()/"tokenatlas"/"report.html"}).')  # no migration side effect
     opener.add_argument('--shared',action='store_true',help='Pseudonymize the report instead of keeping project labels.')
     opener.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='Report language; auto follows the browser (Swedish for sv, otherwise English).')
-    opener.add_argument('--no-browser',action='store_true',help='Print only the report path instead of launching a browser (also TOKENATLAS_NO_BROWSER=1).')
+    opener.add_argument('--no-browser',action='store_true',help='Print only the report path instead of launching a browser (also TOKENATLAS_NO_BROWSER=1). Omit --json for a plain path; --json returns a structured receipt instead.')
     opener.add_argument('--no-refresh',action='store_true',help='Use the saved history as it is.')
     shower=commands.add_parser('show',help='Open the latest report in the browser at once: no refresh, no rebuild (tokenatlas open refreshes it).')
     shower.add_argument('--html',type=Path,help=f'Report path; default: report.html next to the database ({_state_base()/"tokenatlas"/"report.html"}).')
-    shower.add_argument('--print-path',action='store_true',help='Print only the existing report path without launching a browser (also TOKENATLAS_NO_BROWSER=1).')
+    shower.add_argument('--print-path',action='store_true',help='Print only the existing report path without launching a browser (also TOKENATLAS_NO_BROWSER=1). Omit --json for a plain path; --json returns a structured receipt instead.')
     snapshot=commands.add_parser('snapshot',help='Write a consistent private copy of the history database.')
     snapshot.add_argument('out',type=Path)
     importer=commands.add_parser('import',help="Merge another machine's snapshot into this database.")
@@ -865,6 +865,7 @@ def _main(argv=None):
                             return 0
                 with progress.step('Read history'):
                     filters={key:getattr(args,key) for key in ('model','effort','provider','agent')}
+                    events=[]
                     if args.html:
                         universe,events=_plan_history(history)
                         records=_select_records(universe,start,end,args.harness,args.project,args.session,args.turn,**filters)
@@ -872,7 +873,15 @@ def _main(argv=None):
                         records=history.records(start,end,args.harness,args.project,args.session,args.turn)
                         records=[row for row in records if all(value is None or row.get(key) == value for key,value in filters.items())]
                         universe=records
-                if not records and any(getattr(args,key) is not None for key in FILTERS):raise NoData()
+                if args.html:
+                    filtered=any(getattr(args,key) is not None for key in ('start','end','harness','project','session','turn','model','effort','provider','agent'))
+                    assigned=prompts.assign_prompts(records)
+                    whole_assigned=prompts.assign_prompts(universe) if filtered else assigned
+                    table=pricing.load_prices()
+                    with progress.step('Limit hits'):hits_all=_hits(history,universe,events,whole_assigned)
+                    scoped=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe,assigned=whole_assigned)
+                if not records and any(getattr(args,key) is not None for key in FILTERS):
+                    if not args.html or not scoped:raise NoData()
                 # The HTML path prints only a short receipt, so skip the (costly) JSON summary there.
                 if args.html:result={}
                 else:
@@ -881,14 +890,8 @@ def _main(argv=None):
                 result['source_status']=source_status
                 if args.records:result['records']=records
                 if args.html:
-                    filtered=any(getattr(args,key) is not None for key in ('start','end','harness','project','session','turn','model','effort','provider','agent'))
-                    assigned=prompts.assign_prompts(records)
-                    whole_assigned=prompts.assign_prompts(universe) if filtered else assigned
-                    table=pricing.load_prices()
                     texts,ctx=_visible(history,args.db,universe,assigned=whole_assigned,table=table) if args.private else (None,None)
                     budgets=_budgets(args.db,table,lambda:universe)
-                    with progress.step('Limit hits'):hits_all=_hits(history,universe,events,whole_assigned)
-                    scoped=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe,assigned=whole_assigned)
                     payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile)
                     payload['initial_granularity']=args.granularity
                     if args.private:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db))  # private only: a shared report never carries a local path
