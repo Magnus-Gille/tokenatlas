@@ -966,7 +966,7 @@ def summarize(records, granularity='day', timezone_name='UTC'):
     def aggregate(rows):
         identified = [r for r in rows if not r['id_synthetic']]
         ambiguous = [r for r in rows if r['id_synthetic']]
-        berget = [r for r in rows if r['provider'] == 'berget']
+        berget = [r for r in rows if isinstance(r.get('provider'), str) and r['provider'].casefold() == 'berget']
         env_rows = [r['environment'] for r in berget if not r['id_synthetic'] and r.get('environment')]
         environment = (dict(source='provider_reported_estimate' if env_rows else None,
                             requests_with_estimate=len(env_rows),

@@ -435,6 +435,10 @@ class BergetEnvironmentReportTests(unittest.TestCase):
         row = observation(provider='anthropic', environment=self.environment())
         self.assertIsNone(expand(build_report([row], {}))[0]['environment'])
 
+    def test_case_variant_berget_provider_keeps_environment(self):
+        row = observation(provider='Berget', environment=self.environment())
+        self.assertEqual(expand(build_report([row], {}))[0]['environment']['co2e_grams'], 1.25)
+
     def test_environment_export_fields_are_available_in_report_payload(self):
         report = decode_html(render_report(build_report([observation(provider='berget', environment=self.environment())], {})))
         self.assertEqual(report['columns']['environment']['rows'], [0])

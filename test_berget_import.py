@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +37,7 @@ class BergetImportTests(unittest.TestCase):
             fresh_input=10, cache_read=0, cache_write=0, output=4, reasoning=0,
             raw_usage={'input': 10, 'cacheRead': 0, 'cacheWrite': 0, 'output': 4, 'reasoning': 0},
         )
+        self.seed_record = record
         with History(self.db) as history:
             item = normalize(record, history.machine)
             history._insert(history.connection, _encode(item))
@@ -62,6 +64,17 @@ class BergetImportTests(unittest.TestCase):
             self.assertEqual(environment['co2e_grams'], 0.04)
             self.assertEqual(environment['source'], 'provider_reported_estimate')
             self.assertEqual(stored['environment_observed_at'], '2026-10-21T00:00:00+00:00')
+
+    def test_case_variant_berget_provider_matches_without_rekeying(self):
+        upper_db = self.root / 'upper.sqlite3'
+        with History(upper_db) as history:
+            item = normalize(replace(self.seed_record, provider='Berget'), history.machine)
+            self.assertEqual(item['provider'], 'Berget')
+            history._insert(history.connection, _encode(item))
+            self.write(self.row())
+            self.assertEqual(import_emissions(history, self.jsonl)['updated'], 1)
+            self.assertEqual(history.records()[0]['provider'], 'Berget')
+            self.assertEqual(history.records()[0]['environment']['co2e_grams'], 0.04)
 
     def test_bad_match_rolls_back_all_rows(self):
         self.write(self.row(), self.row(response_id='missing'))

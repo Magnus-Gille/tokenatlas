@@ -1,4 +1,4 @@
-# Current state — 2026-10-24 (#180 local candidate)
+# Current state — 2026-10-24 (PR #181 for #180)
 
 Branch `codex/berget-emissions` adds Berget's provider-reported per-request
 `usage.emissions` to Pi history, offline import, summary, and the private/shared
@@ -16,9 +16,12 @@ found these issues and the two smaller schema/number issues addressed in this br
 Native bounded leaves: storage pass after root integration fixes, report UI partial
 then corrected by root, calculator pass after root CLI integration. Worker role
 requested gpt-5.6-luna/high; runtime model/effort metadata unavailable. Independent
-review requested gpt-6-astra/xhigh; runtime metadata unavailable. No PR, release,
-installation, or deployment has occurred. This task stops at local candidate until
-the owner authorizes publication to `Magnus-Gille/tokenatlas` as a PR.
+review requested gpt-6-astra/xhigh; runtime metadata unavailable. PR #181 is
+open against `Magnus-Gille/tokenatlas` `master`; no merge, release, installation,
+or deployment has occurred. A subsequent read-only Claude CLI review used
+Opus 5.5 with `xhigh` requested. Its follow-up found that canonicalizing a
+stored provider would duplicate older rows; the correction preserves provider
+identity while recognizing Berget case-insensitively in emission consumers.
 
 Verification: Berget's live non-streaming and streaming completion responses each
 included valid `usage.emissions` for one active model. Offline Chromium report
@@ -26,7 +29,8 @@ checks pass in Swedish and English, including filter-following CO₂e/energy,
 empty/overflow exports, and zero network or console errors. Independent review
 found and then confirmed the fixes for snapshot validation, Pi copy ordering,
 unknown-versus-zero handling, report schema, and finite-number boundaries. The
-full Python suite passes: 1,292 tests, 12 skips.
+full Python suite passes: 1,295 tests, 12 skips after the provider-identity
+correction.
 
 ---
 

@@ -74,7 +74,7 @@ def import_emissions(history, path: Path):
         matches = {}
         for record in records:
             key = (record['harness'], record['id'])
-            if key in parsed and record['provider'] == 'berget' and not record['id_synthetic']:
+            if key in parsed and isinstance(record.get('provider'), str) and record['provider'].casefold() == 'berget' and not record['id_synthetic']:
                 matches.setdefault(key, []).append(record)
         changed = []
         for key, (model, timestamp, environment) in parsed.items():

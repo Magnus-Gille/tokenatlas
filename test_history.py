@@ -65,6 +65,23 @@ class HistoryTests(unittest.TestCase):
             stored = history.records()
             self.assertEqual(stored[0]['environment'], item['environment'])
 
+    def test_case_variant_berget_refresh_keeps_identity_and_environment(self):
+        logs = self.root / 'pi'
+        write_pi_session(logs / 'session.jsonl', 'session', '2026-09-03T09:00:00Z', '/work/app', [
+            pi_message('entry', 'response', '2026-09-03T10:00:00Z',
+                       {'input': 1, 'output': 1, 'emissions': BERGET_ENVIRONMENT}, provider='Berget')])
+        with History(self.db) as history:
+            item = normalize(record('response', harness='pi', provider='Berget',
+                                    environment=BERGET_ENVIRONMENT), history.machine)
+            self.assertEqual(item['provider'], 'Berget')
+            history._insert(history.connection, _encode(item))
+            history.refresh('pi', logs)
+            stored = history.records()
+            self.assertEqual(len(stored), 1)
+            summary = summarize(stored)['totals']['environment']
+            self.assertEqual(summary['requests_with_estimate'], 1)
+            self.assertEqual(summary['co2e_grams'], 0.42)
+
     def test_environment_is_preserved_when_reimporting_snapshot(self):
         item = normalize(record(provider='berget', environment=BERGET_ENVIRONMENT), 'm-remote')
         with History(self.db) as local:

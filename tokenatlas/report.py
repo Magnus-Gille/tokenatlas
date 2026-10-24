@@ -373,7 +373,8 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                        complete=bool(record['complete']), id_synthetic=bool(record['id_synthetic']),
                        interrupted='interrupted' in (record.get('flags') or ()),
                        warnings=[metadata('Varning', x) for x in record.get('warnings', [])],
-                       environment=_public_environment(record.get('environment'), redact) if record.get('provider') == 'berget' else None)
+                       environment=_public_environment(record.get('environment'), redact)
+                       if isinstance(record.get('provider'), str) and record['provider'].casefold() == 'berget' else None)
             rows.append(row)
     coverage = {key: source_status.get(key) for key in COVERAGE_FIELDS}
     coverage.update(coverage_complete=False, billing_verified=False)
