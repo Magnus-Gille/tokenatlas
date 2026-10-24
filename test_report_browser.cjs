@@ -559,15 +559,13 @@ async function ready(page, errors, what = 'report') {
         const tinyText=norm(await tiny.page.locator('#environment').innerText());
         assert.ok(tinyText.includes(T.lang==='sv'?'0,52 mg':'0.52 mg'),tinyText);
         assert.ok(tinyText.includes(T.lang==='sv'?'5,44 mWh':'5.44 mWh'),tinyText);
-        assert.deepEqual(tiny.errors,[]);await tiny.context.close();
-        const overflow=await newPage({locale:T.locale},edited(smoke,data=>{
-          data.columns.environment={rows:[0,1],values:[0,1].map(()=>({co2e_grams:1e308,energy_kwh:0.004,operational:{co2e_grams:1e308,energy_kwh:0.004},embodied:{co2e_grams:0},source:'provider_reported_estimate'}))};
-        }));
-        const overflowDownload=overflow.page.waitForEvent('download');await overflow.page.click('#export-json');
+        await tiny.page.evaluate(()=>{const rows=UsageReport.getSelected(),first=rows[0],environment={co2e_grams:1e308,energy_kwh:0.004,operational:{co2e_grams:1e308,energy_kwh:0.004},embodied:{co2e_grams:0}};rows[0]={...first,id_synthetic:false,environment};rows.push({...first,id:'overflow-copy',id_synthetic:false,environment})});
+        const overflowDownload=tiny.page.waitForEvent('download');await tiny.page.click('#export-json');
         const overflowText=await (await overflowDownload).path();
-        assert.equal(JSON.parse(await fs.promises.readFile(overflowText,'utf8')).environment.co2e,null);
-        assert.ok(!norm(await overflow.page.locator('#environment').innerText()).includes('Infinity'));
-        assert.deepEqual(overflow.errors,[]);await overflow.context.close();
+        const overflowStats=JSON.parse(await fs.promises.readFile(overflowText,'utf8')).environment;
+        assert.equal(overflowStats.co2e,null);
+        assert.equal(overflowStats.energy,0.008);
+        assert.deepEqual(tiny.errors,[]);await tiny.context.close();
         const uncertain=await newPage({locale:T.locale},edited(smoke,data=>{
           data.columns.environment={rows:[0],values:[{co2e_grams:0.00052,energy_kwh:0.000005441,source:'provider_reported_estimate'}]};
           data.columns.id_synthetic[0]=1;

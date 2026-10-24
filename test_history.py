@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from contextlib import closing
 from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,7 +116,7 @@ class HistoryTests(unittest.TestCase):
         for invalid in ({'co2e_grams': 0.1, 'unexpected_content': 'SYNTHETIC CONTENT'},
                         {**BERGET_ENVIRONMENT, 'extra': 'SYNTHETIC CONTENT'}):
             with self.subTest(invalid=invalid):
-                with sqlite3.connect(snap) as conn:
+                with closing(sqlite3.connect(snap)) as conn, conn:
                     env_id = conn.execute('SELECT environment FROM observations').fetchone()[0]
                     conn.execute('UPDATE strings SET value=? WHERE id=?', (json.dumps(invalid), env_id))
                 with History(self.root / 'destination.sqlite3') as imported:
