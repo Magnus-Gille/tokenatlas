@@ -7,6 +7,7 @@ cannot delete history. Only token counters and attribution metadata are retained
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -203,6 +204,9 @@ def normalize(record, machine):
     tariff = {k: v for k in ('speed', 'service_tier', 'inference_geo')
               if (v := text((tariff or {}).get(k), limit=64)) is not None} or None
     environment = why.clean_environment(getattr(record, 'environment', None), record.provider)
+    environment_at = getattr(record, 'environment_observed_at', None) if environment else None
+    if environment_at is not None and (not isinstance(environment_at, datetime) or environment_at.tzinfo is None):
+        raise ValueError('environment_observed_at must be a timezone-aware datetime')
     flags = sorted({f for f in (text(x, limit=32) for x in (getattr(record, 'flags', None) or ())) if f is not None}) or None
     confidence = {k: 'absent' if v is None else 'observed' for k, v in tokens.items()}
     if 'output_not_final' in warnings:
@@ -227,7 +231,9 @@ def normalize(record, machine):
         'project_id': project_id, 'project_label': record.project,
         'cwd': text(getattr(record, 'cwd', None), limit=4096),
         'turn_id': text(getattr(record, 'turn_id', None)),
-        'turn_confidence': getattr(record, 'turn_confidence', 'absent'), 'tariff': tariff, 'environment': environment, 'flags': flags,
+        'turn_confidence': getattr(record, 'turn_confidence', 'absent'), 'tariff': tariff, 'environment': environment,
+        'environment_observed_at': environment_at.astimezone(timezone.utc).isoformat() if environment_at else None,
+        'flags': flags,
         'quota': _clean_quota(getattr(record, 'quota', None)),
         'tokens': tokens, 'raw_usage': raw, 'duration_ms': None,
         'accounting_basis': 'request_top_level', 'billing_verified': False,
@@ -270,6 +276,13 @@ def merge_observations(a, b, authoritative_turns=False):
     # Whole object, never a field merge. A quota comes from the token_count event that defines the observation, so copies of one observation
     # carry the same snapshot or none (written before Codex revision 3); keeping any present one is enough.
     result['quota'] = winner.get('quota') or other.get('quota')
+    estimates = [item for item in (a, b) if item.get('environment')]
+    if estimates:
+        chosen = max(estimates, key=lambda item: (item.get('environment_observed_at') is not None,
+                                                   item.get('environment_observed_at') or item['ts'],
+                                                   json.dumps(item['environment'], sort_keys=True)))
+        result['environment'] = chosen['environment']
+        result['environment_observed_at'] = chosen.get('environment_observed_at')
     # Union, also on a re-read: copies of a transcript must not erase a recorded stop. (The flagged request cannot change on a re-read, since
     # a stopped request gets no further usage rows after the marker.)
     result['flags'] = sorted(set(a.get('flags') or ()) | set(b.get('flags') or ())) or None
@@ -285,7 +298,10 @@ def merge_observations(a, b, authoritative_turns=False):
         entrypoint=result['origin'], thread_kind=result['thread_kind'], agent=result['agent'],
         parent_session_id=result['parent_session'], turn_id=result['turn_id'],
         turn_confidence=result['turn_confidence'], tariff=result.get('tariff'), quota=result.get('quota'),
-        environment=result.get('environment'), flags=result.get('flags'), harness_version=result['harness_version'],
+        environment=result.get('environment'),
+        environment_observed_at=(datetime.fromisoformat(result['environment_observed_at'])
+                                 if result.get('environment_observed_at') else None),
+        flags=result.get('flags'), harness_version=result['harness_version'],
         session_started_at=(datetime.fromisoformat(result['session_started_at'])
                             if result.get('session_started_at') else None),
         raw_usage=raw, id_synthetic=result['id_synthetic'], output_final=output_final)
@@ -299,7 +315,7 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _MICRO = timedelta(microseconds=1)
 _REFS = ('id', 'machine', 'harness', 'provider', 'harness_version', 'collector', 'source_type', 'session',
          'parent_session', 'session_started_at', 'thread_kind', 'agent', 'origin', 'model', 'effort',
-         'project_id', 'project_label', 'cwd', 'turn_id', 'turn_confidence', 'environment', 'tariff',
+         'project_id', 'project_label', 'cwd', 'turn_id', 'turn_confidence', 'environment', 'environment_observed_at', 'tariff',
          'warnings', 'confidence', 'quota', 'flags')
 _JSON_REFS = ('environment', 'tariff', 'warnings', 'confidence', 'quota', 'flags')
 _FLAGS = ('id_synthetic', 'complete', 'output_final')
@@ -394,6 +410,19 @@ def _encode(item, key=None):
     for name, constant in _CONSTANTS:
         if type(item.get(name, constant)) is not type(constant) or item.get(name, constant) != constant:
             raise ValueError(f'observation field {name} must be {constant!r}')
+    environment = item.get('environment')
+    if environment is not None and why.clean_environment(environment, item.get('provider')) != environment:
+        raise ValueError('observation environment must be a complete Berget estimate')
+    environment_at = item.get('environment_observed_at')
+    if environment is None and environment_at is not None:
+        raise ValueError('observation environment timestamp requires an estimate')
+    if environment_at is not None:
+        try:
+            parsed_environment_at = datetime.fromisoformat(environment_at)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('observation environment timestamp must be UTC ISO 8601') from exc
+        if parsed_environment_at.tzinfo is None or parsed_environment_at.astimezone(timezone.utc).isoformat() != environment_at:
+            raise ValueError('observation environment timestamp must be UTC ISO 8601')
     refs = []
     for name in _REFS:
         value = item.get(name)
@@ -426,9 +455,10 @@ def _decode(row):
     packed, extra = rest[n + len(_TOKENS):]
     item = {'v': OBSERVATION_VERSION, 'kind': 'usage_observation', 'id': refs['id'],
             'id_synthetic': bool(flags['id_synthetic']), 'ts': _ts_text(ts_us)}
-    for name in _REFS[1:-6]:
+    for name in _REFS[1:-7]:
         item[name] = refs[name]
     item['environment'] = None if refs['environment'] is None else json.loads(refs['environment'])
+    item['environment_observed_at'] = refs['environment_observed_at']
     item['tariff'] = None if refs['tariff'] is None else json.loads(refs['tariff'])
     item['quota'] = None if refs['quota'] is None else json.loads(refs['quota'])
     item['flags'] = None if refs['flags'] is None else json.loads(refs['flags'])
@@ -484,7 +514,7 @@ class History:
             ):
                 c.execute(sql)
             have = {r['name'] for r in c.execute('PRAGMA table_info(observations)')}
-            for column in ('environment', 'tariff', 'quota', 'flags'):
+            for column in ('environment', 'environment_observed_at', 'tariff', 'quota', 'flags'):
                 if column not in have:
                     c.execute(f'ALTER TABLE observations ADD COLUMN {column} INTEGER')  # additive within schema 2
             if 'origin' not in {r['name'] for r in c.execute('PRAGMA table_info(files)')}:
@@ -804,12 +834,13 @@ class History:
             for item in items:
                 sources = [p if _REMOTE_PATH.match(p) else f'{machine}:{p}' for p in item.pop('sources')]
                 key = _key(item)
+                encoded = _encode(item, key)  # reject malformed snapshot data before any merge can sanitize it
                 old = self._existing(c, key)
                 result['merged' if old else 'new'] += 1
                 if old:
                     item = merge_observations(old, item)
                 dirty = dirty or item != old
-                observation = self._insert(c, _encode(item, key))
+                observation = self._insert(c, _encode(item, key) if old else encoded)
                 for path in sources:
                     dirty |= c.execute('INSERT OR IGNORE INTO sources VALUES (?,?)',
                                        (observation, self._file_id(c, item['harness'], path))).rowcount > 0
@@ -926,18 +957,25 @@ def summarize(records, granularity='day', timezone_name='UTC'):
     zone = ZoneInfo(timezone_name)
     if granularity not in ('day','hour','minute'):
         raise ValueError('granularity must be day, hour or minute')
+    def finite_sum(values):
+        try:
+            total = sum(values)
+            return total if math.isfinite(total) else None
+        except OverflowError:
+            return None
     def aggregate(rows):
         identified = [r for r in rows if not r['id_synthetic']]
         ambiguous = [r for r in rows if r['id_synthetic']]
         berget = [r for r in rows if r['provider'] == 'berget']
         env_rows = [r['environment'] for r in berget if not r['id_synthetic'] and r.get('environment')]
-        environment = (dict(source='provider_reported_estimate', requests_with_estimate=len(env_rows),
+        environment = (dict(source='provider_reported_estimate' if env_rows else None,
+                            requests_with_estimate=len(env_rows),
                             berget_requests=len(berget),
                             ambiguous_excluded=sum(bool(r['id_synthetic'] and r.get('environment')) for r in berget),
-                            co2e_grams=sum(e['co2e_grams'] for e in env_rows),
-                            energy_kwh=sum(e['energy_kwh'] for e in env_rows),
-                            operational_co2e_grams=sum(e['operational']['co2e_grams'] for e in env_rows),
-                            embodied_co2e_grams=sum(e['embodied']['co2e_grams'] for e in env_rows))
+                            co2e_grams=finite_sum(e['co2e_grams'] for e in env_rows) if env_rows else None,
+                            energy_kwh=finite_sum(e['energy_kwh'] for e in env_rows) if env_rows else None,
+                            operational_co2e_grams=finite_sum(e['operational']['co2e_grams'] for e in env_rows) if env_rows else None,
+                            embodied_co2e_grams=finite_sum(e['embodied']['co2e_grams'] for e in env_rows) if env_rows else None)
                        if berget else None)
         known = {k:sum(r['tokens'][k] or 0 for r in identified) for k in ALL_FIELDS}
         ambiguous_fields = {k:sum(r['tokens'][k] or 0 for r in ambiguous) for k in ALL_FIELDS}

@@ -388,8 +388,8 @@ class BergetEnvironmentReportTests(unittest.TestCase):
         return {
             'co2e_grams': 1.25,
             'energy_kwh': 0.004,
-            'operational': {'co2e_grams': 0.8, 'energy_kwh': 0.003},
-            'embodied': {'co2e_grams': 0.45, 'energy_kwh': 0.001},
+            'operational': {'co2e_grams': 0.8, 'energy_kwh': 0.004},
+            'embodied': {'co2e_grams': 0.45},
             'grid': {'region': 'private-region', 'carbon_intensity_gco2e_per_kwh': 312},
             'methodology': 'private methodology text',
             'methodology_version': '1.0.0',
@@ -403,8 +403,8 @@ class BergetEnvironmentReportTests(unittest.TestCase):
         self.assertEqual(expand(shared)[0]['environment'], {
             'co2e_grams': 1.25,
             'energy_kwh': 0.004,
-            'operational': {'co2e_grams': 0.8, 'energy_kwh': 0.003},
-            'embodied': {'co2e_grams': 0.45, 'energy_kwh': 0.001},
+            'operational': {'co2e_grams': 0.8, 'energy_kwh': 0.004},
+            'embodied': {'co2e_grams': 0.45},
             'grid': {'carbon_intensity_gco2e_per_kwh': 312},
             'source': 'provider_reported_estimate',
         })
@@ -412,6 +412,20 @@ class BergetEnvironmentReportTests(unittest.TestCase):
         self.assertNotIn('private-region', json.dumps(shared))
         self.assertNotIn('private methodology text', json.dumps(shared))
         self.assertIn('private-region', json.dumps(private))
+
+    def test_direct_report_projection_omits_unpublished_embodied_energy(self):
+        value = self.environment()
+        value['embodied']['energy_kwh'] = 0.001
+        value['embodied']['unexpected_content'] = 'SYNTHETIC CONTENT'
+        row = observation(provider='berget', environment=value)
+        projected = expand(build_report([row], {}, redact=False))[0]['environment']
+        self.assertEqual(projected['embodied'], {'co2e_grams': 0.45})
+
+    def test_direct_report_projection_rejects_unrepresentable_integer(self):
+        value = self.environment()
+        value['co2e_grams'] = 10**400
+        projected = expand(build_report([observation(provider='berget', environment=value)], {}))[0]['environment']
+        self.assertNotIn('co2e_grams', projected)
 
     def test_environment_invalid_values_are_omitted_without_breaking_rows(self):
         row = observation(environment={'co2e_grams': -1, 'energy_kwh': '0.1', 'grid': {'region': 12}, 'source': 'unexpected'})

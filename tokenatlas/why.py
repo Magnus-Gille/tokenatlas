@@ -134,6 +134,7 @@ class AttributionRecord:
     # separate from token usage: an estimate must never be inferred from the
     # TokenAtlas proxy counters.
     environment: dict | None = None
+    environment_observed_at: datetime | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -175,7 +176,11 @@ def _environment_number(value: object) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     if isinstance(value, int):
-        return value if value >= 0 else None
+        try:
+            representable = float(value)
+        except OverflowError:
+            return None
+        return value if value >= 0 and math.isfinite(representable) else None
     return value if math.isfinite(value) and value >= 0 else None
 
 
@@ -238,6 +243,8 @@ def clean_environment(value: object, provider: object = "berget") -> dict | None
     # Upstream rounds CO₂e components to six decimals before adding them.
     # Permit that rounding while rejecting internally contradictory totals.
     co2_parts = result["operational"]["co2e_grams"] + result["embodied"]["co2e_grams"]
+    if _environment_number(co2_parts) is None:
+        return None
     if abs(result["co2e_grams"] - co2_parts) > max(0.000003, result["co2e_grams"] * 0.001):
         return None
     if abs(result["energy_kwh"] - result["operational"]["energy_kwh"]) > max(0.000000001, result["energy_kwh"] * 0.001):
@@ -1174,6 +1181,7 @@ def collect_pi(
 ) -> list[AttributionRecord]:
     """Collect Pi response usage and deduplicate copied fork history."""
     calls: dict[tuple[str, str], dict] = {}
+    environment_times: dict[tuple[str, str], tuple[datetime, str]] = {}
     interrupted: set[tuple[str, str]] = set()
     for path in _paths_for(root, "*.jsonl", start, paths):
         rows = list(_read_json_lines(path, strict=strict))
@@ -1241,12 +1249,17 @@ def collect_pi(
             existing = calls.get(key)
             if existing is None:
                 calls[key] = candidate
+                if environment is not None:
+                    environment_times[key] = (timestamp, json.dumps(environment, sort_keys=True))
                 continue
             for token_field in ("fresh_input", "cache_read", "cache_write", "output", "reasoning"):
                 existing[token_field] = max(existing[token_field], candidate[token_field])
             existing["raw_usage"] = _merge_sanitized_usage(existing["raw_usage"], raw_usage)
-            if existing.get("environment") is None and environment is not None:
-                existing["environment"] = environment
+            if environment is not None:
+                environment_order = (timestamp, json.dumps(environment, sort_keys=True))
+                if key not in environment_times or environment_order > environment_times[key]:
+                    existing["environment"] = environment
+                    environment_times[key] = environment_order
             existing["timestamp"] = max(existing["timestamp"], timestamp)
             if candidate["session_started"] < existing["session_started"]:
                 for field in ("session_id", "project", "project_id", "cwd", "harness_version", "session_started"):
@@ -1254,6 +1267,8 @@ def collect_pi(
     records = []
     for (provider, _), values in calls.items():
         values["session_started_at"] = values.pop("session_started")
+        selected = environment_times.get((provider, values["call_id"]))
+        values["environment_observed_at"] = selected[0] if selected else None
         if start <= values["timestamp"] < end:
             records.append(AttributionRecord(harness="pi", provider=provider, flags=_flag_list(interrupted, (provider, values["call_id"])), **values))
     return sorted(records, key=lambda item: (item.timestamp, item.session_id, item.call_id))

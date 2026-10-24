@@ -25,7 +25,7 @@ def _parse_line(raw: bytes, number: int):
     if not isinstance(row, dict):
         raise ValueError(f'line {number}: expected a JSON object')
     harness, request_id, model = (row.get(key) for key in ('harness', 'request_id', 'model'))
-    if harness not in ALLOWED_HARNESSES or not isinstance(request_id, str) or not request_id or len(request_id) > 256:
+    if not isinstance(harness, str) or harness not in ALLOWED_HARNESSES or not isinstance(request_id, str) or not request_id or len(request_id) > 256:
         raise ValueError(f'line {number}: expected pi/opencode harness and bounded request_id')
     if not isinstance(model, str) or not model or len(model) > 256:
         raise ValueError(f'line {number}: model is required')
@@ -91,6 +91,7 @@ def import_emissions(history, path: Path):
                 item = dict(item)
                 item.pop('sources', None)
                 item['environment'] = environment
+                item['environment_observed_at'] = timestamp
                 changed.append(item)
         for item in changed:
             history._insert(connection, _encode(item, _key(item)))

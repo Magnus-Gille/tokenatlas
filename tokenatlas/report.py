@@ -4,6 +4,7 @@ import base64
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -233,7 +234,12 @@ _ENV_COMPONENTS = ('operational', 'embodied')
 
 def _finite_nonnegative(value):
     """Return a JSON-safe non-negative number, or None for malformed provider data."""
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 and value == value and value not in (float('inf'), float('-inf')) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 def _public_environment(value, redact):
@@ -254,7 +260,7 @@ def _public_environment(value, redact):
         nested = value.get(component)
         if not isinstance(nested, dict):
             continue
-        for key in ('co2e_grams', 'energy_kwh'):
+        for key in (('co2e_grams', 'energy_kwh') if component == 'operational' else ('co2e_grams',)):
             number = _finite_nonnegative(nested.get(key))
             if number is not None:
                 out.setdefault(component, {})[key] = number

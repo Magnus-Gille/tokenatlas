@@ -167,6 +167,14 @@ class BergetCalculatorTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             # Every field is intentionally required; no hidden provider defaults.
             ModelInputs(parameters=1, model_size_bytes=2, default_input_tokens=1, default_output_tokens=1)  # type: ignore[call-arg]
+        huge = fixture()
+        huge['model'] = ModelInputs(**{**asdict(huge['model']), 'parameters': 10**400})
+        with self.assertRaisesRegex(ValueError, 'finite number'):
+            calculate_breakdown(**huge)
+        tiny_utilization = fixture()
+        tiny_utilization['request'] = RequestInputs(**{**asdict(tiny_utilization['request']), 'lifetime_utilization': 5e-324})
+        with self.assertRaisesRegex(ValueError, 'finite'):
+            calculate_breakdown(**tiny_utilization)
 
     def test_offline_cli_requires_explicit_inputs(self):
         with tempfile.TemporaryDirectory() as directory:

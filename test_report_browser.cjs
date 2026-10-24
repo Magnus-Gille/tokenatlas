@@ -537,6 +537,11 @@ async function ready(page, errors, what = 'report') {
         await environmentPage.page.locator('#environment').screenshot({path:path.join(screenshotDir,'berget-environment-'+T.lang+'.png')});
         await environmentPage.page.locator('#from').fill('2999-01-01');
         assert.equal(await environmentPage.page.locator('#environment').isVisible(),false);
+        const emptyJsonDownload=environmentPage.page.waitForEvent('download');await environmentPage.page.click('#export-json');
+        const emptyJsonText=await (await emptyJsonDownload).path();
+        const emptyEnvironment=JSON.parse(await fs.promises.readFile(emptyJsonText,'utf8')).environment;
+        assert.equal(emptyEnvironment.co2e,null);
+        assert.equal(emptyEnvironment.energy,null);
         await environmentPage.page.locator('#reset').click();
         assert.equal(await environmentPage.page.locator('#environment').isVisible(),true);
         const jsonDownload=environmentPage.page.waitForEvent('download');await environmentPage.page.click('#export-json');
@@ -555,6 +560,14 @@ async function ready(page, errors, what = 'report') {
         assert.ok(tinyText.includes(T.lang==='sv'?'0,52 mg':'0.52 mg'),tinyText);
         assert.ok(tinyText.includes(T.lang==='sv'?'5,44 mWh':'5.44 mWh'),tinyText);
         assert.deepEqual(tiny.errors,[]);await tiny.context.close();
+        const overflow=await newPage({locale:T.locale},edited(smoke,data=>{
+          data.columns.environment={rows:[0,1],values:[0,1].map(()=>({co2e_grams:1e308,energy_kwh:0.004,operational:{co2e_grams:1e308,energy_kwh:0.004},embodied:{co2e_grams:0},source:'provider_reported_estimate'}))};
+        }));
+        const overflowDownload=overflow.page.waitForEvent('download');await overflow.page.click('#export-json');
+        const overflowText=await (await overflowDownload).path();
+        assert.equal(JSON.parse(await fs.promises.readFile(overflowText,'utf8')).environment.co2e,null);
+        assert.ok(!norm(await overflow.page.locator('#environment').innerText()).includes('Infinity'));
+        assert.deepEqual(overflow.errors,[]);await overflow.context.close();
         const uncertain=await newPage({locale:T.locale},edited(smoke,data=>{
           data.columns.environment={rows:[0],values:[{co2e_grams:0.00052,energy_kwh:0.000005441,source:'provider_reported_estimate'}]};
           data.columns.id_synthetic[0]=1;

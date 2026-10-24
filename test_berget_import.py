@@ -57,9 +57,11 @@ class BergetImportTests(unittest.TestCase):
                              {'requests': 1, 'updated': 0, 'unchanged': 1})
             self.assertEqual(history.revision, revision)
         with History(self.db) as history:
-            environment = history.records()[0]['environment']
+            stored = history.records()[0]
+            environment = stored['environment']
             self.assertEqual(environment['co2e_grams'], 0.04)
             self.assertEqual(environment['source'], 'provider_reported_estimate')
+            self.assertEqual(stored['environment_observed_at'], '2026-10-21T00:00:00+00:00')
 
     def test_bad_match_rolls_back_all_rows(self):
         self.write(self.row(), self.row(response_id='missing'))
@@ -81,6 +83,13 @@ class BergetImportTests(unittest.TestCase):
         with History(self.db) as history:
             with self.assertRaisesRegex(ValueError, 'invalid usage.emissions'):
                 import_emissions(history, self.jsonl)
+
+    def test_non_text_harness_is_rejected_as_invalid_input(self):
+        self.write({**self.row(), 'harness': []})
+        with History(self.db) as history:
+            with self.assertRaisesRegex(ValueError, 'expected pi/opencode harness'):
+                import_emissions(history, self.jsonl)
+            self.assertIsNone(history.records()[0]['environment'])
 
     def test_cli_receipt_and_report_records(self):
         self.write(self.row())

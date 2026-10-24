@@ -76,6 +76,60 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(result['new'], 1)
             self.assertEqual(imported.records()[0]['environment'], item['environment'])
 
+    def test_pi_refresh_uses_estimate_time_across_copied_session_files(self):
+        import copy
+        logs = self.root / 'pi'
+        older = {**BERGET_ENVIRONMENT, 'co2e_grams': 0.84,
+                 'operational': {'co2e_grams': 0.73, 'energy_kwh': 0.0012}}
+        first = pi_message('first', 'shared-response', '2026-09-03T10:00:00Z',
+                           {'input': 1, 'output': 1, 'emissions': older}, provider='berget')
+        tail = pi_message('tail', 'shared-response', '2026-09-03T10:02:00Z',
+                          {'input': 1, 'output': 3}, provider='berget')
+        second = pi_message('second', 'shared-response', '2026-09-03T10:01:00Z',
+                            {'input': 1, 'output': 2, 'emissions': BERGET_ENVIRONMENT}, provider='berget')
+        write_pi_session(logs / 'a.jsonl', 'original', '2026-09-03T09:00:00Z', '/work/app',
+                         [copy.deepcopy(first), copy.deepcopy(tail)])
+        write_pi_session(logs / 'b.jsonl', 'fork', '2026-09-03T09:01:00Z', '/work/app',
+                         [copy.deepcopy(second)])
+        with History(self.db) as history:
+            history.refresh('pi', logs)
+            for _ in range(2):
+                stored = history.records()
+                self.assertEqual(len(stored), 1)
+                self.assertEqual(stored[0]['environment']['co2e_grams'], 0.42)
+                self.assertEqual(stored[0]['environment_observed_at'], '2026-09-03T10:01:00+00:00')
+                history.refresh('pi', logs)
+            snapshot = self.root / 'pi.snap'
+            history.snapshot(snapshot)
+        with History(self.root / 'other.sqlite3') as imported:
+            imported.import_snapshot(snapshot, 'pi-machine')
+            self.assertEqual(imported.records()[0]['environment']['co2e_grams'], 0.42)
+            self.assertEqual(imported.records()[0]['environment_observed_at'], '2026-09-03T10:01:00+00:00')
+
+    def test_snapshot_rejects_malformed_environment_without_partial_import(self):
+        item = normalize(record(provider='berget', environment=BERGET_ENVIRONMENT), 'm-remote')
+        with History(self.db) as remote:
+            remote._insert(remote.connection, _encode(item))
+            snap = self.root / 'malformed.snap'
+            remote.snapshot(snap)
+        for invalid in ({'co2e_grams': 0.1, 'unexpected_content': 'SYNTHETIC CONTENT'},
+                        {**BERGET_ENVIRONMENT, 'extra': 'SYNTHETIC CONTENT'}):
+            with self.subTest(invalid=invalid):
+                with sqlite3.connect(snap) as conn:
+                    env_id = conn.execute('SELECT environment FROM observations').fetchone()[0]
+                    conn.execute('UPDATE strings SET value=? WHERE id=?', (json.dumps(invalid), env_id))
+                with History(self.root / 'destination.sqlite3') as imported:
+                    with self.assertRaisesRegex(ValueError, 'environment'):
+                        imported.import_snapshot(snap, 'laptop')
+                    self.assertEqual(imported.records(), [])
+
+    def test_environment_timestamp_rejects_invalid_or_naive_values(self):
+        item = normalize(record(provider='berget', environment=BERGET_ENVIRONMENT), 'm-test')
+        for stamp in ('not-a-time', '2026-09-03T10:00:00'):
+            with self.subTest(stamp=stamp):
+                with self.assertRaisesRegex(ValueError, 'environment timestamp'):
+                    _encode({**item, 'environment_observed_at': stamp})
+
     def test_environment_aggregate_keeps_coverage_and_excludes_uncertain_ids(self):
         reported = normalize(record('known', provider='berget', environment=BERGET_ENVIRONMENT), 'm-test')
         uncertain = normalize(record('uncertain', provider='berget', environment=BERGET_ENVIRONMENT,
@@ -90,6 +144,31 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(expected['energy_kwh'], 0.0012)
         self.assertEqual(summary['buckets'][0]['environment'], expected)
         self.assertEqual(summary['groups']['provider'][0]['environment'], expected)
+
+    def test_environment_aggregate_distinguishes_missing_from_reported_zero(self):
+        missing = normalize(record('missing', provider='berget'), 'm-test')
+        empty = summarize([missing])['totals']['environment']
+        self.assertEqual(empty['requests_with_estimate'], 0)
+        self.assertEqual(empty['berget_requests'], 1)
+        for key in ('co2e_grams', 'energy_kwh', 'operational_co2e_grams', 'embodied_co2e_grams'):
+            self.assertIsNone(empty[key])
+        zero = {**BERGET_ENVIRONMENT, 'co2e_grams': 0, 'energy_kwh': 0,
+                'operational': {'co2e_grams': 0, 'energy_kwh': 0}, 'embodied': {'co2e_grams': 0}}
+        reported = normalize(record('zero', provider='berget', environment=zero), 'm-test')
+        actual = summarize([missing, reported])['totals']['environment']
+        self.assertEqual(actual['requests_with_estimate'], 1)
+        for key in ('co2e_grams', 'energy_kwh', 'operational_co2e_grams', 'embodied_co2e_grams'):
+            self.assertEqual(actual[key], 0)
+
+    def test_environment_aggregate_never_serializes_infinity(self):
+        huge = {**BERGET_ENVIRONMENT, 'co2e_grams': 1e308,
+                'operational': {'co2e_grams': 1e308, 'energy_kwh': 0.0012},
+                'embodied': {'co2e_grams': 0}}
+        rows = [normalize(record(str(i), provider='berget', environment=huge), 'm-test') for i in range(2)]
+        total = summarize(rows)['totals']['environment']
+        self.assertEqual(total['requests_with_estimate'], 2)
+        self.assertIsNone(total['co2e_grams'])
+        json.dumps(total, allow_nan=False)
 
     def test_claude_revision_changes_fingerprint_and_forces_one_reread(self):
         import tokenatlas.history as history

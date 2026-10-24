@@ -112,7 +112,10 @@ class CalculatorResult:
 def _number(name: str, value: Any, *, minimum: float | None = None) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a finite number")
-    result = float(value)
+    try:
+        result = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
     if not math.isfinite(result):
         raise ValueError(f"{name} must be a finite number")
     if minimum is not None and result < minimum:
@@ -182,7 +185,7 @@ def _validate(model: ModelInputs, hardware: HardwareInputs, grid: GridInputs, re
         raise ValueError("request.caching_enabled must be a boolean")
 
 
-def calculate_breakdown(
+def _calculate_breakdown(
     *,
     model: ModelInputs,
     hardware: HardwareInputs,
@@ -310,6 +313,30 @@ def calculate_breakdown(
         gpus_allocated=gpus_used,
         effective_intensity_gco2e_per_kwh=round(effective_intensity, 2),
     )
+
+
+def calculate_breakdown(
+    *,
+    model: ModelInputs,
+    hardware: HardwareInputs,
+    grid: GridInputs,
+    request: RequestInputs,
+) -> CalculatorResult:
+    """Calculate from explicit inputs and reject nonfinite derived accounting."""
+    try:
+        result = _calculate_breakdown(model=model, hardware=hardware, grid=grid, request=request)
+    except (OverflowError, ZeroDivisionError) as exc:
+        raise ValueError("calculated emissions must be finite; check input magnitudes") from exc
+    numbers = [result.water_liters, result.effective_intensity_gco2e_per_kwh,
+               result.emissions['co2e_grams'], result.emissions['energy_kwh'],
+               result.emissions['operational']['co2e_grams'], result.emissions['operational']['energy_kwh'],
+               result.emissions['embodied']['co2e_grams'],
+               result.emissions['grid']['carbon_intensity_gco2e_per_kwh']]
+    for component in result.components.values():
+        numbers.extend((component['co2_grams'], component['energy_kwh']))
+    if not all(math.isfinite(value) for value in numbers):
+        raise ValueError("calculated emissions must be finite; check input magnitudes")
+    return result
 
 
 def calculate_emissions(

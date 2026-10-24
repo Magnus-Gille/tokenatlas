@@ -1,3 +1,35 @@
+# Current state — 2026-10-24 (#180 local candidate)
+
+Branch `codex/berget-emissions` adds Berget's provider-reported per-request
+`usage.emissions` to Pi history, offline import, summary, and the private/shared
+TokenAtlas report. It also adds an explicit-input Python port of Berget's public
+calculator. The environmental accounting remains separate from the existing
+token-based energy proxy. A live Berget chat completion and streamed completion
+confirmed the published emissions shape for one active model; coverage of other
+models and endpoints is unverified. The temporary test key was not persisted and
+the owner was told to revoke or rotate it.
+
+Snapshot import now rejects malformed environmental data, missing estimates remain
+unknown in summaries and JSON export, and Pi duplicate responses choose the latest
+valid estimate with a deterministic equal-time tie-break. Independent native review
+found these issues and the two smaller schema/number issues addressed in this branch.
+Native bounded leaves: storage pass after root integration fixes, report UI partial
+then corrected by root, calculator pass after root CLI integration. Worker role
+requested gpt-5.6-luna/high; runtime model/effort metadata unavailable. Independent
+review requested gpt-6-astra/xhigh; runtime metadata unavailable. No PR, release,
+installation, or deployment has occurred. This task stops at local candidate until
+the owner authorizes publication to `Magnus-Gille/tokenatlas` as a PR.
+
+Verification: Berget's live non-streaming and streaming completion responses each
+included valid `usage.emissions` for one active model. Offline Chromium report
+checks pass in Swedish and English, including filter-following CO₂e/energy,
+empty/overflow exports, and zero network or console errors. Independent review
+found and then confirmed the fixes for snapshot validation, Pi copy ordering,
+unknown-versus-zero handling, report schema, and finite-number boundaries. The
+full Python suite passes: 1,292 tests, 12 skips.
+
+---
+
 # Current state — 2026-10-10 (#159 candidate)
 
 TokenAtlas 1.22.0 adds an explicit package-manager-aware `upgrade` command:
