@@ -156,7 +156,7 @@ def _validate(model: ModelInputs, hardware: HardwareInputs, grid: GridInputs, re
     if not isinstance(grid.region, str) or not grid.region.strip():
         raise ValueError("grid.region must be a non-empty string")
     _number("grid.intensity_gco2e_per_kwh", grid.intensity_gco2e_per_kwh, minimum=0)
-    if len(grid.demand_curve) != 24:
+    if not isinstance(grid.demand_curve, (tuple, list)) or len(grid.demand_curve) != 24:
         raise ValueError("grid.demand_curve must contain 24 hourly values")
     for hour, weight in enumerate(grid.demand_curve):
         _number(f"grid.demand_curve[{hour}]", weight, minimum=0)

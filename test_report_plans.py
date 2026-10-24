@@ -39,7 +39,7 @@ class ReportPlans(unittest.TestCase):
         self.assertEqual(expand(report)[0]["plan"], "business")
         self.assertEqual({p["plan"] for p in report["insights"]["plans"]}, {"business"})
         self.assertEqual(sum(p["observations"] for p in report["insights"]["plans"]), 1)
-        self.assertEqual(REDACTION_REVISION, 5)
+        self.assertEqual(REDACTION_REVISION, 6)
 
     def test_shared_unknown_plan_is_aliased_and_public_plan_survives(self):
         rows = [

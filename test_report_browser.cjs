@@ -526,6 +526,43 @@ async function ready(page, errors, what = 'report') {
         assert.equal((await fr.locator('#toast').innerText()).trim(),RS.toast('Codex'));await outer.close();
       }
       {
+        // Berget environment fields follow the active filters and remain separate from the token proxy.
+        const environmentPage=await newPage({locale:T.locale},edited(smoke,data=>{
+          data.columns.environment={rows:[0],values:[{co2e_grams:1.25,energy_kwh:0.004,operational:{co2e_grams:0.8,energy_kwh:0.004},embodied:{co2e_grams:0.45},grid:{region:'sweden',carbon_intensity_gco2e_per_kwh:9.2},methodology:'berget-calculator',methodology_version:'1.0.0',source:'provider_reported_estimate'}]};
+        }));
+        assert.equal(await environmentPage.page.locator('#environment').isVisible(),true);
+        const environmentText=norm(await environmentPage.page.locator('#environment').innerText());
+        assert.ok(environmentText.includes(T.lang==='sv'?'1,25 g':'1.25 g'),environmentText);
+        assert.ok(environmentText.includes(T.lang==='sv'?'4 Wh':'4 Wh'),environmentText);
+        await environmentPage.page.locator('#environment').screenshot({path:path.join(screenshotDir,'berget-environment-'+T.lang+'.png')});
+        await environmentPage.page.locator('#from').fill('2999-01-01');
+        assert.equal(await environmentPage.page.locator('#environment').isVisible(),false);
+        await environmentPage.page.locator('#reset').click();
+        assert.equal(await environmentPage.page.locator('#environment').isVisible(),true);
+        const jsonDownload=environmentPage.page.waitForEvent('download');await environmentPage.page.click('#export-json');
+        const jsonText=await (await jsonDownload).path();
+        assert.ok(JSON.parse(await fs.promises.readFile(jsonText,'utf8')).records[0].environment.co2e_grams===1.25);
+        const csvDownload=environmentPage.page.waitForEvent('download');await environmentPage.page.click('#export-csv');
+        const csvText=await (await csvDownload).path();
+        const csv=await fs.promises.readFile(csvText,'utf8');
+        for(const key of ['environment_co2e_grams','environment_operational_co2e_grams','environment_embodied_co2e_grams','environment_grid_region','environment_grid_carbon_intensity_gco2e_per_kwh','environment_methodology_version'])assert.ok(csv.includes(key),key);
+        assert.ok(csv.includes('"sweden"')&&csv.includes('"berget-calculator"'));
+        assert.deepEqual(environmentPage.errors,[]);await environmentPage.context.close();
+        const tiny=await newPage({locale:T.locale},edited(smoke,data=>{
+          data.columns.environment={rows:[0],values:[{co2e_grams:0.00052,energy_kwh:0.000005441,operational:{co2e_grams:0.000058,energy_kwh:0.000005441},embodied:{co2e_grams:0.000462},source:'provider_reported_estimate'}]};
+        }));
+        const tinyText=norm(await tiny.page.locator('#environment').innerText());
+        assert.ok(tinyText.includes(T.lang==='sv'?'0,52 mg':'0.52 mg'),tinyText);
+        assert.ok(tinyText.includes(T.lang==='sv'?'5,44 mWh':'5.44 mWh'),tinyText);
+        assert.deepEqual(tiny.errors,[]);await tiny.context.close();
+        const uncertain=await newPage({locale:T.locale},edited(smoke,data=>{
+          data.columns.environment={rows:[0],values:[{co2e_grams:0.00052,energy_kwh:0.000005441,source:'provider_reported_estimate'}]};
+          data.columns.id_synthetic[0]=1;
+        }));
+        assert.equal(await uncertain.page.locator('#environment').isVisible(),false);
+        assert.deepEqual(uncertain.errors,[]);await uncertain.context.close();
+      }
+      {
         // Section order (#73): the costliest turns come right after the totals, then cost facts and energy; turns are numbered 01
         {const pos=await p2.evaluate(()=>['prompts','cost-facts','energy','sessions','coverage'].map(id=>document.getElementById(id).getBoundingClientRect().top+window.scrollY));
          assert.ok(pos.every((v,i)=>i===0||pos[i-1]<v),'section order prompts < cost facts < energy < sessions < coverage: '+pos);

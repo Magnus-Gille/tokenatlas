@@ -1,4 +1,10 @@
+import json
+import subprocess
+import sys
+import tempfile
 import unittest
+from dataclasses import asdict
+from pathlib import Path
 
 from tokenatlas.berget_calculator import (
     CALCULATOR_VERSION,
@@ -161,6 +167,18 @@ class BergetCalculatorTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             # Every field is intentionally required; no hidden provider defaults.
             ModelInputs(parameters=1, model_size_bytes=2, default_input_tokens=1, default_output_tokens=1)  # type: ignore[call-arg]
+
+    def test_offline_cli_requires_explicit_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'inputs.json'
+            path.write_text(json.dumps({name: asdict(value) for name, value in fixture().items()}))
+            command = [sys.executable, '-B', '-m', 'tokenatlas', 'calculate-emissions', str(path)]
+            result = subprocess.run(command, text=True, capture_output=True, check=True)
+            self.assertEqual(json.loads(result.stdout)['usage']['emissions'], calculate_emissions(**fixture()))
+            path.write_text(json.dumps({'model': asdict(fixture()['model'])}))
+            rejected = subprocess.run(command, text=True, capture_output=True)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn('needs exactly', rejected.stderr)
 
 
 if __name__ == "__main__":

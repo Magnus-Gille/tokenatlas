@@ -306,7 +306,7 @@ class PiAndFingerprint(Base):
         old = json.dumps([COLLECTOR_VERSION, ['f.jsonl', s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns]])
         for harness in (None,):
             self.assertEqual(History.fingerprint(path, harness=harness), old)
-        for harness, revision in (('pi', 2), ('codex', 7), ('claude', 3), ('opencode', 2)):
+        for harness, revision in (('pi', 3), ('codex', 7), ('claude', 3), ('opencode', 2)):
             self.assertEqual(json.loads(History.fingerprint(path, harness=harness)), json.loads(old) + [['revision', revision]])
 
     def test_old_pi_fingerprint_forces_one_reread(self):

@@ -16,6 +16,15 @@ from tokenatlas.why import AttributionRecord
 from test_why_harnesses import create_opencode_db, pi_message, write_pi_session
 
 
+BERGET_ENVIRONMENT = {
+    'co2e_grams': 0.42, 'energy_kwh': 0.0012,
+    'operational': {'co2e_grams': 0.31, 'energy_kwh': 0.0012},
+    'embodied': {'co2e_grams': 0.11},
+    'grid': {'region': 'SE3', 'carbon_intensity_gco2e_per_kwh': 258.0},
+    'methodology': 'Berget AI CO2 Calculator', 'methodology_version': '1.0.0',
+}
+
+
 def record(call_id='req', **overrides):
     args = dict(harness='claude', provider='anthropic',
                 timestamp=datetime(2026, 9, 3, 10, tzinfo=timezone.utc),
@@ -43,6 +52,44 @@ class HistoryTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
         self.db=self.root/'state/history.sqlite3'
+
+    def test_environment_is_normalized_and_roundtrips_through_schema_two_storage(self):
+        item = normalize(record(provider='berget', environment=BERGET_ENVIRONMENT), 'm-test')
+        self.assertEqual(item['environment'], {**BERGET_ENVIRONMENT, 'source': 'provider_reported_estimate'})
+        encoded = _encode(item)
+        self.assertEqual(_decode(encoded), item)
+        with History(self.db) as history:
+            history._strings, history._values = {}, {}
+            history._insert(history.connection, encoded)
+            stored = history.records()
+            self.assertEqual(stored[0]['environment'], item['environment'])
+
+    def test_environment_is_preserved_when_reimporting_snapshot(self):
+        item = normalize(record(provider='berget', environment=BERGET_ENVIRONMENT), 'm-remote')
+        with History(self.db) as local:
+            local._insert(local.connection, _encode(item))
+            snap = self.root / 'remote.sqlite3'
+            local.snapshot(snap)
+        imported_db = self.root / 'imported.sqlite3'
+        with History(imported_db) as imported:
+            result = imported.import_snapshot(snap, 'laptop')
+            self.assertEqual(result['new'], 1)
+            self.assertEqual(imported.records()[0]['environment'], item['environment'])
+
+    def test_environment_aggregate_keeps_coverage_and_excludes_uncertain_ids(self):
+        reported = normalize(record('known', provider='berget', environment=BERGET_ENVIRONMENT), 'm-test')
+        uncertain = normalize(record('uncertain', provider='berget', environment=BERGET_ENVIRONMENT,
+                                     id_synthetic=True), 'm-test')
+        missing = normalize(record('missing', provider='berget'), 'm-test')
+        summary = summarize([reported, uncertain, missing])
+        expected = summary['totals']['environment']
+        self.assertEqual(expected['requests_with_estimate'], 1)
+        self.assertEqual(expected['berget_requests'], 3)
+        self.assertEqual(expected['ambiguous_excluded'], 1)
+        self.assertEqual(expected['co2e_grams'], 0.42)
+        self.assertEqual(expected['energy_kwh'], 0.0012)
+        self.assertEqual(summary['buckets'][0]['environment'], expected)
+        self.assertEqual(summary['groups']['provider'][0]['environment'], expected)
 
     def test_claude_revision_changes_fingerprint_and_forces_one_reread(self):
         import tokenatlas.history as history

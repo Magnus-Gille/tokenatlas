@@ -36,6 +36,17 @@ def pi_message(entry_id, response_id, timestamp, usage, provider="test", model="
     }
 
 
+BERGET_ENVIRONMENT = {
+    "co2e_grams": 0.42,
+    "energy_kwh": 0.0012,
+    "operational": {"co2e_grams": 0.31, "energy_kwh": 0.0012},
+    "embodied": {"co2e_grams": 0.11},
+    "grid": {"region": "SE3", "carbon_intensity_gco2e_per_kwh": 258.0},
+    "methodology": "Berget AI CO2 Calculator",
+    "methodology_version": "1.0.0",
+}
+
+
 def create_opencode_db(path):
     connection = sqlite3.connect(path)
     connection.executescript("""
@@ -54,6 +65,35 @@ def create_opencode_db(path):
 
 
 class PiAttributionTests(unittest.TestCase):
+    def test_extracts_only_complete_berget_emissions_and_deduplicates_it(self):
+        usage = {"input": 1, "cacheRead": 0, "cacheWrite": 0, "output": 2,
+                 "emissions": BERGET_ENVIRONMENT, "secret": "DROP"}
+        partial = pi_message("entry-partial", "response", "2026-09-03T09:59:59Z",
+                             {"input": 1, "cacheRead": 0, "cacheWrite": 0, "output": 1}, provider="berget")
+        copied = pi_message("entry", "response", "2026-09-03T10:00:00Z", usage, provider="berget")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_pi_session(root / "a.jsonl", "session", "2026-09-03T09:00:00Z", "/work/app", [partial, copied])
+            records = why.collect_pi(root, START, END)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].output, 2)
+        self.assertEqual(records[0].environment, {**BERGET_ENVIRONMENT, "source": "provider_reported_estimate"})
+        self.assertNotIn("emissions", records[0].raw_usage)
+
+    def test_rejects_partial_or_non_berget_emissions_without_dropping_tokens(self):
+        for provider, emissions in (("berget", {**BERGET_ENVIRONMENT, "grid": {"region": "SE3"}}),
+                                    ("openai", BERGET_ENVIRONMENT)):
+            with self.subTest(provider=provider):
+                usage = {"input": 1, "cacheRead": 0, "cacheWrite": 0, "output": 2, "emissions": emissions}
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write_pi_session(root / "s.jsonl", "session", "2026-09-03T09:00:00Z", "/work/app",
+                                     [pi_message("entry", "response", "2026-09-03T10:00:00Z", usage, provider=provider)])
+                    records = why.collect_pi(root, START, END)
+                self.assertEqual(len(records), 1)
+                self.assertIsNone(records[0].environment)
+                self.assertEqual(records[0].output, 2)
+
     def test_maps_usage_and_keeps_original_session_when_a_fork_sorts_first(self):
         usage = {
             "input": 10, "cacheRead": 20, "cacheWrite": 3,

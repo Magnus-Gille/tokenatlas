@@ -24,7 +24,7 @@ from tokenatlas.provenance import REMOTE_PATH, is_machine_id
 OBSERVATION_VERSION = 1  # the 'v' field inside observation dicts
 SCHEMA_VERSION = 2  # PRAGMA user_version of the SQLite layout
 COLLECTOR_VERSION = 5
-HARNESS_REVISION = {'pi': 2, 'codex': 7, 'claude': 3, 'opencode': 2}  # bump to force a re-read of one harness's files only (appended to its fingerprint)
+HARNESS_REVISION = {'pi': 3, 'codex': 7, 'claude': 3, 'opencode': 2}  # bump to force a re-read of one harness's files only (appended to its fingerprint)
 FIELDS = ('fresh_input', 'cache_read', 'cache_write', 'output')
 ALL_FIELDS = FIELDS + ('reasoning',)
 
@@ -82,6 +82,12 @@ def clean_usage(raw):
         result['iteration_snapshots'] = [clean_usage({'iterations': snapshot})['iterations']
             for snapshot in raw['iteration_snapshots'] if isinstance(snapshot, list)]
     return result
+
+
+# Public import path for the standalone emissions importer.  The canonical
+# implementation lives beside the harness adapters so it can also be used by
+# Pi collection without widening the durable usage allowlist.
+clean_environment = why.clean_environment
 
 
 def _clean_quota(value):
@@ -196,6 +202,7 @@ def normalize(record, machine):
     tariff = getattr(record, 'tariff', None)
     tariff = {k: v for k in ('speed', 'service_tier', 'inference_geo')
               if (v := text((tariff or {}).get(k), limit=64)) is not None} or None
+    environment = why.clean_environment(getattr(record, 'environment', None), record.provider)
     flags = sorted({f for f in (text(x, limit=32) for x in (getattr(record, 'flags', None) or ())) if f is not None}) or None
     confidence = {k: 'absent' if v is None else 'observed' for k, v in tokens.items()}
     if 'output_not_final' in warnings:
@@ -220,7 +227,7 @@ def normalize(record, machine):
         'project_id': project_id, 'project_label': record.project,
         'cwd': text(getattr(record, 'cwd', None), limit=4096),
         'turn_id': text(getattr(record, 'turn_id', None)),
-        'turn_confidence': getattr(record, 'turn_confidence', 'absent'), 'tariff': tariff, 'flags': flags,
+        'turn_confidence': getattr(record, 'turn_confidence', 'absent'), 'tariff': tariff, 'environment': environment, 'flags': flags,
         'quota': _clean_quota(getattr(record, 'quota', None)),
         'tokens': tokens, 'raw_usage': raw, 'duration_ms': None,
         'accounting_basis': 'request_top_level', 'billing_verified': False,
@@ -277,7 +284,8 @@ def merge_observations(a, b, authoritative_turns=False):
         project=result['project_label'], project_id=result['project_id'], cwd=result['cwd'],
         entrypoint=result['origin'], thread_kind=result['thread_kind'], agent=result['agent'],
         parent_session_id=result['parent_session'], turn_id=result['turn_id'],
-        turn_confidence=result['turn_confidence'], tariff=result.get('tariff'), quota=result.get('quota'), flags=result.get('flags'), harness_version=result['harness_version'],
+        turn_confidence=result['turn_confidence'], tariff=result.get('tariff'), quota=result.get('quota'),
+        environment=result.get('environment'), flags=result.get('flags'), harness_version=result['harness_version'],
         session_started_at=(datetime.fromisoformat(result['session_started_at'])
                             if result.get('session_started_at') else None),
         raw_usage=raw, id_synthetic=result['id_synthetic'], output_final=output_final)
@@ -291,8 +299,9 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _MICRO = timedelta(microseconds=1)
 _REFS = ('id', 'machine', 'harness', 'provider', 'harness_version', 'collector', 'source_type', 'session',
          'parent_session', 'session_started_at', 'thread_kind', 'agent', 'origin', 'model', 'effort',
-         'project_id', 'project_label', 'cwd', 'turn_id', 'turn_confidence', 'tariff', 'warnings', 'confidence', 'quota', 'flags')
-_JSON_REFS = ('tariff', 'warnings', 'confidence', 'quota', 'flags')
+         'project_id', 'project_label', 'cwd', 'turn_id', 'turn_confidence', 'environment', 'tariff',
+         'warnings', 'confidence', 'quota', 'flags')
+_JSON_REFS = ('environment', 'tariff', 'warnings', 'confidence', 'quota', 'flags')
 _FLAGS = ('id_synthetic', 'complete', 'output_final')
 _TOKENS = ALL_FIELDS
 _CONSTANTS = (('v', OBSERVATION_VERSION), ('kind', 'usage_observation'), ('duration_ms', None),
@@ -389,7 +398,7 @@ def _encode(item, key=None):
     for name in _REFS:
         value = item.get(name)
         if name in _JSON_REFS:
-            value = None if name in ('tariff', 'quota', 'flags') and value is None else _compact(value)
+            value = None if name in ('environment', 'tariff', 'quota', 'flags') and value is None else _compact(value)
         elif value is not None and type(value) is not str:
             raise ValueError(f'observation field {name} must be text or null')
         refs.append(value)
@@ -417,8 +426,9 @@ def _decode(row):
     packed, extra = rest[n + len(_TOKENS):]
     item = {'v': OBSERVATION_VERSION, 'kind': 'usage_observation', 'id': refs['id'],
             'id_synthetic': bool(flags['id_synthetic']), 'ts': _ts_text(ts_us)}
-    for name in _REFS[1:-5]:
+    for name in _REFS[1:-6]:
         item[name] = refs[name]
+    item['environment'] = None if refs['environment'] is None else json.loads(refs['environment'])
     item['tariff'] = None if refs['tariff'] is None else json.loads(refs['tariff'])
     item['quota'] = None if refs['quota'] is None else json.loads(refs['quota'])
     item['flags'] = None if refs['flags'] is None else json.loads(refs['flags'])
@@ -474,7 +484,7 @@ class History:
             ):
                 c.execute(sql)
             have = {r['name'] for r in c.execute('PRAGMA table_info(observations)')}
-            for column in ('tariff', 'quota', 'flags'):
+            for column in ('environment', 'tariff', 'quota', 'flags'):
                 if column not in have:
                     c.execute(f'ALTER TABLE observations ADD COLUMN {column} INTEGER')  # additive within schema 2
             if 'origin' not in {r['name'] for r in c.execute('PRAGMA table_info(files)')}:
@@ -919,6 +929,16 @@ def summarize(records, granularity='day', timezone_name='UTC'):
     def aggregate(rows):
         identified = [r for r in rows if not r['id_synthetic']]
         ambiguous = [r for r in rows if r['id_synthetic']]
+        berget = [r for r in rows if r['provider'] == 'berget']
+        env_rows = [r['environment'] for r in berget if not r['id_synthetic'] and r.get('environment')]
+        environment = (dict(source='provider_reported_estimate', requests_with_estimate=len(env_rows),
+                            berget_requests=len(berget),
+                            ambiguous_excluded=sum(bool(r['id_synthetic'] and r.get('environment')) for r in berget),
+                            co2e_grams=sum(e['co2e_grams'] for e in env_rows),
+                            energy_kwh=sum(e['energy_kwh'] for e in env_rows),
+                            operational_co2e_grams=sum(e['operational']['co2e_grams'] for e in env_rows),
+                            embodied_co2e_grams=sum(e['embodied']['co2e_grams'] for e in env_rows))
+                       if berget else None)
         known = {k:sum(r['tokens'][k] or 0 for r in identified) for k in ALL_FIELDS}
         ambiguous_fields = {k:sum(r['tokens'][k] or 0 for r in ambiguous) for k in ALL_FIELDS}
         missing = {k:sum(r['tokens'][k] is None for r in rows) for k in ALL_FIELDS}
@@ -930,7 +950,7 @@ def summarize(records, granularity='day', timezone_name='UTC'):
                     ambiguous_identity_tokens=sum(ambiguous_fields[k] for k in FIELDS),
                     ambiguous_identity_token_fields=ambiguous_fields,
                     known_token_fields={k:known[k] if not rows or missing[k] < len(rows) else None for k in ALL_FIELDS},
-                    missing_fields=missing, complete=complete)
+                    missing_fields=missing, complete=complete, environment=environment)
     buckets = {}
     for record in records:
         dt = datetime.fromisoformat(record['ts']).astimezone(zone)

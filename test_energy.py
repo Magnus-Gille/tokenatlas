@@ -196,7 +196,7 @@ class ReportPage(unittest.TestCase):
 
     def test_template_has_the_card_and_follows_the_filters(self):
         for hook in ('id="energy"', 'id="energy-value"', 'id="energy-range"', 'id="energy-split"', 'id="energy-unweighted"', 'id="energy-lower"', 'id="energy-proxy"',
-                     'id="energy-how"', 'data-t="nrg_title"', 'function renderEnergy()', 'energyOf(selected)', 'renderSessions();renderEnergy()}'):
+                     'id="energy-how"', 'data-t="nrg_title"', 'function renderEnergy()', 'energyOf(selected)', 'renderSessions();renderEnergy();renderEnvironment()}'):
             self.assertIn(hook, TEMPLATE)
         self.assertNotIn('energy:v=>', TEMPLATE)  # energy has its own filter-following card; it is not a cost fact on the page
         render = re.search(r'function render\(\)\{.*?\n', TEMPLATE).group(0)
