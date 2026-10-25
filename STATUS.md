@@ -1,3 +1,45 @@
+# Current state — 2026-10-25 (TokenAtlas 1.25.0 released)
+
+Berget provider-reported per-request `usage.emissions` is delivered in TokenAtlas
+1.25.0 for Pi capture, exact-match Pi/OpenCode offline import, durable history,
+coverage-aware CLI summaries, private/shared reports, and the explicit-input
+calculator. Provider estimates stay separate from the token-based energy proxy.
+Live validation covered ordinary and streamed chat completions for one Berget
+model; other models and endpoints remain unverified.
+
+PR #181 was squash-merged as `6cbeb411cd8852e8e627d6fe91945c2bdbbcdd2c`.
+The final code was reviewed through Claude CLI with runtime model
+`claude-opus-5-5` (`xhigh` requested); no actionable findings remained.
+The local Python suite passed 1,295 tests with 12 skips, and all six PR checks
+passed. Release-metadata PR #182 was merged as
+`d5c9cf35a75dbb582ffaeb1c3a35a47cf2186972`; its six checks and all six
+post-merge master checks passed (final run 40230553376).
+
+Tag `v1.25.0` points to exactly `d5c9cf35a75dbb582ffaeb1c3a35a47cf2186972`.
+[GitHub release](https://github.com/Magnus-Gille/tokenatlas/releases/tag/v1.25.0)
+triggered [PyPI publish run 40231121017](https://github.com/Magnus-Gille/tokenatlas/actions/runs/40231121017),
+which passed tag/version validation, build, wheel smoke and trusted publishing.
+PyPI lists the 1.25.0 wheel (SHA-256 `ff201241e07c2b4140e61d8d4bfc28c640b2ada2d152dbb09852c342c66ae159`)
+and sdist (SHA-256 `1aa2eb3a961cc65b6eab9c0d73454b90e720aa88c67951ca0cb59ce02f31cfdb`).
+
+The local `/Users/magnus/.local/share/tokenatlas/venv` was upgraded from 1.24.1
+to 1.25.0 through `tokenatlas upgrade --version 1.25.0 --yes`.
+Its verified previous-environment backup is
+`/Users/magnus/.local/share/tokenatlas/.tokenatlas-backup-pi3muly4`.
+The installed CLI reports 1.25.0, a synthetic `calculate-emissions` smoke test
+returned the expected value, and the default private report was rebuilt from
+saved history with the emissions view present and file mode 0600. No remote
+machine installation was changed.
+
+Rollback is code-only: use the supported exact-version upgrader to restore
+1.24.1, preserving history and settings; consult the backup's `README.txt`
+if the environment itself needs recovery. Static schema review indicates
+1.24.1 ignores the added emissions fields; a cross-version rollback smoke test
+was not run. Do not delete the release tag, yank PyPI files, or reverse-migrate
+the history database as part of ordinary rollback.
+
+---
+
 # Current state — 2026-10-24 (PR #181 for #180)
 
 Branch `codex/berget-emissions` adds Berget's provider-reported per-request
