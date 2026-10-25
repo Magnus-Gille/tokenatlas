@@ -4,6 +4,7 @@ import base64
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -49,7 +50,9 @@ def public_model_checker(*tables):
 # 3: compact public cloud-reference rate cards are allowed for explicit local what-if comparisons.
 # 4: canonical public speed and service-tier values are included in request analytics metadata.
 # 5: canonical subscription plans are included in request rows and filters.
-REDACTION_REVISION = 5
+# 6: provider-reported Berget environmental estimates are included per request;
+#    shared reports omit region and methodology strings.
+REDACTION_REVISION = 6
 INSIGHT_DAYS = 30
 MAX_QUOTA_WINDOWS = 12
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -101,11 +104,19 @@ def encode_columns(rows):
     credit = [None if r['credit_rates'] is None else credit_classes.setdefault(tuple(r['credit_rates']), len(credit_classes)) for r in rows]
     classes = {}  # unit-price vector -> class number, in order of first appearance
     price = [None if r['unit_prices'] is None else classes.setdefault(tuple(r['unit_prices']), len(classes)) for r in rows]
+    environments = []
+    environment_rows = []
+    for index, row in enumerate(rows):
+        environment = row.get('environment')
+        if environment:
+            environment_rows.append(index)
+            environments.append(environment)
     return dict(n=len(rows), dict=dicts, idx=idx, ts=[b - a for a, b in zip([0] + ms, ms)],
                 id=ids, id_prefix='Observation ' if ids and all(isinstance(i, (int, type(None))) for i in ids) else None,
                 tokens={k: [r['tokens'][k] for r in rows] for k in ALL_FIELDS},
                 prompt=[r['prompt'] for r in rows], price=price, price_classes=[list(v) for v in classes], credit=credit, credit_classes=[list(v) for v in credit_classes],
-                cw1h=[r['cw1h'] for r in rows], complete=[int(r['complete']) for r in rows], interrupted=[int(r['interrupted']) for r in rows], id_synthetic=[int(r['id_synthetic']) for r in rows])
+                cw1h=[r['cw1h'] for r in rows], complete=[int(r['complete']) for r in rows], interrupted=[int(r['interrupted']) for r in rows], id_synthetic=[int(r['id_synthetic']) for r in rows],
+                **({'environment': dict(rows=environment_rows, values=environments)} if environments else {}))
 
 
 COVERAGE_FIELDS = ('observations', 'first_event', 'last_event', 'missing_source_files',
@@ -217,6 +228,61 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
     return dict(source_keys=clients, local_rows=local_rows, cloud_references=cloud_references, plans=plans, groups=list(groups.values()))
 
 
+_ENV_NUMERIC = ('co2e_grams', 'energy_kwh')
+_ENV_COMPONENTS = ('operational', 'embodied')
+
+
+def _finite_nonnegative(value):
+    """Return a JSON-safe non-negative number, or None for malformed provider data."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _public_environment(value, redact):
+    """Project Berget's provider-reported estimate onto the report's row boundary.
+
+    Numeric accounting fields are retained when valid. Shared reports intentionally
+    omit location and methodology strings; private reports may carry those exact
+    fields for local provenance. Unknown keys are never copied.
+    """
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key in _ENV_NUMERIC:
+        number = _finite_nonnegative(value.get(key))
+        if number is not None:
+            out[key] = number
+    for component in _ENV_COMPONENTS:
+        nested = value.get(component)
+        if not isinstance(nested, dict):
+            continue
+        for key in (('co2e_grams', 'energy_kwh') if component == 'operational' else ('co2e_grams',)):
+            number = _finite_nonnegative(nested.get(key))
+            if number is not None:
+                out.setdefault(component, {})[key] = number
+    grid = value.get('grid')
+    if isinstance(grid, dict):
+        carbon = _finite_nonnegative(grid.get('carbon_intensity_gco2e_per_kwh'))
+        if carbon is not None:
+            out.setdefault('grid', {})['carbon_intensity_gco2e_per_kwh'] = carbon
+        if not redact and isinstance(grid.get('region'), str):
+            out.setdefault('grid', {})['region'] = grid['region']
+    source = value.get('source')
+    if source == 'provider_reported_estimate':
+        out['source'] = source
+    elif not redact and isinstance(source, str) and source:
+        out['source'] = source
+    if not redact:
+        for key in ('methodology', 'methodology_version'):
+            if isinstance(value.get(key), str) and value[key]:
+                out[key] = value[key]
+    return out or None
+
+
 def build_report(records, source_status, timezone_name='Europe/Stockholm', redact=True, prompt_texts=None, table=None, lang='auto',
                  prompt_context=None, prompt_inputs=None, now=None, credit_table=None, demo=False, limit_hits=None, universe=None, quota=True, all_hits=None, quota_events=None, claude_quota=None, budgets=None, assigned=None, whole_assigned=None, profile=None):
     """prompt_texts ({(harness, session, turn_id): text or None} from prompt_store) and prompt_context ({key: turn_context dict}) are for
@@ -306,7 +372,9 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                        tokens={key: record['tokens'].get(key) for key in ALL_FIELDS},
                        complete=bool(record['complete']), id_synthetic=bool(record['id_synthetic']),
                        interrupted='interrupted' in (record.get('flags') or ()),
-                       warnings=[metadata('Varning', x) for x in record.get('warnings', [])])
+                       warnings=[metadata('Varning', x) for x in record.get('warnings', [])],
+                       environment=_public_environment(record.get('environment'), redact)
+                       if isinstance(record.get('provider'), str) and record['provider'].casefold() == 'berget' else None)
             rows.append(row)
     coverage = {key: source_status.get(key) for key in COVERAGE_FIELDS}
     coverage.update(coverage_complete=False, billing_verified=False)

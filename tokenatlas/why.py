@@ -130,6 +130,11 @@ class AttributionRecord:
     tariff: dict | None = None
     quota: dict | None = None
     flags: list | None = None  # sorted short labels observed on the request, e.g. ['interrupted']; None when none
+    # Provider-reported environmental accounting.  This is deliberately kept
+    # separate from token usage: an estimate must never be inferred from the
+    # TokenAtlas proxy counters.
+    environment: dict | None = None
+    environment_observed_at: datetime | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -157,6 +162,95 @@ def _nonnegative_int(value: object) -> int:
 
 def _mapping(value: object) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+_ENVIRONMENT_TOP_FIELDS = frozenset({
+    "co2e_grams", "energy_kwh", "operational", "embodied", "grid",
+    "methodology", "methodology_version",
+})
+_ENVIRONMENT_OUTPUT_FIELDS = _ENVIRONMENT_TOP_FIELDS | {"source"}
+
+
+def _environment_number(value: object) -> int | float | None:
+    """Return a finite, non-negative JSON number, excluding booleans."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, int):
+        try:
+            representable = float(value)
+        except OverflowError:
+            return None
+        return value if value >= 0 and math.isfinite(representable) else None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _environment_text(value: object, limit: int = 256) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > limit or not value.isprintable():
+        return None
+    return value
+
+
+def clean_environment(value: object, provider: object = "berget") -> dict | None:
+    """Sanitize Berget's published ``usage.emissions`` response shape.
+
+    The returned object is intentionally exact and complete.  Unknown keys,
+    non-finite/negative numbers, missing nested fields, and providers other
+    than Berget are rejected so partial or guessed accounting cannot enter the
+    durable history.
+    """
+    if not isinstance(provider, str) or provider.casefold() != "berget" or not isinstance(value, dict):
+        return None
+    if not set(value) <= _ENVIRONMENT_OUTPUT_FIELDS or set(value) < _ENVIRONMENT_TOP_FIELDS:
+        return None
+    if "source" in value and value.get("source") != "provider_reported_estimate":
+        return None
+    result: dict = {}
+    for key in ("co2e_grams", "energy_kwh"):
+        number = _environment_number(value.get(key))
+        if number is None:
+            return None
+        result[key] = number
+    operational = value.get("operational")
+    if not isinstance(operational, dict) or set(operational) != {"co2e_grams", "energy_kwh"}:
+        return None
+    result["operational"] = {}
+    for key in ("co2e_grams", "energy_kwh"):
+        number = _environment_number(operational.get(key))
+        if number is None:
+            return None
+        result["operational"][key] = number
+    embodied = value.get("embodied")
+    if not isinstance(embodied, dict) or set(embodied) != {"co2e_grams"}:
+        return None
+    embodied_co2e = _environment_number(embodied.get("co2e_grams"))
+    if embodied_co2e is None:
+        return None
+    result["embodied"] = {"co2e_grams": embodied_co2e}
+    grid = value.get("grid")
+    if not isinstance(grid, dict) or set(grid) != {"region", "carbon_intensity_gco2e_per_kwh"}:
+        return None
+    region = _environment_text(grid.get("region"))
+    intensity = _environment_number(grid.get("carbon_intensity_gco2e_per_kwh"))
+    if region is None or intensity is None:
+        return None
+    result["grid"] = {"region": region, "carbon_intensity_gco2e_per_kwh": intensity}
+    methodology = _environment_text(value.get("methodology"))
+    methodology_version = _environment_text(value.get("methodology_version"))
+    if methodology is None or methodology_version is None:
+        return None
+    result["methodology"] = methodology
+    result["methodology_version"] = methodology_version
+    # Upstream rounds CO₂e components to six decimals before adding them.
+    # Permit that rounding while rejecting internally contradictory totals.
+    co2_parts = result["operational"]["co2e_grams"] + result["embodied"]["co2e_grams"]
+    if _environment_number(co2_parts) is None:
+        return None
+    if abs(result["co2e_grams"] - co2_parts) > max(0.000003, result["co2e_grams"] * 0.001):
+        return None
+    if abs(result["energy_kwh"] - result["operational"]["energy_kwh"]) > max(0.000000001, result["energy_kwh"] * 0.001):
+        return None
+    result["source"] = "provider_reported_estimate"
+    return result
 
 
 # These are the usage fields observed in supported harness stores. Raw
@@ -1087,6 +1181,7 @@ def collect_pi(
 ) -> list[AttributionRecord]:
     """Collect Pi response usage and deduplicate copied fork history."""
     calls: dict[tuple[str, str], dict] = {}
+    environment_times: dict[tuple[str, str], tuple[datetime, str]] = {}
     interrupted: set[tuple[str, str]] = set()
     for path in _paths_for(root, "*.jsonl", start, paths):
         rows = list(_read_json_lines(path, strict=strict))
@@ -1116,6 +1211,7 @@ def collect_pi(
                 continue
             raw_usage = _sanitize_usage(usage) or {}
             provider = _meta_text(message.get("provider"), default="unknown")
+            environment = clean_environment(usage.get("emissions"), provider)
             response_id = _first_text(message, "responseId", "response_id")
             id_synthetic = response_id is None
             call_id = response_id or "synthetic:" + _stable_hash({
@@ -1142,6 +1238,7 @@ def collect_pi(
                 "parent_session_id": None, "harness_version": harness_version, "entrypoint": "unknown",
                 "thread_kind": "main", "agent": "main", "raw_usage": raw_usage,
                 "id_synthetic": id_synthetic,
+                "environment": environment,
                 "session_started": session_started or timestamp,
                 **values,
             }
@@ -1152,10 +1249,17 @@ def collect_pi(
             existing = calls.get(key)
             if existing is None:
                 calls[key] = candidate
+                if environment is not None:
+                    environment_times[key] = (timestamp, json.dumps(environment, sort_keys=True))
                 continue
             for token_field in ("fresh_input", "cache_read", "cache_write", "output", "reasoning"):
                 existing[token_field] = max(existing[token_field], candidate[token_field])
             existing["raw_usage"] = _merge_sanitized_usage(existing["raw_usage"], raw_usage)
+            if environment is not None:
+                environment_order = (timestamp, json.dumps(environment, sort_keys=True))
+                if key not in environment_times or environment_order > environment_times[key]:
+                    existing["environment"] = environment
+                    environment_times[key] = environment_order
             existing["timestamp"] = max(existing["timestamp"], timestamp)
             if candidate["session_started"] < existing["session_started"]:
                 for field in ("session_id", "project", "project_id", "cwd", "harness_version", "session_started"):
@@ -1163,6 +1267,8 @@ def collect_pi(
     records = []
     for (provider, _), values in calls.items():
         values["session_started_at"] = values.pop("session_started")
+        selected = environment_times.get((provider, values["call_id"]))
+        values["environment_observed_at"] = selected[0] if selected else None
         if start <= values["timestamp"] < end:
             records.append(AttributionRecord(harness="pi", provider=provider, flags=_flag_list(interrupted, (provider, values["call_id"])), **values))
     return sorted(records, key=lambda item: (item.timestamp, item.session_id, item.call_id))

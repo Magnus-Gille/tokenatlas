@@ -29,6 +29,7 @@ def page_text(html):
 def expand(report):
     """Python twin of the template's expand(): per-record dicts from the columnar block."""
     c, out, ms = report['columns'], [], 0
+    environments = {row: value for row, value in zip(c.get('environment', {}).get('rows', ()), c.get('environment', {}).get('values', ()))}
     for i in range(c['n']):
         ms += c['ts'][i]
         off = c['dict']['off'][c['idx']['off'][i]]
@@ -47,6 +48,7 @@ def expand(report):
         v, t, h = None if c['price'][i] is None else c['price_classes'][c['price'][i]], row['tokens'], c['cw1h'][i]
         row['cost'] = v and ((t['fresh_input'] or 0) * v[0] + ((t['cache_write'] or 0) - h) * v[1] + h * v[2]
                              + (t['cache_read'] or 0) * v[3] + (t['output'] or 0) * v[4])
+        row['environment'] = environments.get(i)
         out.append(row)
     return out
 
@@ -379,6 +381,68 @@ class PayloadV2Tests(unittest.TestCase):
         base = len(render_report(bare).encode())
         print(f'20k-row report without prompt-card columns: {base} bytes (+{100 * (size - base) / base:.1f}%)')
         self.assertLess(size, base * 1.08)
+
+
+class BergetEnvironmentReportTests(unittest.TestCase):
+    def environment(self):
+        return {
+            'co2e_grams': 1.25,
+            'energy_kwh': 0.004,
+            'operational': {'co2e_grams': 0.8, 'energy_kwh': 0.004},
+            'embodied': {'co2e_grams': 0.45},
+            'grid': {'region': 'private-region', 'carbon_intensity_gco2e_per_kwh': 312},
+            'methodology': 'private methodology text',
+            'methodology_version': '1.0.0',
+            'source': 'provider_reported_estimate',
+        }
+
+    def test_environment_roundtrips_and_shared_reports_redact_location_and_methodology(self):
+        row = observation(provider='berget', environment=self.environment())
+        shared = build_report([row], {})
+        private = build_report([row], {}, redact=False)
+        self.assertEqual(expand(shared)[0]['environment'], {
+            'co2e_grams': 1.25,
+            'energy_kwh': 0.004,
+            'operational': {'co2e_grams': 0.8, 'energy_kwh': 0.004},
+            'embodied': {'co2e_grams': 0.45},
+            'grid': {'carbon_intensity_gco2e_per_kwh': 312},
+            'source': 'provider_reported_estimate',
+        })
+        self.assertEqual(expand(private)[0]['environment'], self.environment())
+        self.assertNotIn('private-region', json.dumps(shared))
+        self.assertNotIn('private methodology text', json.dumps(shared))
+        self.assertIn('private-region', json.dumps(private))
+
+    def test_direct_report_projection_omits_unpublished_embodied_energy(self):
+        value = self.environment()
+        value['embodied']['energy_kwh'] = 0.001
+        value['embodied']['unexpected_content'] = 'SYNTHETIC CONTENT'
+        row = observation(provider='berget', environment=value)
+        projected = expand(build_report([row], {}, redact=False))[0]['environment']
+        self.assertEqual(projected['embodied'], {'co2e_grams': 0.45})
+
+    def test_direct_report_projection_rejects_unrepresentable_integer(self):
+        value = self.environment()
+        value['co2e_grams'] = 10**400
+        projected = expand(build_report([observation(provider='berget', environment=value)], {}))[0]['environment']
+        self.assertNotIn('co2e_grams', projected)
+
+    def test_environment_invalid_values_are_omitted_without_breaking_rows(self):
+        row = observation(environment={'co2e_grams': -1, 'energy_kwh': '0.1', 'grid': {'region': 12}, 'source': 'unexpected'})
+        self.assertIsNone(expand(build_report([row], {}))[0]['environment'])
+
+    def test_environment_is_provider_scoped(self):
+        row = observation(provider='anthropic', environment=self.environment())
+        self.assertIsNone(expand(build_report([row], {}))[0]['environment'])
+
+    def test_case_variant_berget_provider_keeps_environment(self):
+        row = observation(provider='Berget', environment=self.environment())
+        self.assertEqual(expand(build_report([row], {}))[0]['environment']['co2e_grams'], 1.25)
+
+    def test_environment_export_fields_are_available_in_report_payload(self):
+        report = decode_html(render_report(build_report([observation(provider='berget', environment=self.environment())], {})))
+        self.assertEqual(report['columns']['environment']['rows'], [0])
+        self.assertEqual(report['columns']['environment']['values'][0]['energy_kwh'], 0.004)
 
 
 PROMPT_CARD_COLUMNS = ('prompt', 'price', 'price_classes', 'cw1h', 'credit', 'credit_classes')

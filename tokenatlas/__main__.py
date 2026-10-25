@@ -397,6 +397,10 @@ def _main(argv=None):
     importer=commands.add_parser('import',help="Merge another machine's snapshot into this database.")
     importer.add_argument('snapshot',type=Path)
     importer.add_argument('--label',required=True,help='Name for the source machine, e.g. pi:huginmunin.local.')
+    berget_importer=commands.add_parser('import-emissions',help='Attach sanitized Berget usage.emissions JSONL to matching saved requests.')
+    berget_importer.add_argument('path',type=Path,help='JSONL with harness, request_id, model, timestamp and usage.emissions.')
+    calculator=commands.add_parser('calculate-emissions',help='Calculate Berget-compatible emissions offline from explicit model, hardware, grid and request inputs.')
+    calculator.add_argument('path',type=Path,help='JSON file with explicit model, hardware, grid and request objects.')
     report=commands.add_parser('report',help='Report saved observations without rereading source logs.')
     report.add_argument('--start',help='Inclusive ISO timestamp; offset required.')
     report.add_argument('--end',help='Exclusive ISO timestamp; offset required.')
@@ -558,7 +562,7 @@ def _main(argv=None):
                     data=usage_profiles.save(args.db,data)
         except (OSError,ValueError) as exc:parser.exit(2,f'usage: {terminal_safe(exc)}\n')
         print(json.dumps(data,indent=2,sort_keys=True));return 0
-    slow=args.command in ('refresh','open','report','top','insights','session','rate','import','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead' and args.refresh
+    slow=args.command in ('refresh','open','report','top','insights','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead' and args.refresh
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout
     try:
@@ -593,6 +597,24 @@ def _main(argv=None):
         if args.command=='collect':
             from tokenatlas import collect as _collect
             return _collect.run(args)
+        if args.command=='calculate-emissions':
+            from dataclasses import fields
+            from tokenatlas.berget_calculator import (ModelInputs, HardwareInputs, GridInputs,
+                                                       RequestInputs, calculate_emissions)
+            raw=args.path.expanduser().read_bytes()
+            if len(raw)>1048576:raise ValueError('calculator input exceeds 1 MiB')
+            payload=json.loads(raw)
+            if not isinstance(payload,dict) or set(payload)!={'model','hardware','grid','request'}:
+                raise ValueError('calculator input needs exactly model, hardware, grid and request objects')
+            values={}
+            for name,cls in (('model',ModelInputs),('hardware',HardwareInputs),
+                             ('grid',GridInputs),('request',RequestInputs)):
+                entry=payload[name]
+                if not isinstance(entry,dict) or set(entry)!={field.name for field in fields(cls)}:
+                    raise ValueError(f'calculator {name} needs every documented field and no extras')
+                values[name]=cls(**entry)
+            print(json.dumps({'usage':{'emissions':calculate_emissions(**values)}},indent=2,sort_keys=True))
+            return 0
         if args.command=='overhead':
             from tokenatlas import overhead as _overhead
             return _overhead.run(args)
@@ -808,6 +830,9 @@ def _main(argv=None):
             elif args.command=='import':
                 with progress.step('Import snapshot'):result=history.import_snapshot(args.snapshot,args.label)
                 if result.get('warning'):print(f"usage: warning: {terminal_safe(result['warning'])}",file=sys.stderr)
+            elif args.command=='import-emissions':
+                from tokenatlas.berget_import import import_emissions
+                with progress.step('Import Berget emissions'):result=import_emissions(history,args.path)
             elif args.command=='doctor':
                 history.connection.execute('BEGIN')
                 result=history.doctor()
