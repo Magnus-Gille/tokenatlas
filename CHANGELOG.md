@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-10-25
+
+### Added
+
+- Berget's provider-reported per-request CO₂e and IT-energy estimates flow from retained Pi responses or exact-match Pi/OpenCode imports into history, CLI summaries and private/shared reports. Coverage stays explicit, and these estimates remain separate from TokenAtlas's token-based energy proxy (#180).
+- An explicit-input Python port of Berget's published emissions calculator, with a separate component breakdown and methodology notes (#180).
+
 ### Changed
 
 - The subscriptions view highlights the latest saved Codex reading and keeps older or other readings in a collapsed section with dates. Equally recent scopes remain visible; separate readings do not establish separate accounts (#168).
