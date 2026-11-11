@@ -4,11 +4,13 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -94,6 +96,32 @@ class CollectBase(unittest.TestCase):
 
 
 class CollectTest(CollectBase):
+    def test_busy_write_step_retries_and_then_succeeds(self):
+        from tokenatlas import collect
+        attempts = []
+        def flaky():
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise sqlite3.OperationalError('database is locked')
+            return 0
+        with mock.patch.object(collect.time, 'sleep') as pause:
+            self.assertEqual(collect._retry_busy(flaky, 'refresh', retries=3, delay=0), 0)
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(pause.call_count, 2)
+
+    def test_non_lock_operational_error_keeps_its_diagnostic(self):
+        from tokenatlas import collect
+        lines = []
+        with mock.patch.object(collect, 'log', lines.append):
+            self.assertEqual(collect._step('refresh', lambda: (_ for _ in ()).throw(sqlite3.OperationalError('disk I/O error'))), 1)
+        self.assertTrue(any('OperationalError: disk I/O error' in line for line in lines))
+        self.assertFalse(any('lock error' in line for line in lines))
+
+    def test_top_revision_error_classifies_only_busy_errors_as_locks(self):
+        from tokenatlas import collect
+        self.assertTrue(collect._is_busy_error(sqlite3.OperationalError('database is locked')))
+        self.assertTrue(collect._is_busy_error(sqlite3.OperationalError('database is busy')))
+        self.assertFalse(collect._is_busy_error(sqlite3.OperationalError('disk I/O error')))
     def test_no_hosts_runs_refresh_and_report_only(self):
         proc = self.collect()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)

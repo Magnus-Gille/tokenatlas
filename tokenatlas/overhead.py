@@ -516,12 +516,17 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
 
     `records` (History.records) supplies each session's dominant model; without it the cost stays None.
     """
-    ensure(db)
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {'overhead_sessions', 'overhead_items', 'overhead_skill_uses'} <= tables:
+        return {'chars_per_token': CHARS_PER_TOKEN, 'token_basis': 'estimate', 'harnesses': {},
+                'reason': 'No overhead tables are stored in this history database. Run `tokenatlas overhead --refresh` to collect overhead metadata.'}
     lo, hi = _moment(since), _moment(until)
     sessions = {}
+    overhead_columns = {row[1] for row in db.execute('PRAGMA table_info(overhead_sessions)')}
+    unidentified_expr = 'unidentified_skill_reads' if 'unidentified_skill_reads' in overhead_columns else '0'
     for h, s, sub, ts, floor, inp, write, read, calls, unidentified in db.execute(
             'SELECT harness, session, is_subagent, first_ts, floor_tokens, floor_input, floor_cache_write,'
-            ' floor_cache_read, calls, unidentified_skill_reads FROM overhead_sessions ORDER BY harness, session'):
+            f' floor_cache_read, calls, {unidentified_expr} FROM overhead_sessions ORDER BY harness, session'):
         when = _moment(ts)
         if harness not in (None, h) or (lo and (when is None or when < lo)) or (hi and (when is None or when >= hi)):
             continue
@@ -668,7 +673,7 @@ def run(args):
     if not args.refresh and not args.db.expanduser().is_file():
         raise ValueError('history database does not exist; run refresh or overhead --refresh first')
     roots = {h: why.harness_root(h)[0] for h in ('claude', 'codex', 'pi', 'opencode')}
-    with History(args.db) as history:
+    with History(args.db, read_only=not args.refresh) as history:
         db = history.connection
         if args.refresh:
             for h in (args.harness,) if args.harness else HARNESSES:

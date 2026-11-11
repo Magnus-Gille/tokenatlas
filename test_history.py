@@ -5,6 +5,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from contextlib import closing
@@ -48,6 +49,37 @@ def write_claude(path, request='req', output=5):
 
 
 class HistoryTests(unittest.TestCase):
+
+    def test_read_only_refresh_waits_for_a_long_reader_then_succeeds(self):
+        source = self.root / 'logs/a.jsonl'
+        write_claude(source, 'first')
+        with History(self.db) as history:
+            history.refresh('claude', source.parent)
+        write_claude(self.root / 'logs/b.jsonl', 'second')
+        with History(self.db, read_only=True) as reader:
+            reader.connection.execute('BEGIN')
+            reader.connection.execute('SELECT count(*) FROM observations').fetchone()
+            code = "import sys\nfrom tokenatlas.history import History\n" \
+                   "with History(sys.argv[1]) as h:\n print(h.refresh('claude', sys.argv[2])['status'])\n"
+            proc = subprocess.Popen([sys.executable, '-c', code, str(self.db), str(source.parent)],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            time.sleep(0.2)
+            self.assertIsNone(proc.poll(), 'writer should wait while the read transaction is held')
+            reader.connection.rollback()
+            out, err = proc.communicate(timeout=5)
+            self.assertEqual(proc.returncode, 0, err)
+            self.assertIn('ok', out)
+
+    def test_read_only_rejects_incomplete_schema_with_migration_hint(self):
+        with History(self.db) as history:
+            try:
+                history.connection.execute('ALTER TABLE files DROP COLUMN origin')
+                history.connection.commit()
+            except sqlite3.OperationalError:
+                self.skipTest('SQLite without DROP COLUMN')
+        with self.assertRaisesRegex(ValueError, 'schema is incomplete.*files.origin.*refresh'):
+            with History(self.db, read_only=True):
+                pass
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -557,6 +557,26 @@ class RelativeTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_read_only_old_history_without_overhead_tables_is_actionable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'state' / 'h.sqlite3'
+            from tokenatlas.history import History
+            with History(db):
+                pass
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(main(['--db', str(db), 'overhead', '--json']), 0)
+            data = json.loads(out.getvalue())
+            self.assertEqual(data['harnesses'], {})
+            self.assertIn('No overhead tables', data['reason'])
+
+    def test_old_overhead_table_defaults_missing_unidentified_column(self):
+        con = sqlite3.connect(':memory:')
+        con.executescript('CREATE TABLE overhead_sessions (harness TEXT, session TEXT, is_subagent INTEGER, first_ts TEXT, floor_tokens INTEGER, floor_input INTEGER, floor_cache_write INTEGER, floor_cache_read INTEGER, calls INTEGER); CREATE TABLE overhead_items (harness TEXT, session TEXT, kind TEXT, chars INTEGER); CREATE TABLE overhead_skill_uses (harness TEXT, session TEXT, name TEXT, chars INTEGER, ts TEXT, source TEXT);')
+        con.execute("INSERT INTO overhead_sessions VALUES ('claude','s',0,'2026-09-03T10:00:00Z',100,10,0,0,1)")
+        result = overhead.summarize(con)
+        self.assertEqual(result['harnesses']['claude']['floor']['n'], 1)
+
     def test_refresh_json_and_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = claude_root(tmp)

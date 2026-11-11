@@ -654,7 +654,10 @@ def _main(argv=None):
             raise ValueError('history database does not exist; run refresh first')
         if args.command=='rate' and (args.unit or args.thread or args.outcome) and not (args.unit and args.thread and args.outcome):
             raise ValueError('rating needs --unit, --thread and --outcome')
-        with History(args.db) as history:
+        read_only = (args.command in ('report', 'insights', 'session', 'doctor')
+                     or args.command == 'top' and not args.keep_text and not args.forget_text
+                     or args.command == 'quota' and args.quota == 'show')
+        with History(args.db, read_only=read_only) as history:
             if args.command in ('session','rate'):
                 history.connection.execute('BEGIN')
                 price,retrieved=sessions.default_pricer(args.prices)
@@ -901,6 +904,8 @@ def _main(argv=None):
         print(json.dumps(result,indent=2,sort_keys=True))
         return 0 if args.command!='refresh' or result['status']=='ok' else 2
     except (OSError,ValueError,sqlite3.Error,ZoneInfoNotFoundError) as exc:
+        if isinstance(exc, sqlite3.OperationalError) and any(word in str(exc).lower() for word in ('locked', 'busy')):
+            parser.exit(75, f'database: {terminal_safe(exc)}\n')
         parser.exit(2,f'usage: {terminal_safe(exc)}\n')
 
 

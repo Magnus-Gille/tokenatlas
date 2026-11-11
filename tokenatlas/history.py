@@ -471,11 +471,49 @@ def _decode(row):
 
 
 class History:
-    def __init__(self, path):
+    def __init__(self, path, read_only=False):
         self.path = Path(path).expanduser().absolute()
+        self.read_only = bool(read_only)
         self.connection = None
 
     def __enter__(self):
+        if self.read_only:
+            if self.path.is_symlink() or not self.path.is_file():
+                raise ValueError('history database does not exist or is not a regular file')
+            info = self.path.stat()
+            if not _owned_by_current_user(info) or not _has_private_permissions(info):
+                raise ValueError('history database must be a regular file owned by this user with permissions 0600')
+            c = sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True, timeout=30, isolation_level=None)
+            c.row_factory = sqlite3.Row
+            c.execute('PRAGMA busy_timeout=30000')
+            self.connection = c
+            self._strings, self._values = {}, {}
+            try:
+                version = c.execute('PRAGMA user_version').fetchone()[0]
+                if version == 1:
+                    raise ValueError('history schema 1 requires migration; run tokenatlas refresh before using read-only commands')
+                if version != SCHEMA_VERSION:
+                    raise ValueError(f'unsupported history schema version {version}')
+                required_tables = {'meta', 'strings', 'files', 'observations', 'sources', 'imports'}
+                present_tables = {row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                missing_tables = required_tables - present_tables
+                missing_columns = set()
+                if 'files' in present_tables:
+                    missing_columns.update('files.' + name for name in ('id', 'harness', 'path', 'root', 'fingerprint', 'diagnostics', 'origin')
+                                           if name not in {row[1] for row in c.execute('PRAGMA table_info(files)')})
+                if 'observations' in present_tables:
+                    observation_columns = set(COLUMNS)
+                    missing_columns.update('observations.' + name for name in observation_columns
+                                           if name not in {row[1] for row in c.execute('PRAGMA table_info(observations)')})
+                if missing_tables or missing_columns:
+                    missing = ', '.join(sorted((*missing_tables, *missing_columns)))
+                    raise ValueError(f'history schema is incomplete (missing {missing}); run tokenatlas refresh to migrate it')
+                self.machine = c.execute("SELECT value FROM meta WHERE key='machine'").fetchone()[0]
+            except Exception:
+                c.close()
+                self.connection = None
+                raise
+            return self
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.path.is_symlink():
             raise ValueError('history database must not be a symlink')
@@ -491,6 +529,7 @@ class History:
         c = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
         c.row_factory = sqlite3.Row
         self.connection = c
+        c.execute('PRAGMA busy_timeout=30000')
         self._strings, self._values = {}, {}
         try:
             c.execute('BEGIN IMMEDIATE')

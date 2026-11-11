@@ -60,6 +60,11 @@ directory. A busy lock prints `collect: already running` and exits 0.
 
     */30 * * * * $HOME/.local/bin/tokenatlas collect --remote pi:myhost >> ~/Library/Logs/tokenatlas/collect.log 2>&1
 
+Analytics commands open the history database read-only and SQLite's 30-second busy timeout gives a refresh
+time to wait for a short-lived reader. If a refresh meets a transient SQLite busy/locked error, `collect`
+waits and retries before failing the step; a final lock failure is reported as a database error, not as a
+command-line usage error.
+
 For launchd see "Keeping the report fresh" in the README.
 
 The sync moves only history snapshots. The older per-machine journal and rollup files (`pi_journal.jsonl` and the
