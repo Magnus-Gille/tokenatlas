@@ -4,11 +4,13 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
 from test_why_harnesses import create_opencode_db, pi_message, write_pi_session
+from test_history import record
+from tokenatlas.history import History, _encode, normalize
 from tokenatlas import overhead
 from tokenatlas.__main__ import main
 
@@ -557,6 +559,58 @@ class RelativeTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_sessions_without_overhead_explain_rescan_and_filtered_empty_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'state' / 'h.sqlite3'
+            with History(db) as history:
+                history._insert(history.connection, _encode(normalize(record(), history.machine)))
+            roots = {'CLAUDE_PROJECTS': Path(tmp) / 'none', 'CODEX_SESSIONS': Path(tmp) / 'none', 'PI_SESSIONS': Path(tmp) / 'none',
+                     'OPENCODE_DB': Path(tmp) / 'none.db'}
+            with patch.multiple('tokenatlas.why', **roots):
+                out, err = io.StringIO(), io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(main(['--db', str(db), 'overhead', '--since', '2026-09-02T00:00:00Z']), 0)
+                self.assertIn('No matching stored overhead data for since 2026-09-02T00:00:00Z', out.getvalue())
+                self.assertNotIn('No matching stored overhead data', err.getvalue())
+                out, err = io.StringIO(), io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(main(['--db', str(db), 'overhead', '--since', '2026-09-02T00:00:00Z', '--json']), 0)
+                in_window = json.loads(out.getvalue())
+                self.assertEqual(in_window['harnesses'], {})
+                self.assertIn('No matching stored overhead data for since 2026-09-02T00:00:00Z', in_window['reason'])
+                self.assertIn(in_window['reason'], err.getvalue())
+                with History(db) as history:
+                    records = history.records()
+                self.assertEqual(len(records), 1)
+                self.assertTrue(records[0]['ts'].startswith('2026-09-03T10:00:00'))
+
+                out, err = io.StringIO(), io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(main(['--db', str(db), 'overhead', '--refresh', '--json']), 0)
+                refreshed = json.loads(out.getvalue())
+                self.assertEqual(refreshed['harnesses'], {})
+                self.assertIn('No matching stored overhead data', refreshed['reason'])
+                self.assertIn('may still produce no overhead rows', refreshed['reason'])
+                self.assertIn(refreshed['reason'], err.getvalue())
+
+                out, err = io.StringIO(), io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(main(['--db', str(db), 'overhead', '--since', '2026-09-04T00:00:00Z', '--json']), 0)
+                filtered = json.loads(out.getvalue())
+                self.assertEqual(filtered['harnesses'], {})
+                self.assertIn('since 2026-09-04T00:00:00Z', filtered['reason'])
+                self.assertIn(filtered['reason'], err.getvalue())
+
+                with History(db) as history:
+                    self.assertEqual(len(history.records()), 1)
+
+    def test_help_describes_stored_source_and_rescan(self):
+        with self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()) as out:
+            main(['overhead', '--help'])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn('stored rows', out.getvalue())
+        self.assertIn('--refresh rescans harness logs', out.getvalue())
+
     def test_refresh_json_and_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = claude_root(tmp)

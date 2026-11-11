@@ -594,6 +594,19 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
             'relative': _relative(h, mine, joined, rec_costs),
             'recurring_cost': {'cost': cost if priced else None, 'assumptions': sorted(assumptions), 'sessions_priced': priced,
                                'sessions_unpriced': unpriced, 'label': COST_LABEL}}
+    if not result['harnesses']:
+        filters = []
+        if since:
+            filters.append(f"since {since}")
+        if until:
+            filters.append(f"before {until}")
+        if harness:
+            filters.append(f"harness {harness}")
+        scope = ' for ' + ', '.join(filters) if filters else ''
+        result['reason'] = (
+            f'No matching stored overhead data{scope}. Run `tokenatlas overhead --refresh` to rescan harness logs; '
+            'a rescan may still produce no overhead rows when the logs do not contain overhead metadata.'
+        )
     return result
 
 
@@ -640,7 +653,7 @@ def render(result):
                              f"{x['subagents']['excluded']} excluded from the history join")
     lines += ['', f"Fixed context overhead; component tokens are estimates at {result['chars_per_token']} characters per token."]
     if not result['harnesses']:
-        lines.append('No overhead data; run with --refresh.')
+        lines.append(result.get('reason', 'No overhead data; run with --refresh.'))
     for h, r in result['harnesses'].items():
         f = r['floor']
         lines += ['', f"{h}: {r['sessions']} sessions ({r['subagent_sessions']} subagent); floor tokens n={f['n']} "
@@ -681,5 +694,7 @@ def run(args):
             result = summarize(db, since=args.since, harness=args.harness, records=history.records())
         db.rollback()
     progress.finish()
+    if not result['harnesses'] and args.json:
+        print('overhead: ' + result['reason'], file=sys.stderr)
     print(json.dumps(result, indent=2, sort_keys=True) if args.json else render(result))
     return 0

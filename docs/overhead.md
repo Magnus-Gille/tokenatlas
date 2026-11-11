@@ -3,6 +3,10 @@
 `tokenatlas overhead [--refresh] [--harness H] [--since ISO] [--json]` shows how much fixed context a
 session carries: the system prompt, tool lists, instruction files (AGENTS.md/CLAUDE.md), the skills list, MCP
 instructions, and skill bodies when a skill is used. `--refresh` rescans the default session roots first.
+Without `--refresh`, the command only reads overhead rows already stored in the history database. If no rows
+match the selected window or harness, JSON includes a `reason` field and mirrors that explanation to stderr.
+Text mode prints the explanation in its report. `--refresh` can rescan the logs, but a rescan may still produce
+no overhead rows when the logs do not contain overhead metadata.
 
 ## What is exact and what is estimated
 
