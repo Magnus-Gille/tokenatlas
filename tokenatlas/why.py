@@ -1283,6 +1283,30 @@ def _millisecond_timestamp(value: object) -> datetime | None:
         return None
 
 
+def _opencode_rows(
+    connection: sqlite3.Connection,
+    table: str,
+    session_table: str,
+    diagnostics: dict[str, int] | None = None,
+) -> tuple[list[sqlite3.Row], bool]:
+    """Read one OpenCode message generation using its stable shared columns."""
+    tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if table not in tables or session_table not in tables:
+        return [], False
+    message_columns = {r[1] for r in connection.execute(f'PRAGMA table_info("{table}")')}
+    session_columns = {r[1] for r in connection.execute(f'PRAGMA table_info("{session_table}")')}
+    required_message = {'id', 'session_id', 'time_created', 'time_updated', 'data'}
+    required_session = {'id', 'parent_id', 'directory', 'version'}
+    if not required_message <= message_columns or not required_session <= session_columns:
+        if diagnostics is not None:
+            diagnostics['schema_errors'] = diagnostics.get('schema_errors', 0) + 1
+        return [], False
+    message_type = 'm.type AS message_type' if 'type' in message_columns else 'NULL AS message_type'
+    return connection.execute(f'''
+        SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data,
+               {message_type}, s.parent_id, s.directory, s.version
+        FROM "{table}" AS m JOIN "{session_table}" AS s ON s.id = m.session_id
+    ''').fetchall(), True
 def collect_opencode(
     db_path: Path,
     start: datetime,
@@ -1290,22 +1314,33 @@ def collect_opencode(
     diagnostics: dict[str, int] | None = None,
 ) -> list[AttributionRecord]:
     """Collect per-assistant-call usage from OpenCode's local SQLite store."""
+    if diagnostics is not None:
+        for key in ("malformed_lines", "unparsed_usage_lines", "schema_errors", "stale_parser"):
+            diagnostics.setdefault(key, 0)
     path = Path(db_path).expanduser().resolve()
     connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA query_only=ON")
-        rows = connection.execute("""
-            SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data,
-                   s.parent_id, s.directory, s.version
-            FROM message AS m JOIN session AS s ON s.id = m.session_id
-        """).fetchall()
+        # OpenCode 2 writes a second generation in the same database. Prefer it
+        # when a migrated message id exists in both generations, while keeping
+        # the legacy reader for databases that have not migrated.
+        v2_rows, v2_valid = _opencode_rows(connection, "session_message", "session_v2", diagnostics)
+        legacy_rows, legacy_valid = _opencode_rows(connection, "message", "session", diagnostics)
+        rows = v2_rows + legacy_rows
+        if not rows:
+            if not (v2_valid or legacy_valid or (diagnostics and diagnostics.get('schema_errors'))):
+                raise sqlite3.OperationalError("no such table: session or session_v2")
     finally:
         connection.close()
     records = []
     anchors: list[tuple[str, str | None, datetime, str]] = []  # every request with usage, in or out of the window
     aborts: list[tuple[str, str | None, str | None, datetime | None]] = []  # (session, turn, own call id): an abort usually carries no tokens, so it is read before the token guards
+    seen_ids: set[str] = set()
+    source_assistant_latest: datetime | None = None
+    parsed_assistant_latest: datetime | None = None
     for row in rows:
+        row_id = _meta_text(row["id"])
         try:
             data = json.loads(row["data"])
         except (TypeError, ValueError):
@@ -1316,26 +1351,38 @@ def collect_opencode(
             if diagnostics is not None:
                 diagnostics["malformed_lines"] += 1
             continue
-        if data.get("role") != "assistant":
+        role = data.get("role") or row["message_type"]
+        if role != "assistant":
             continue
-        if _mapping(data.get("error")).get("name") == "MessageAbortedError":
+        time_data = _mapping(data.get("time"))
+        aborted = _mapping(data.get("error")).get("name") == "MessageAbortedError"
+        source_timestamp = _millisecond_timestamp(
+            time_data.get("completed") or time_data.get("streamed") or time_data.get("created")
+            or row["time_created"]
+        )
+        if source_timestamp and not aborted and (
+                source_assistant_latest is None or source_timestamp > source_assistant_latest):
+            source_assistant_latest = source_timestamp
+        if aborted:
             aborts.append((_meta_text(row["session_id"], default="unknown"), _meta_text(_first_text(data, "parentID", "parentId")),
                            str(row["id"]) if row["id"] else None, _millisecond_timestamp(
-                               _mapping(data.get("time")).get("completed") or _mapping(data.get("time")).get("created")
+                               time_data.get("completed") or time_data.get("created")
                                or row["time_updated"] or row["time_created"])))
         usage = data.get("tokens")
         if not isinstance(usage, dict):
             if diagnostics is not None:
                 diagnostics["unparsed_usage_lines"] += 1
             continue
-        time_data = _mapping(data.get("time"))
         timestamp = _millisecond_timestamp(
-            time_data.get("completed") or time_data.get("created") or row["time_updated"] or row["time_created"]
+            time_data.get("completed") or time_data.get("streamed") or time_data.get("created")
+            or row["time_updated"] or row["time_created"]
         )
         if timestamp is None:
             if diagnostics is not None:
                 diagnostics["unparsed_usage_lines"] += 1
             continue
+        if parsed_assistant_latest is None or timestamp > parsed_assistant_latest:
+            parsed_assistant_latest = timestamp
         in_window = start <= timestamp < end  # requests outside the window still anchor an abort, so fresh and incremental reads agree
         raw_usage = _sanitize_usage(usage) or {}
         cache = _mapping(usage.get("cache"))
@@ -1351,20 +1398,27 @@ def collect_opencode(
         if sum(values[field] for field in ("fresh_input", "cache_read", "cache_write", "output")) <= 0 \
                 and not _raw_usage_requires_record(raw_usage, ("input", "output", "reasoning", "cache")):
             continue
+        # V2 rows are read first. Only claim an id after the row is a usable
+        # observation, so malformed/incomplete V2 rows can fall back to V1.
+        if row_id:
+            if row_id in seen_ids:
+                continue
+            seen_ids.add(row_id)
         call_id = str(row["id"] or "synthetic:" + _stable_hash({
             "session": row["session_id"], "timestamp": timestamp.isoformat(), "usage": raw_usage,
         }))
         cwd = _meta_text(_mapping(data.get("path")).get("cwd"), row["directory"], limit=4096)
         parent = _meta_text(row["parent_id"])
         turn_id = _meta_text(_first_text(data, "parentID", "parentId"))
+        model_data = _mapping(data.get("model"))
         anchors.append((_meta_text(row["session_id"], default="unknown"), turn_id, timestamp, call_id))
         if not in_window:
             continue
         records.append(AttributionRecord(
-            harness="opencode", provider=_meta_text(data.get("providerID"), default="unknown"),
+            harness="opencode", provider=_meta_text(data.get("providerID"), model_data.get("providerID"), default="unknown"),
             timestamp=timestamp, session_id=_meta_text(row["session_id"], default="unknown"), call_id=call_id,
-            model=_meta_text(data.get("modelID"), default="unknown"),
-            effort=_meta_text(data.get("variant"), default="unknown"),
+            model=_meta_text(data.get("modelID"), model_data.get("modelID"), model_data.get("id"), default="unknown"),
+            effort=_meta_text(data.get("variant"), model_data.get("variant"), default="unknown"),
             project=_project_name(cwd), project_id=cwd or "unknown", cwd=cwd,
             entrypoint="unknown", thread_kind="subagent" if parent else "main",
             agent=_meta_text(data.get("agent"), default="unknown"), turn_id=turn_id,
@@ -1386,6 +1440,9 @@ def collect_opencode(
                 if target in by_id:
                     flagged.add(by_id[target])
         records = [replace(r, flags=[INTERRUPTED]) if i in flagged else r for i, r in enumerate(records)]
+    if diagnostics is not None and source_assistant_latest and (
+            parsed_assistant_latest is None or source_assistant_latest > parsed_assistant_latest):
+        diagnostics["stale_parser"] = 1
     return sorted(records, key=lambda item: (item.timestamp, item.session_id, item.call_id))
 
 

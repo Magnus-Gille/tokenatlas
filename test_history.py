@@ -541,6 +541,31 @@ class HistoryTests(unittest.TestCase):
             self.assertNotIn('PRIVATE ASSISTANT TEXT',saved)
             self.assertEqual(h.records()[0]['source_type'],'database')
 
+    def test_opencode_v2_refresh_reads_session_message_and_doctor_flags_stale_parser(self):
+        db = self.root/'opencode-v2.db'
+        connection = sqlite3.connect(db)
+        connection.executescript('''
+            CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT,
+                directory TEXT, version TEXT, time_created INTEGER, time_updated INTEGER);
+            CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+        ''')
+        first, second = 1788429600000, 1788429605000
+        connection.execute('INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?)', ('s','p',None,'/work/app','2.0',first,second))
+        connection.executemany('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)', [
+            ('m1','s','assistant',1,first,first,json.dumps({'model': {'id':'gpt-v2','providerID':'openai'},
+                'tokens': {'input': 2, 'output': 1, 'reasoning': 0, 'cache': {'read': 0, 'write': 0}},
+                'time': {'created': first}})),
+            ('m2','s','assistant',2,second,second,json.dumps({'model': {'id':'gpt-v2','providerID':'openai'},
+                'time': {'created': second}})),
+        ])
+        connection.commit(); connection.close()
+        with History(self.db) as h:
+            result = h.refresh('opencode', db)
+            self.assertEqual((result['observations_seen'], result['stale_parser']), (1, 1))
+            self.assertEqual(len(h.records()), 1)
+            self.assertEqual(h.doctor()['files_by_harness']['opencode']['stale_parser'], 1)
+
     def test_sqlite_fingerprint_ignores_shm_but_tracks_db_and_wal(self):
         db=self.root/'fp.db'
         wal=Path(str(db)+'-wal'); shm=Path(str(db)+'-shm')
@@ -594,6 +619,24 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(result['status'],'partial')
         self.assertEqual(result['read_errors'],1)
         self.assertIn('no such table',result['errors'][0])
+
+    def test_opencode_present_v2_tables_with_missing_columns_report_schema_error(self):
+        db=self.root/'incomplete-v2-opencode.db'
+        connection=sqlite3.connect(db)
+        connection.executescript('''
+            CREATE TABLE session_v2 (id TEXT PRIMARY KEY);
+            CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);
+        ''')
+        connection.close()
+        with History(self.db) as h:
+            result=h.refresh('opencode',db)
+            doctor=h.doctor()
+        self.assertEqual(result['status'],'partial')
+        self.assertEqual(result['schema_errors'],1)
+        self.assertEqual(result['read_errors'],0)
+        self.assertEqual(result['files_parsed'],1)
+        self.assertIsNone(result['last_success'])
+        self.assertEqual(doctor['files_by_harness']['opencode']['schema_errors'],1)
 
     def test_malformed_opencode_rows_are_reported_as_partial_import(self):
         db=self.root/'malformed-opencode.db'
