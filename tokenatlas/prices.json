@@ -159,6 +159,57 @@
   },
   {
    "provider": "anthropic",
+   "model": "claude-fable-5-2",
+   "aliases": [],
+   "currency": "USD",
+   "input": 8.0,
+   "cache_write_5m": 10.0,
+   "cache_write_1h": 16.0,
+   "cache_write": null,
+   "cache_read": 0.2,
+   "output": 40.0,
+   "long_context": null,
+   "modifiers": {
+    "speed=fast": {
+     "input": 16.0,
+     "cache_write_5m": 20.0,
+     "cache_write_1h": 32.0,
+     "cache_read": 0.4,
+     "output": 80.0
+    }
+   },
+   "free": false,
+   "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "retrieved_on": "2026-11-11",
+   "notes": "Official model page and pricing page verified 2026-11-11; released 2026-11-09. Standard input $8, 5m cache write $10, 1h cache write $16, cache read $0.20, output $40 per million tokens. The pricing page gives Fast input $16, 5m cache write $20, 1h cache write $32, cache read $0.40, output $80; cache multipliers stack. Model page: https://platform.claude.com/docs/en/models/fable-5-2/overview. Absent speed uses the existing standard assumption."
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-haiku-5-5",
+   "aliases": [],
+   "currency": "USD",
+   "input": 0.1,
+   "cache_write_5m": 0.125,
+   "cache_write_1h": 0.2,
+   "cache_write": null,
+   "cache_read": 0.01,
+   "output": 0.5,
+   "long_context": {
+    "above_input_tokens": 100000,
+    "input": 0.5,
+    "cache_write_5m": 0.625,
+    "cache_write_1h": 1.0,
+    "cache_read": 0.05,
+    "output": 2.5
+   },
+   "modifiers": {},
+   "free": false,
+   "source_url": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
+   "retrieved_on": "2026-11-11",
+   "notes": "Official model page verified 2026-11-11; released 2026-10-07. Prompts up to 100K use standard input $0.10, 5m cache write $0.125, 1h cache write $0.20, cache read $0.01, output $0.50 per million tokens; prompts over 100K use input $0.50, 5m cache write $0.625, 1h cache write $1, cache read $0.05, output $2.50. No Fast-mode rate was published on the model page, so speed=fast remains unpriced; absent speed uses the existing standard assumption."
+  },
+  {
+   "provider": "anthropic",
    "model": "claude-haiku-4-5",
    "aliases": [
     "claude-haiku-4-5-20251001"

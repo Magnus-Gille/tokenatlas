@@ -326,6 +326,49 @@ class LoadPricesTests(unittest.TestCase):
             self.assertEqual((entry['retrieved_on'], entry['cache_write_ttl']), (date, '30m'))
             self.assertTrue(entry['source_url'].endswith('/' + url))
 
+    def test_packaged_anthropic_fable_and_haiku_dimensions_and_boundaries(self):
+        table = load_prices()
+        entries = {e['model']: e for e in table['models']}
+        self.assertEqual(entries['claude-fable-5-2']['retrieved_on'], '2026-11-11')
+        self.assertEqual(entries['claude-haiku-5-5']['retrieved_on'], '2026-11-11')
+        self.assertEqual(entries['claude-fable-5-2']['source_url'], 'https://platform.claude.com/docs/en/about-claude/pricing')
+        self.assertEqual(entries['claude-haiku-5-5']['source_url'], 'https://platform.claude.com/docs/en/models/haiku-5-5/overview')
+        fable = price_observation(obs(harness='claude', provider='anthropic', model='claude-fable-5-2', fresh=M,
+                                      read=2 * M, write=1_500_000, out=100_000,
+                                      raw=split(M, 500_000)), table)
+        self.assertEqual(fable['status'], 'assumed')
+        self.assertAlmostEqual(fable['parts']['input'], 8.0)
+        self.assertAlmostEqual(fable['parts']['cache_read'], 0.4)
+        self.assertAlmostEqual(fable['parts']['cache_write'], 18.0)
+        self.assertAlmostEqual(fable['parts']['output'], 4.0)
+        self.assertAlmostEqual(fable['cost'], 30.4)
+        self.assertIn('speed not recorded', fable['assumptions'][0])
+        fable_fast = price_observation(obs(harness='claude', provider='anthropic', model='claude-fable-5-2', fresh=M,
+                                           read=2 * M, write=1_500_000, out=100_000,
+                                           raw=split(M, 500_000), tariff={'speed': 'fast'}), table)
+        self.assertEqual(fable_fast['status'], 'priced')
+        self.assertAlmostEqual(fable_fast['cost'], 60.8)
+
+        haiku_exact = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=100_000, out=M), table)
+        self.assertAlmostEqual(haiku_exact['parts']['input'], 0.01)
+        self.assertAlmostEqual(haiku_exact['parts']['output'], 0.5)
+        self.assertAlmostEqual(haiku_exact['cost'], 0.51)
+        haiku_cache_exact = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=99_000,
+                                                 write=1_000, raw=split(400, 600)), table)
+        self.assertAlmostEqual(haiku_cache_exact['cost'], 0.01007)
+        haiku_cache_long = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=99_001,
+                                                write=1_000, raw=split(400, 600)), table)
+        self.assertAlmostEqual(haiku_cache_long['cost'], 0.0503505)
+        haiku_long = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=100_001,
+                                           write=M, out=M, raw=split(400_000, 600_000)), table)
+        self.assertAlmostEqual(haiku_long['parts']['input'], 0.0500005)
+        self.assertAlmostEqual(haiku_long['parts']['cache_write'], 0.85)
+        self.assertAlmostEqual(haiku_long['parts']['output'], 2.5)
+        self.assertAlmostEqual(haiku_long['cost'], 3.4000005)
+        haiku_fast = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=1,
+                                           tariff={'speed': 'fast'}), table)
+        self.assertEqual((haiku_fast['status'], haiku_fast['cost']), ('unpriced', None))
+
     def test_diagnostics_warn_on_unpriced_share_and_stale_table(self):
         rows = [dict(obs(model='unknown', fresh=M, harness='codex', provider='openai'), ts='2026-10-14T00:00:00+00:00'),
                 dict(obs(model='gpt-x', fresh=M, harness='codex', provider='openai'), ts='2026-10-14T00:00:00+00:00'),
