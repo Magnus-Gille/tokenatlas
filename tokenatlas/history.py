@@ -664,7 +664,8 @@ class History:
                     result['errors'].append(f'{type(exc).__name__}: {exc}')
                 paths = sorted(Path(directory) / name
                     for directory, _, names in os.walk(root, onerror=walk_error)
-                    for name in names if Path(name).match(pattern))
+                    for name in names if Path(name).match(pattern) or
+                    (harness == 'codex' and Path(name).match('rollout-*.jsonl.zst')))
             result['files_seen'] = len(paths)
             collect = {'claude':why.collect_claude, 'codex':why.collect_codex,
                        'pi':why.collect_pi, 'opencode':why.collect_opencode}[harness]
@@ -683,24 +684,47 @@ class History:
                     diagnostics = dict(malformed_lines=0, partial_lines=0, unparsed_usage_lines=0)
                     if harness != 'opencode':
                         with path.open('rb') as handle:
-                            for raw in handle:
-                                try:
-                                    row = json.loads(raw)
+                            # Compressed Codex rollouts must be decoded before
+                            # inspecting diagnostics; the collector performs
+                            # the same decode and reports a clear read error
+                            # when no decoder is available.
+                            raw_lines = (why._read_text_lines(path, strict=True)
+                                         if harness == 'codex' and str(path).endswith('.zst')
+                                         else None)
+                            if raw_lines is not None:
+                                for raw in raw_lines:
+                                    try:
+                                        row = json.loads(raw)
+                                    except (ValueError, UnicodeError):
+                                        diagnostics['malformed_lines' if raw.endswith(('\n', '\r')) else 'partial_lines'] += 1
+                                        continue
                                     if not isinstance(row, dict):
                                         diagnostics['malformed_lines'] += 1
                                     else:
-                                        message = why._mapping(row.get('message'))
-                                        if harness in ('claude', 'pi'):
-                                            raw_usage = message.get('usage')
-                                            timestamp = why.parse_iso_timestamp(row.get('timestamp') or message.get('timestamp'))
-                                        else:
-                                            payload = why._mapping(row.get('payload'))
-                                            raw_usage = why._mapping(payload.get('info')).get('last_token_usage') if payload.get('type') == 'token_count' else None
-                                            timestamp = why.parse_iso_timestamp(row.get('timestamp'))
+                                        payload = why._mapping(row.get('payload'))
+                                        raw_usage = why._mapping(payload.get('info')).get('last_token_usage') if payload.get('type') == 'token_count' else None
+                                        timestamp = why.parse_iso_timestamp(row.get('timestamp'))
                                         if raw_usage is not None and (not isinstance(raw_usage, dict) or timestamp is None):
                                             diagnostics['unparsed_usage_lines'] += 1
-                                except (ValueError, UnicodeError):
-                                    diagnostics['malformed_lines' if raw.endswith(b'\n') else 'partial_lines'] += 1
+                            else:
+                                for raw in handle:
+                                    try:
+                                        row = json.loads(raw)
+                                        if not isinstance(row, dict):
+                                            diagnostics['malformed_lines'] += 1
+                                        else:
+                                            message = why._mapping(row.get('message'))
+                                            if harness in ('claude', 'pi'):
+                                                raw_usage = message.get('usage')
+                                                timestamp = why.parse_iso_timestamp(row.get('timestamp') or message.get('timestamp'))
+                                            else:
+                                                payload = why._mapping(row.get('payload'))
+                                                raw_usage = why._mapping(payload.get('info')).get('last_token_usage') if payload.get('type') == 'token_count' else None
+                                                timestamp = why.parse_iso_timestamp(row.get('timestamp'))
+                                            if raw_usage is not None and (not isinstance(raw_usage, dict) or timestamp is None):
+                                                diagnostics['unparsed_usage_lines'] += 1
+                                    except (ValueError, UnicodeError):
+                                        diagnostics['malformed_lines' if raw.endswith(b'\n') else 'partial_lines'] += 1
                         records = collect(root, datetime(1970,1,1,tzinfo=timezone.utc),
                                           datetime(9999,1,1,tzinfo=timezone.utc), paths=[path], strict=True)
                     else:

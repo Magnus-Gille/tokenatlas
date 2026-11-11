@@ -13,8 +13,10 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import stat
+import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +30,10 @@ OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 # Claude desktop Cowork (macOS only): local_*/.claude/projects hold ordinary Claude Code transcripts.
 # Never read the sibling audit.jsonl: it is an SDK stream copy of the same calls under other id keys.
 COWORK_SESSIONS = Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+
+
+class ZstdUnavailableError(OSError):
+    """Raised when a compressed Codex rollout cannot be decoded locally."""
 
 
 def _env_dir(var, tilde=False):
@@ -60,6 +66,12 @@ def codex_session_index():
     """Codex's session index next to its sessions: CODEX_HOME/session_index.jsonl, else the default."""
     base = _env_dir('CODEX_HOME')
     return (base if base else CODEX_SESSIONS.parent) / 'session_index.jsonl'
+
+
+def codex_roots() -> list[Path]:
+    """Codex keeps active and archived rollouts in separate roots."""
+    active = harness_root('codex')[0]
+    return [active, active.parent / 'archived_sessions']
 
 
 def cowork_scan() -> tuple[list[Path], list[str]]:
@@ -441,20 +453,47 @@ def _paths_for(root: Path, pattern: str, start: datetime, paths: list[Path] | No
     return _recent_files(root, pattern, start)
 
 
-def _read_json_lines(path: Path, *, strict: bool = False) -> Iterable[tuple[int, dict]]:
+def _read_text_lines(path: Path, *, strict: bool = False) -> Iterable[str]:
     try:
-        with path.open(errors="replace") as handle:
-            for line_number, raw in enumerate(handle, 1):
-                try:
-                    value = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if isinstance(value, dict):
-                    yield line_number, value
+        if not path.name.endswith('.zst'):
+            with path.open(errors="replace") as handle:
+                yield from handle
+            return
+        try:
+            import zstandard as zstd
+        except ImportError:
+            decoder = shutil.which('zstd')
+            if not decoder:
+                raise ZstdUnavailableError(
+                    f'cannot read compressed rollout {path}: install the optional zstandard package or provide the zstd binary'
+                )
+            completed = subprocess.run([decoder, '-q', '-d', '-c', str(path)], capture_output=True)
+            if completed.returncode:
+                detail = completed.stderr.decode('utf-8', 'replace').strip() or 'decoder failed'
+                raise OSError(f'cannot read compressed rollout {path}: {detail}')
+            yield from completed.stdout.decode('utf-8', 'replace').splitlines(keepends=True)
+            return
+        try:
+            with path.open('rb') as compressed:
+                with zstd.ZstdDecompressor().stream_reader(compressed) as reader:
+                    import io
+                    yield from io.TextIOWrapper(reader, errors='replace')
+        except zstd.ZstdError as exc:
+            raise OSError(f'cannot read compressed rollout {path}: {exc}') from exc
     except OSError:
         if strict:
             raise
         return
+
+
+def _read_json_lines(path: Path, *, strict: bool = False) -> Iterable[tuple[int, dict]]:
+    for line_number, raw in enumerate(_read_text_lines(path, strict=strict), 1):
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(value, dict):
+            yield line_number, value
 
 
 def _recent_files(root: Path, pattern: str, start: datetime) -> list[Path]:
@@ -467,7 +506,10 @@ def _recent_files(root: Path, pattern: str, start: datetime) -> list[Path]:
         return []
     threshold = start.timestamp()
     files = []
-    for path in root.rglob(pattern):
+    candidates = root.rglob(pattern)
+    if pattern == 'rollout-*.jsonl':
+        candidates = (*candidates, *root.rglob('rollout-*.jsonl.zst'))
+    for path in candidates:
         try:
             if path.stat().st_mtime >= threshold:
                 files.append(path)

@@ -114,7 +114,10 @@ def refresh_all(history):
         try:
             # Claude: main root, then each Cowork transcript root (macOS; absent elsewhere and simply skipped).
             cowork,problems=why.cowork_scan() if name=='claude' else ([],[])
-            found=[r for r in [root,*cowork] if _present(r)]
+            candidates = [root, *cowork]
+            if name == 'codex':
+                candidates = why.codex_roots()
+            found=[r for r in candidates if _present(r)]
             if not found and not problems:
                 entries.append({'harness':name,'status':'absent'});continue
             with progress.step(f'Refresh {name}') as shown:
@@ -726,7 +729,12 @@ def _main(argv=None):
                 roots={h:why.harness_root(h)[0] for h in ('claude','codex','pi','opencode')}
                 if args.root or args.harness!='claude':
                     with progress.step(f'Refresh {args.harness}') as shown:
-                        result=history.refresh(args.harness,args.root or roots[args.harness]);shown.failed=result['status']!='ok'
+                        if args.harness == 'codex' and not args.root:
+                            results = [history.refresh('codex', root) for root in why.codex_roots() if _present(root)]
+                            result = aggregate(results) if results else {'harness': 'codex', 'status': 'absent', 'errors': []}
+                        else:
+                            result=history.refresh(args.harness,args.root or roots[args.harness])
+                        shown.failed=result['status']!='ok'
                 else:
                     # Main root, then each Cowork transcript root (macOS; absent elsewhere and simply skipped).
                     cowork,problems=why.cowork_scan()
