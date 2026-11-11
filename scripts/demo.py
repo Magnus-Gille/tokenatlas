@@ -376,7 +376,7 @@ def pi_session(w, rng, sid, key, t0, n, provider, model, turn_len=6):
         read, ctx = (0, ctx + delta) if i == 0 else (ctx, ctx + delta)
         out = rng.randint(200, 1800)
         usage = {'input': delta if i == 0 else rng.randint(20, 300), 'cacheRead': read, 'cacheWrite': 0 if i == 0 else delta,
-                 'output': out, 'reasoning': int(out * .3)}
+                 'output': out, 'reasoning': int(out * .3), 'cache_write_ttl': '30m'}
         usage['totalTokens'] = sum(usage[k] for k in ('input', 'cacheRead', 'cacheWrite', 'output'))
         rows.append({'type': 'message', 'id': f'{sid}-{i}', 'timestamp': iso(t),
                      'message': {'role': 'assistant', 'provider': provider, 'model': model, 'responseId': f'resp_{sid}_{i}',
@@ -422,7 +422,7 @@ def opencode_db(path, rng, script):
             read, ctx = ctx, ctx + delta
             out = rng.randint(200, 1600)
             tokens = {'input': delta if i == 0 else rng.randint(10, 200), 'output': out, 'reasoning': int(out * .25),
-                      'cache': {'read': read, 'write': 0 if i == 0 else delta}}
+                      'cache': {'read': read, 'write': 0 if i == 0 else delta}, 'cache_write_ttl': '30m'}
             tokens['total'] = tokens['input'] + tokens['output'] + tokens['reasoning'] + read + tokens['cache']['write']
             data = {'role': 'assistant', 'providerID': provider, 'modelID': model, 'agent': agent, 'variant': 'high',
                     'parentID': user, 'time': {'created': created, 'completed': created + 4000}, 'path': {'cwd': cwd, 'root': cwd}, 'tokens': tokens}

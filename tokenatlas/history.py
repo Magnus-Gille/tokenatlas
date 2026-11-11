@@ -25,7 +25,7 @@ from tokenatlas.provenance import REMOTE_PATH, is_machine_id
 OBSERVATION_VERSION = 1  # the 'v' field inside observation dicts
 SCHEMA_VERSION = 2  # PRAGMA user_version of the SQLite layout
 COLLECTOR_VERSION = 5
-HARNESS_REVISION = {'pi': 3, 'codex': 7, 'claude': 3, 'opencode': 2}  # bump to force a re-read of one harness's files only (appended to its fingerprint)
+HARNESS_REVISION = {'pi': 4, 'codex': 8, 'claude': 4, 'opencode': 4}  # Re-read once to retain newly supported cache TTL evidence.
 FIELDS = ('fresh_input', 'cache_read', 'cache_write', 'output')
 ALL_FIELDS = FIELDS + ('reasoning',)
 
@@ -60,6 +60,8 @@ def clean_usage(raw):
                'total_input_tokens', 'total_output_tokens',
                'input', 'output', 'reasoning', 'cacheRead', 'cacheWrite', 'totalTokens')
     result = {k: counter(raw[k]) for k in allowed if k in raw}
+    if isinstance(raw.get('cache_write_ttl'), str) and raw['cache_write_ttl'] in why._CACHE_WRITE_TTLS:
+        result['cache_write_ttl'] = raw['cache_write_ttl']
     for name, keys in (('cache_creation', ('ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens')),
                        ('output_tokens_details', ('thinking_tokens',)),
                        ('cache', ('read', 'write'))):

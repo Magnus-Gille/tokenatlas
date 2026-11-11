@@ -6,6 +6,7 @@ Costs are computed at report time from a price table; a missing price or tariff 
 import json
 import math
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PACKAGED = Path(__file__).with_name('prices.json')
@@ -213,7 +214,8 @@ def _rates(obs, table, long_context=True, modifiers=True):
         prices = dict.fromkeys(PRICE_KEYS)
 
     return None, dict(prices=prices, multiplier=multiplier, assumptions=assumptions, reasons=reasons, claude=claude,
-                      currency=currency, ref=ref, tokens=tokens, raw=raw, long=long_applies, has_long=bool(long), modifier=modifier)
+                      currency=currency, ref=ref, tokens=tokens, raw=raw, long=long_applies, has_long=bool(long), modifier=modifier,
+                      cache_write_ttl=entry.get('cache_write_ttl'))
 
 
 def _parts(r):
@@ -231,7 +233,17 @@ def _parts(r):
             if write:
                 reasons.append('cache write TTL unknown')
     else:
-        write_part = _times(write, prices['cache_write'])
+        # When a price card declares a cache lifetime, require the observation
+        # to identify that same lifetime. OpenAI and other non-Claude logs
+        # normally expose only a write token count; applying a declared 30m
+        # card to an unknown/different TTL would overstate completeness.
+        expected_ttl = r.get('cache_write_ttl')
+        observed_ttl = raw.get('cache_write_ttl') or (raw.get('cache_creation') or {}).get('ttl')
+        if write and (not expected_ttl or observed_ttl != expected_ttl):
+            write_part = None
+            reasons.append('cache write TTL unknown')
+        else:
+            write_part = _times(write, prices['cache_write'])
     parts = {'input': _times(tokens.get('fresh_input'), prices['input']), 'cache_write': write_part,
              'cache_read': _times(tokens.get('cache_read'), prices['cache_read']),
              'output': _times(tokens.get('output'), prices['output'])}
@@ -277,6 +289,54 @@ def price_vector(obs, table):
 
 def unit_prices(obs, table):
     return price_vector(obs, table)[0]
+
+
+def diagnostics(records, table, *, now=None, days=30, threshold=0.10, max_age_days=30):
+    """Return bounded price coverage diagnostics for ``doctor``.
+
+    The recent window is based on wall-clock UTC, while the table age is measured
+    from its declared retrieval date. Unknown and partial observations are both
+    counted as unpriced because their cost cannot contribute to a complete USD
+    total.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+    recent = [r for r in records if isinstance(r.get('ts'), str)
+              and cutoff <= datetime.fromisoformat(r['ts']).astimezone(timezone.utc) <= now]
+    groups = {}
+    priced = 0
+    for row in recent:
+        result = price_observation(row, table)
+        if result.get('cost') is not None and result.get('currency') in (None, 'USD'):
+            priced += 1
+            continue
+        ref = result.get('price_ref') or {}
+        key = (ref.get('provider') or row.get('provider') or 'unknown', ref.get('model') or row.get('model') or 'unknown')
+        groups[key] = groups.get(key, 0) + 1
+    total = len(recent)
+    unpriced = total - priced
+    retrieved = table.get('retrieved_on')
+    entry_dates = [e.get('retrieved_on') for e in table.get('models', ()) if isinstance(e, dict)]
+    valid_dates = [value for value in [retrieved, *entry_dates] if isinstance(value, str)]
+    age_days = None
+    oldest_retrieved = min(valid_dates) if valid_dates else None
+    if oldest_retrieved is not None:
+        try:
+            age_days = (now.date() - datetime.fromisoformat(oldest_retrieved).date()).days
+        except ValueError:
+            pass
+    largest = [dict(provider=p, model=m, requests=n) for (p, m), n in sorted(groups.items(), key=lambda kv: (-kv[1], kv[0]))[:5]]
+    warnings = []
+    share = (unpriced / total) if total else 0.0
+    if total and share > threshold:
+        warnings.append(f'unpriced share {share:.1%} exceeds {threshold:.0%} of recent requests')
+    if age_days is not None and age_days > max_age_days:
+        warnings.append(f'price table is {age_days} days old (older than {max_age_days} days)')
+    return dict(retrieved_on=retrieved, oldest_entry_retrieved_on=oldest_retrieved,
+                max_age_days=max_age_days, age_days=age_days,
+                window_days=days, requests=total, priced_requests=priced,
+                unpriced_requests=unpriced, unpriced_share=share,
+                largest_unpriced_models=largest, warnings=warnings)
 
 
 def summarize_costs(observations, table, key=lambda o: (o['provider'], o['model'])):

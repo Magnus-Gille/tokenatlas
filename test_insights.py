@@ -17,6 +17,8 @@ M = 1_000_000
 def entry(model, inp, cr, out, provider='openai', long=None, modifiers=None, write=None, **kw):
     e = dict(provider=provider, model=model, aliases=[], currency='USD', input=inp, cache_write_5m=None, cache_write_1h=None, cache_write=write,
              cache_read=cr, output=out, free=False, modifiers=modifiers or {}, long_context=long and dict(above_input_tokens=long[0], cache_write=None, **long[1]), **REF)
+    if write is not None:
+        e['cache_write_ttl'] = '30m'
     return dict(e, **kw)
 
 
@@ -75,8 +77,9 @@ class Shape(unittest.TestCase):
 
     def test_only_unpriced_has_only_price_free_facts(self):
         res = cost_facts([ob('u', model='mystery', fresh=10, read=0)], TABLE)
-        self.assertEqual([f['id'] for f in res['facts']], ['context_size', 'credits', 'energy'])  # energy and credits need no USD price (the credit fact only counts the unrated model)
+        self.assertEqual([f['id'] for f in res['facts']], ['unpriced_coverage', 'context_size', 'credits', 'energy'])  # energy and credits need no USD price (the credit fact only counts the unrated model)
         self.assertEqual((res['requests'], res['priced_requests'], res['unpriced_requests']), (1, 0, 1))
+        self.assertEqual(res['unpriced_models'][0]['name'], 'mystery')
 
     def test_no_wording_of_advice(self):
         text = json.dumps(cost_facts(D, TABLE)) + json.dumps({k: v for k, v in insights._texts().items() if k.startswith('ins_')})
@@ -103,6 +106,16 @@ class F1ModelShare(unittest.TestCase):
         self.assertIsNone(v['other'])
         self.assertAlmostEqual(v['priced_cost'], 2.61, 9)
         self.assertEqual((v['requests'], v['priced_requests'], v['unpriced_requests'], v['unpriced_share']), (5, 4, 1, 0.2))
+        self.assertEqual(v['unpriced_models'][0]['name'], 'mystery')
+        self.assertEqual(v['unpriced_models'][0]['requests'], 1)
+
+    def test_unpriced_model_ranking_does_not_double_count_reasoning(self):
+        first, second = ob('reasoning', model='mystery-a', out=100), ob('output', model='mystery-b', out=200)
+        first['tokens']['reasoning'] = 10_000
+        rows = [first, second]
+        result = cost_facts(rows, TABLE)
+        self.assertEqual(result['unpriced_models'][0]['name'], 'mystery-b')
+        self.assertEqual(result['unpriced_models'][0]['tokens'], 200)
 
     def test_top_five_plus_other(self):
         rows = [ob(f'r{n}', model=f'm{n}', out=n * 100000) for n in range(1, 8)]  # m<n> costs exactly $n
@@ -239,7 +252,9 @@ class GroupedPricingIsExact(unittest.TestCase):
 class F3CostParts(unittest.TestCase):
     def test_parts_and_shares(self):
         # input 1M x 2 = 2, cache write 1M x 3 = 3, cache read 2M x .5 = 1, output 400k x 10 = 4; total 10
-        v = by_id(cost_facts([ob('p', model='gpt-cr', fresh=M, write=M, read=2 * M, out=400000)], TABLE))['cost_parts']['values']
+        row = ob('p', model='gpt-cr', fresh=M, write=M, read=2 * M, out=400000)
+        row['raw_usage'] = {'cache_write_ttl': '30m'}
+        v = by_id(cost_facts([row], TABLE))['cost_parts']['values']
         self.assertEqual([(p['part'], p['cost'], p['share']) for p in v['parts']],
                          [('input', 2.0, .2), ('cache_write', 3.0, .3), ('cache_read', 1.0, .1), ('output', 4.0, .4)])
         self.assertEqual(v['priced_cost'], 10.0)

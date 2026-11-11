@@ -190,7 +190,7 @@ class HistoryTests(unittest.TestCase):
 
     def test_claude_revision_changes_fingerprint_and_forces_one_reread(self):
         import tokenatlas.history as history
-        self.assertEqual(history.HARNESS_REVISION.get('claude'), 3)
+        self.assertEqual(history.HARNESS_REVISION.get('claude'), 4)
         source=self.root/'logs/a.jsonl';write_claude(source)
         with patch.dict(history.HARNESS_REVISION,clear=False):
             history.HARNESS_REVISION.pop('claude')
@@ -210,7 +210,7 @@ class HistoryTests(unittest.TestCase):
     def test_codex_revision_changes_fingerprint_and_forces_one_reread(self):
         import tokenatlas.history as history
         from test_why_codex import _write_rollout,_meta,_context,_tokens,_tier
-        self.assertEqual(history.HARNESS_REVISION.get('codex'), 7)
+        self.assertEqual(history.HARNESS_REVISION.get('codex'), 8)
         source=self.root/'logs/rollout-one.jsonl'
         counts={'input_tokens':10,'cached_input_tokens':0,'cache_write_input_tokens':0,'output_tokens':2}
         _write_rollout(source,[_meta(),_context('2026-09-03T10:00:00Z','model','high','/work/project'),
@@ -296,6 +296,57 @@ class HistoryTests(unittest.TestCase):
             item=normalize(record(raw_usage=raw),'m')
             self.assertFalse(item['complete'])
             self.assertIn('invalid_iteration',item['warnings'])
+
+    def test_cache_write_ttl_survives_sanitizing_and_normalization(self):
+        from tokenatlas import why
+        raw = why._sanitize_usage({'input_tokens': 10, 'output_tokens': 2, 'cache_write_ttl': '30m', 'bad_ttl': '2h'})
+        self.assertEqual(raw['cache_write_ttl'], '30m')
+        self.assertNotIn('bad_ttl', raw)
+        item = normalize(record(harness='codex', provider='openai', raw_usage=raw), 'machine')
+        self.assertEqual(item['raw_usage']['cache_write_ttl'], '30m')
+        self.assertEqual(_decode(_encode(item))['raw_usage']['cache_write_ttl'], '30m')
+
+    def test_invalid_cache_write_ttl_types_are_ignored(self):
+        from tokenatlas import why
+        from tokenatlas.history import clean_usage
+        for value in ([], {}, 42, None):
+            with self.subTest(value=value):
+                self.assertNotIn('cache_write_ttl', why._sanitize_usage({'cache_write_ttl': value}))
+                self.assertNotIn('cache_write_ttl', clean_usage({'cache_write_ttl': value}))
+
+    def test_conflicting_cache_ttls_stay_unknown_after_merge(self):
+        from tokenatlas import why
+        a = {'cache_write_ttl': '30m'}
+        b = {'cache_write_ttl': '1h'}
+        merged = why._merge_sanitized_usage(a, b)
+        self.assertNotIn(merged.get('cache_write_ttl'), ('30m', '1h'))
+        self.assertNotIn(why._merge_sanitized_usage(merged, a).get('cache_write_ttl'), ('30m', '1h'))
+        item = normalize(record(raw_usage=merged), 'machine')
+        self.assertNotIn(_decode(_encode(item))['raw_usage'].get('cache_write_ttl'), ('30m', '1h'))
+
+    def test_existing_codex_file_is_reread_to_recover_cache_ttl(self):
+        import tokenatlas.history as history
+        from tokenatlas import why
+        from test_why_codex import _write_rollout, _meta, _context, _tokens
+        source = self.root / 'logs' / 'rollout-ttl.jsonl'
+        usage = {'input_tokens': 10, 'cached_input_tokens': 0, 'cache_write_input_tokens': 1,
+                 'output_tokens': 2, 'cache_write_ttl': '30m'}
+        _write_rollout(source, [_meta(), _context('2026-09-03T10:00:00Z', 'model', 'high', '/work'),
+                                _tokens('2026-09-03T10:00:01Z', 1, usage, usage)])
+        original = why._sanitize_usage
+        def old_sanitize(value):
+            result = original(value)
+            if result is not None:
+                result.pop('cache_write_ttl', None)
+            return result
+        with patch.dict(history.HARNESS_REVISION, {'codex': 7}), patch.object(why, '_sanitize_usage', side_effect=old_sanitize):
+            with History(self.db) as h:
+                h.refresh('codex', source.parent)
+                self.assertNotIn('cache_write_ttl', h.records()[0]['raw_usage'])
+        with History(self.db) as h:
+            self.assertEqual(h.refresh('codex', source.parent)['files_skipped'], 0)
+            self.assertEqual(h.records()[0]['raw_usage'].get('cache_write_ttl'), '30m')
+            self.assertEqual(h.refresh('codex', source.parent)['files_skipped'], 1)
 
     def test_missing_tokens_are_unknown_and_iterations_not_assumed_complete(self):
         item=normalize(record(), 'machine')

@@ -308,6 +308,7 @@
     "cache_write": 25,
     "output": 75
    },
+   "cache_write_ttl": "30m",
    "modifiers": {
     "service_tier=fast": {
      "input": 20,
@@ -345,6 +346,7 @@
     "cache_write": 5,
     "output": 15
    },
+   "cache_write_ttl": "30m",
    "modifiers": {
     "service_tier=fast": {
      "input": 4,
@@ -366,6 +368,62 @@
   },
   {
    "provider": "openai",
+   "model": "gpt-6.1-sol",
+   "aliases": [],
+   "currency": "USD",
+   "input": 2,
+   "cache_write_5m": null,
+   "cache_write_1h": null,
+   "cache_write": 2.5,
+   "cache_read": 0.1,
+   "output": 10,
+   "long_context": {
+    "above_input_tokens": 272000,
+    "input": 4,
+    "cache_read": 0.2,
+    "cache_write": 5,
+    "output": 15
+   },
+   "modifiers": {
+    "service_tier=fast": {"input": 4, "cache_read": 0.2, "cache_write": 5, "output": 20},
+    "service_tier=flex": {"input": 1, "cache_read": 0.05, "cache_write": 1.25, "output": 5}
+   },
+   "free": false,
+   "cache_write_ttl": "30m",
+   "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+   "retrieved_on": "2026-11-11",
+   "notes": "Model page verified 2026-11-11; released 2026-09-29. Standard input $2, cached input $0.10, 30m cache write $2.50, output $10 per million tokens. The model page explicitly states >272K input uses 2x input/cache and 1.5x output, Fast is 2x Standard, Flex is 50% lower, and Ultrafast is 6x Standard. codex-auto-review remains explicitly unpriced."
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.1-terra",
+   "aliases": [],
+   "currency": "USD",
+   "input": 1,
+   "cache_write_5m": null,
+   "cache_write_1h": null,
+   "cache_write": 1.25,
+   "cache_read": 0.05,
+   "output": 5,
+   "long_context": {
+    "above_input_tokens": 272000,
+    "input": 2,
+    "cache_read": 0.1,
+    "cache_write": 2.5,
+   "output": 7.5
+   },
+   "modifiers": {
+    "service_tier=fast": {"input": 2, "cache_read": 0.1, "cache_write": 2.5, "output": 10},
+    "service_tier=flex": {"input": 0.5, "cache_read": 0.025, "cache_write": 0.625, "output": 2.5}
+   },
+   "free": false,
+   "cache_write_ttl": "30m",
+   "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+   "retrieved_on": "2026-11-11",
+   "notes": "Model page verified 2026-11-11; released 2026-10-26. Standard input $1, cached input $0.05, 30m cache write $1.25, output $5 per million tokens. The model page explicitly states >272K input uses 2x input/cache and 1.5x output ($7.50), Fast is 2x Standard, and Flex is 50% lower."
+  },
+  {
+   "provider": "openai",
    "model": "gpt-6-luna",
    "aliases": [],
    "currency": "USD",
@@ -382,6 +440,7 @@
     "cache_write": 0.25,
     "output": 0.75
    },
+   "cache_write_ttl": "30m",
    "modifiers": {
     "service_tier=fast": {
      "input": 0.2,
@@ -419,6 +478,7 @@
     "cache_write": 10,
     "output": 30
    },
+   "cache_write_ttl": "30m",
    "modifiers": {
     "service_tier=fast": {
      "input": 8,
@@ -456,6 +516,7 @@
     "cache_write": 5,
     "output": 18
    },
+   "cache_write_ttl": "30m",
    "modifiers": {
     "service_tier=fast": {
      "input": 4,
@@ -493,6 +554,7 @@
     "cache_write": 0.5,
     "output": 1.8
    },
+   "cache_write_ttl": "30m",
    "modifiers": {
     "service_tier=fast": {
      "input": 0.4,
