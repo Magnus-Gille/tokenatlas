@@ -3,6 +3,10 @@
 `tokenatlas overhead [--refresh] [--harness H] [--since ISO] [--json]` shows how much fixed context a
 session carries: the system prompt, tool lists, instruction files (AGENTS.md/CLAUDE.md), the skills list, MCP
 instructions, and skill bodies when a skill is used. `--refresh` rescans the default session roots first.
+The data comes from an overhead cache that only `--refresh` fills. When the result is empty, `--json` adds
+`reason` (`no_cached_data`, or `no_sessions_in_window` with `cached_sessions` and `cached_first_ts`) and `hint`;
+text mode prints the same hint. `--since` compares against each session's start, so a session that began
+before the window is not counted even if it ran inside it.
 
 ## What is exact and what is estimated
 

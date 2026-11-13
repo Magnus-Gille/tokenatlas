@@ -456,10 +456,13 @@ def _main(argv=None):
     facts.add_argument('--context-threshold',type=int,default=200000,help='Input-token threshold for context-volume facts; a presentation choice, not a waste detector.')
     facts.add_argument('--scenario-population',choices=('large_context_input','subagent_input'),help='Opt-in hypothetical input-reduction population; requires --reduction-percent.')
     facts.add_argument('--reduction-percent',type=float,help='Hypothetical input reduction, 0–100; no prediction of savings.')
-    overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes.')
+    overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes.',
+        description='Reads a separate overhead cache in the history database, filled only by --refresh (a rescan of the session roots); '
+                    'a normal refresh does not fill it. With no cache, or no session starting in the --since window, the result is empty: '
+                    'JSON gets "reason" (no_cached_data or no_sessions_in_window) and "hint" fields, text mode prints the hint.')
     overhead.add_argument('--refresh',action='store_true',help='Rescan the default session roots first.')
     overhead.add_argument('--harness',choices=('claude','codex','pi','opencode'))
-    overhead.add_argument('--since',help='Inclusive ISO timestamp of the session start.')
+    overhead.add_argument('--since',help='Inclusive ISO timestamp (offset allowed; none means UTC) compared with the session start, not later activity.')
     overhead.add_argument('--json',action='store_true')
     collect=commands.add_parser('collect',help='One scheduled run under a lock: refresh, top text if opted in, report, remote sync, report again.')
     collect.add_argument('--remote',action='append',default=[],metavar='TAG:HOST',help='Remote machine to sync (repeatable); else REMOTE_HOSTS_OVERRIDE or the remote-hosts file in the state directory.')

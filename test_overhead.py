@@ -578,5 +578,60 @@ class CliTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 2)
 
 
+class EmptyReasonTests(unittest.TestCase):
+    def test_empty_cache_says_refresh(self):
+        res = overhead.summarize(sqlite3.connect(':memory:'), since='2026-10-11T00:00:00+02:00')
+        self.assertEqual(res['harnesses'], {})
+        self.assertEqual(res['reason'], 'no_cached_data')
+        self.assertIn('--refresh', res['hint'])
+
+    def test_data_outside_window_says_so(self):
+        con = sqlite3.connect(':memory:')
+        overhead.save(con, 'claude', [sess('old', 10, 1, ts='2026-08-01T00:00:00Z'), sess('older', 10, 1, ts='2026-07-01T00:00:00Z')])
+        res = overhead.summarize(con, since='2026-10-11T00:00:00+02:00')
+        self.assertEqual(res['harnesses'], {})
+        self.assertEqual(res['reason'], 'no_sessions_in_window')
+        self.assertEqual(res['cached_sessions'], 2)
+        self.assertEqual(res['cached_first_ts'], {'earliest': '2026-07-01T00:00:00Z', 'latest': '2026-08-01T00:00:00Z'})
+        self.assertIn('--since', res['hint'])
+        self.assertNotIn('--refresh', res['hint'])
+
+    def test_harness_without_data_is_not_a_window_miss(self):
+        con = sqlite3.connect(':memory:')
+        overhead.save(con, 'claude', [sess('a', 10, 1)])
+        res = overhead.summarize(con, harness='pi')
+        self.assertEqual(res['reason'], 'no_cached_data')
+
+    def test_non_empty_result_has_no_reason(self):
+        con = sqlite3.connect(':memory:')
+        overhead.save(con, 'claude', [sess('a', 10, 1)])
+        self.assertNotIn('reason', overhead.summarize(con, since='2026-09-01T00:00:00+02:00'))
+
+    def test_offset_since_is_compared_as_instant(self):
+        con = sqlite3.connect(':memory:')
+        overhead.save(con, 'claude', [sess('a', 10, 1, ts='2026-10-10T22:30:00Z'), sess('b', 10, 1, ts='2026-10-10T21:59:59Z')])
+        got = overhead.summarize(con, since='2026-10-11T00:00:00+02:00')['harnesses']['claude']
+        self.assertEqual(got['sessions'], 1)
+
+    def test_cli_json_and_text_explain_empty_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'h.sqlite3'
+            from tokenatlas.history import History
+            with History(db) as history:
+                overhead.save(history.connection, 'claude', [sess('old', 10, 1, ts='2026-08-01T00:00:00Z')])
+                history.connection.commit()
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(main(['--db', str(db), 'overhead', '--json', '--since', '2026-10-11T00:00:00+02:00']), 0)
+            data = json.loads(out.getvalue())
+            self.assertEqual(data['harnesses'], {})
+            self.assertEqual(data['reason'], 'no_sessions_in_window')
+            out = io.StringIO()
+            with redirect_stdout(out):
+                main(['--db', str(db), 'overhead', '--since', '2026-10-11T00:00:00+02:00'])
+            self.assertIn('No overhead sessions start on or after', out.getvalue())
+            self.assertNotIn('run with --refresh', out.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()

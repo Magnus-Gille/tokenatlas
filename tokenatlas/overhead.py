@@ -20,6 +20,9 @@ CHARS_PER_TOKEN = 4
 HARNESSES = ('claude', 'codex', 'pi', 'opencode')
 RESIDUAL_LABEL = 'other: tools, first prompt, unlogged'
 COST_LABEL = 'API-equivalent at list price, estimate'
+NO_DATA_HINT = 'No overhead data; run with --refresh.'
+WINDOW_HINT = ('No overhead sessions start on or after {since}; --since filters on session start, so try an earlier --since '
+               '(see cached_first_ts for the range of cached session starts).')
 NOTE = ("Relative measures are usage-normalized. Token counts come from each provider's own tokenizer (Claude"
         ' 4.7+ counts about 30% more tokens for the same text), so compare percentages across providers rather than raw tokens.')
 _DDL = (
@@ -594,7 +597,19 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
             'relative': _relative(h, mine, joined, rec_costs),
             'recurring_cost': {'cost': cost if priced else None, 'assumptions': sorted(assumptions), 'sessions_priced': priced,
                                'sessions_unpriced': unpriced, 'label': COST_LABEL}}
+    if not result['harnesses']:
+        result.update(_empty_reason(db, harness, since))
     return result
+
+
+def _empty_reason(db, harness, since):
+    """Machine-readable explanation for an empty result: nothing cached (needs --refresh) or nothing in the --since window."""
+    n, first, last = db.execute('SELECT COUNT(*), MIN(first_ts), MAX(first_ts) FROM overhead_sessions WHERE ?1 IS NULL OR harness=?1',
+                                (harness,)).fetchone()
+    if not n:
+        return {'reason': 'no_cached_data', 'hint': NO_DATA_HINT}
+    return {'reason': 'no_sessions_in_window', 'cached_sessions': n, 'cached_first_ts': {'earliest': first, 'latest': last},
+            'hint': WINDOW_HINT.format(since=since)}
 
 
 def _n(value):
@@ -640,7 +655,7 @@ def render(result):
                              f"{x['subagents']['excluded']} excluded from the history join")
     lines += ['', f"Fixed context overhead; component tokens are estimates at {result['chars_per_token']} characters per token."]
     if not result['harnesses']:
-        lines.append('No overhead data; run with --refresh.')
+        lines.append(result.get('hint', NO_DATA_HINT))
     for h, r in result['harnesses'].items():
         f = r['floor']
         lines += ['', f"{h}: {r['sessions']} sessions ({r['subagent_sessions']} subagent); floor tokens n={f['n']} "
