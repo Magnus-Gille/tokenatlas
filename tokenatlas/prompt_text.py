@@ -13,6 +13,7 @@ from pathlib import Path
 from .provenance import local_file
 
 from .why import (
+    _read_text_lines,
     _CODEX_TURN_END, _codex_event_turn_id, _codex_user_event_identity, _explicit_turn_id,
     _first_text, _is_genuine_user_row, _mapping, _meta_text,
 )
@@ -69,17 +70,14 @@ def sanitize(text: object, limit: int = 200) -> str | None:
 
 
 def _json_rows(path: Path):
-    try:
-        with path.open(errors="replace") as handle:
-            for raw in handle:
-                try:
-                    value = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(value, dict):
-                    yield value
-    except OSError:
-        return
+    # Shared line reader: also decodes compressed (.zst) Codex rollouts; plain files read exactly as before.
+    for raw in _read_text_lines(path):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            yield value
 
 
 def _blocks_text(content: object) -> str:

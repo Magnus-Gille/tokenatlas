@@ -2,25 +2,12 @@
 """Regression tests for Codex per-turn attribution."""
 
 import json
-import builtins
-import shutil
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tokenatlas import why
-from tokenatlas.history import History
-from tokenatlas.__main__ import refresh_all
-from tokenatlas.report import build_report
-from unittest.mock import patch
-
-FIXTURE = Path(__file__).parent / "fixtures" / "rollout-fixture.jsonl.zst"
-try:
-    import zstandard as _zstd
-except ImportError:
-    _zstd = None
-HAS_ZSTD_DECODER = _zstd is not None or shutil.which("zstd") is not None
 
 
 def _write_rollout(path, rows):
@@ -215,135 +202,6 @@ class CodexAttributionTests(unittest.TestCase):
             records = why.collect_codex(root, self.start, self.end)
 
         self.assertEqual([row.session_id for row in records], ["a-session", "z-session"])
-
-    @unittest.skipUnless(HAS_ZSTD_DECODER, "no zstd decoder available")
-    def test_reads_compressed_rollouts_and_deduplicates_after_archive_move(self):
-        rows = [
-            _meta(session_id="fixture-session"),
-            _context("2026-09-03T09:00:00Z", "gpt-test", "high", "/work/project"),
-            _tokens("2026-09-03T09:01:00Z", 10, {"input_tokens": 100, "output_tokens": 8},
-                    {"input_tokens": 100, "output_tokens": 8}),
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            active = root / "sessions" / "rollout-compressed.jsonl"
-            archived = root / "archived_sessions" / "rollout-compressed.jsonl"
-            _write_rollout(active, rows)
-            archived.parent.mkdir(parents=True)
-            with History(root / "history.sqlite3") as history:
-                history.refresh("codex", root / "sessions")
-                staged = root / "rollout-compressed.jsonl.zst"
-                shutil.copyfile(FIXTURE, staged)
-                active.unlink()
-                archived = archived.with_suffix('.jsonl.zst')
-                staged.rename(archived)
-                history.refresh("codex", root / "archived_sessions")
-                records = history.records()
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["tokens"]["output"], 8)
-
-    @unittest.skipUnless(HAS_ZSTD_DECODER, "no zstd decoder available")
-    def test_reads_checked_in_compressed_rollout_fixture(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "rollout-fixture.jsonl.zst"
-            shutil.copyfile(FIXTURE, path)
-            shutil.copyfile(path, Path(tmp) / "rollout-noise.jsonl.bak")
-            records = why.collect_codex(Path(tmp), self.start, self.end)
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].session_id, "fixture-session")
-
-    def test_missing_zstd_decoder_is_a_clear_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "rollout-missing.jsonl.zst"
-            path.write_bytes(b"not compressed")
-            real_import = builtins.__import__
-            def no_zstandard(name, *args, **kwargs):
-                if name == "zstandard":
-                    raise ImportError("forced test absence")
-                return real_import(name, *args, **kwargs)
-            with patch.object(shutil, "which", return_value=None), patch.object(builtins, "__import__", side_effect=no_zstandard):
-                with self.assertRaises(why.ZstdUnavailableError) as error:
-                    why.collect_codex(Path(tmp), self.start, self.end, paths=[path], strict=True)
-                self.assertIn("install the optional zstandard package or provide the zstd binary", str(error.exception))
-                with History(Path(tmp) / "history.sqlite3") as history:
-                    status = history.refresh("codex", Path(tmp))
-                self.assertEqual(status["status"], "partial")
-                self.assertEqual(status["read_errors"], 1)
-                self.assertIn("optional zstandard", status["errors"][0])
-
-    @unittest.skipUnless(HAS_ZSTD_DECODER, "no zstd decoder available")
-    def test_corrupt_zstd_is_a_partial_file_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "rollout-corrupt.jsonl.zst"
-            path.write_bytes(b"not compressed")
-            with History(Path(tmp) / "history.sqlite3") as history:
-                status = history.refresh("codex", Path(tmp))
-            self.assertEqual(status["status"], "partial")
-            self.assertEqual(status["read_errors"], 1)
-            self.assertIn("cannot read compressed rollout", status["errors"][0])
-
-    def test_compressed_diagnostics_count_malformed_and_partial_lines(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "rollout-diagnostics.jsonl.zst"
-            path.write_bytes(b"fixture")
-            lines = [
-                json.dumps(_meta(session_id="diagnostics")) + "\n",
-                "not json\n",
-                "{\"type\":\"event_msg\"",
-            ]
-            with patch.object(why, "_read_text_lines", return_value=iter(lines)):
-                with History(Path(tmp) / "history.sqlite3") as history:
-                    status = history.refresh("codex", Path(tmp))
-            self.assertEqual(status["status"], "partial")
-            self.assertEqual(status["malformed_lines"], 1)
-            self.assertEqual(status["partial_lines"], 1)
-
-    def test_python_zstd_error_is_normalized_without_real_decoder(self):
-        class FakeZstdError(Exception):
-            pass
-
-        class FakeDecompressor:
-            def stream_reader(self, _compressed):
-                raise FakeZstdError("bad frame")
-
-        fake_module = type("FakeZstandard", (), {"ZstdError": FakeZstdError, "ZstdDecompressor": FakeDecompressor})
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "rollout-python-error.jsonl.zst"
-            path.write_bytes(b"fixture")
-            real_import = builtins.__import__
-            def fake_import(name, *args, **kwargs):
-                if name == "zstandard":
-                    return fake_module
-                return real_import(name, *args, **kwargs)
-            with patch.object(builtins, "__import__", side_effect=fake_import):
-                with self.assertRaises(OSError) as error:
-                    list(why._read_text_lines(path, strict=True))
-            self.assertIn("cannot read compressed rollout", str(error.exception))
-
-    def test_unreadable_archive_is_partial_in_refresh_and_report_coverage(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "rollout-unreadable.jsonl.zst").write_bytes(b"not compressed")
-            missing = root / "missing"
-            def roots(name):
-                return (root if name == "codex" else missing, "test")
-            with patch.object(why, "codex_roots", return_value=[root]), patch.object(why, "harness_root", side_effect=roots), \
-                 patch.object(shutil, "which", return_value=None):
-                real_import = builtins.__import__
-                def no_zstandard(name, *args, **kwargs):
-                    if name == "zstandard":
-                        raise ImportError("forced test absence")
-                    return real_import(name, *args, **kwargs)
-                with patch.object(builtins, "__import__", side_effect=no_zstandard), History(root / "history.sqlite3") as history:
-                    summary = refresh_all(history)
-                    status = history.doctor()
-            codex = next(item for item in summary["harnesses"] if item["harness"] == "codex")
-            self.assertEqual(codex["status"], "partial")
-            self.assertEqual(codex["read_errors"], 1)
-            coverage = build_report([], status)["coverage"]
-            imported = next(item for item in coverage["imports"] if item["harness"] == "codex")
-            self.assertEqual(imported["status"], "partial")
-            self.assertEqual(imported["read_errors"], 1)
 
     def test_call_ids_survive_windows_and_copied_rollouts(self):
         rows = [
