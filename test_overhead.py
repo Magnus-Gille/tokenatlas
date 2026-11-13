@@ -570,6 +570,17 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data['harnesses'], {})
             self.assertIn('No overhead tables', data['reason'])
 
+    def test_text_mode_prints_the_no_overhead_tables_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'state' / 'h.sqlite3'
+            from tokenatlas.history import History
+            with History(db):
+                pass
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(main(['--db', str(db), 'overhead']), 0)
+            self.assertIn('No overhead tables', out.getvalue())
+
     def test_old_overhead_table_defaults_missing_unidentified_column(self):
         con = sqlite3.connect(':memory:')
         con.executescript('CREATE TABLE overhead_sessions (harness TEXT, session TEXT, is_subagent INTEGER, first_ts TEXT, floor_tokens INTEGER, floor_input INTEGER, floor_cache_write INTEGER, floor_cache_read INTEGER, calls INTEGER); CREATE TABLE overhead_items (harness TEXT, session TEXT, kind TEXT, chars INTEGER); CREATE TABLE overhead_skill_uses (harness TEXT, session TEXT, name TEXT, chars INTEGER, ts TEXT, source TEXT);')

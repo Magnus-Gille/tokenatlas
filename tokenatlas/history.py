@@ -470,6 +470,21 @@ def _decode(row):
     return item
 
 
+BUSY_TIMEOUT_MS = 120_000  # a writer waits this long for another writer; readers do not block it under WAL
+
+
+def is_lock_error(exc):
+    """True for SQLite busy/locked errors. Python 3.11+ gives the result code; 3.10 only has the message."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, 'sqlite_errorcode', None)
+    if code is not None:
+        return code & 0xFF in (sqlite3.SQLITE_BUSY if hasattr(sqlite3, 'SQLITE_BUSY') else 5,
+                               sqlite3.SQLITE_LOCKED if hasattr(sqlite3, 'SQLITE_LOCKED') else 6)
+    text = str(exc).lower()
+    return 'locked' in text or 'busy' in text
+
+
 class History:
     def __init__(self, path, read_only=False):
         self.path = Path(path).expanduser().absolute()
@@ -483,13 +498,18 @@ class History:
             info = self.path.stat()
             if not _owned_by_current_user(info) or not _has_private_permissions(info):
                 raise ValueError('history database must be a regular file owned by this user with permissions 0600')
-            c = sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True, timeout=30, isolation_level=None)
+            # Read-write open (never creates the file) with query_only: a hot journal or WAL left by a killed writer can
+            # still be recovered, which a mode=ro open cannot do. No BEGIN IMMEDIATE, so a reader takes only shared locks.
+            c = sqlite3.connect(self.path.as_uri() + '?mode=rw', uri=True, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
             c.row_factory = sqlite3.Row
-            c.execute('PRAGMA busy_timeout=30000')
+            c.execute(f'PRAGMA busy_timeout={BUSY_TIMEOUT_MS}')
             self.connection = c
             self._strings, self._values = {}, {}
             try:
+                c.execute('PRAGMA query_only=ON')
                 version = c.execute('PRAGMA user_version').fetchone()[0]
+                if version == 0:
+                    raise ValueError('history database is empty or not initialised; run tokenatlas refresh first')
                 if version == 1:
                     raise ValueError('history schema 1 requires migration; run tokenatlas refresh before using read-only commands')
                 if version != SCHEMA_VERSION:
@@ -499,17 +519,20 @@ class History:
                 missing_tables = required_tables - present_tables
                 missing_columns = set()
                 if 'files' in present_tables:
+                    have_files = {row[1] for row in c.execute('PRAGMA table_info(files)')}
                     missing_columns.update('files.' + name for name in ('id', 'harness', 'path', 'root', 'fingerprint', 'diagnostics', 'origin')
-                                           if name not in {row[1] for row in c.execute('PRAGMA table_info(files)')})
+                                           if name not in have_files)
                 if 'observations' in present_tables:
-                    observation_columns = set(COLUMNS)
-                    missing_columns.update('observations.' + name for name in observation_columns
-                                           if name not in {row[1] for row in c.execute('PRAGMA table_info(observations)')})
+                    have_observations = {row[1] for row in c.execute('PRAGMA table_info(observations)')}
+                    missing_columns.update('observations.' + name for name in COLUMNS if name not in have_observations)
                 if missing_tables or missing_columns:
                     missing = ', '.join(sorted((*missing_tables, *missing_columns)))
                     raise ValueError(f'history schema is incomplete (missing {missing}); run tokenatlas refresh to migrate it')
-                self.machine = c.execute("SELECT value FROM meta WHERE key='machine'").fetchone()[0]
-            except Exception:
+                found = c.execute("SELECT value FROM meta WHERE key='machine'").fetchone()
+                if not found:
+                    raise ValueError('history database has no machine id; run tokenatlas refresh to repair it')
+                self.machine = found[0]
+            except BaseException:
                 c.close()
                 self.connection = None
                 raise
@@ -526,12 +549,13 @@ class History:
                 raise ValueError('history database must be a regular file owned by this user')
             if not _has_private_permissions(info):
                 raise ValueError('history database permissions must be 0600')
-        c = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
+        c = sqlite3.connect(str(self.path), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
         c.row_factory = sqlite3.Row
         self.connection = c
-        c.execute('PRAGMA busy_timeout=30000')
+        c.execute(f'PRAGMA busy_timeout={BUSY_TIMEOUT_MS}')
         self._strings, self._values = {}, {}
         try:
+            self._enable_wal(c)
             c.execute('BEGIN IMMEDIATE')
             version = c.execute('PRAGMA user_version').fetchone()[0]
             if version not in (0, 1, SCHEMA_VERSION):
@@ -577,6 +601,21 @@ class History:
             raise
         self.machine = c.execute("SELECT value FROM meta WHERE key='machine'").fetchone()[0]
         return self
+
+    @staticmethod
+    def _enable_wal(c):
+        """Switch the file to WAL (persistent), so readers never block the writer and the writer never blocks readers.
+
+        Converting needs exclusive access, so it is tried without waiting: while another connection is open the file
+        simply stays in its current mode and the next write open tries again."""
+        c.execute('PRAGMA busy_timeout=0')
+        try:
+            c.execute('PRAGMA journal_mode=WAL').fetchone()
+        except sqlite3.OperationalError as exc:
+            if not is_lock_error(exc):
+                raise
+        finally:
+            c.execute(f'PRAGMA busy_timeout={BUSY_TIMEOUT_MS}')
 
     @property
     def revision(self):
@@ -816,8 +855,11 @@ class History:
             target = sqlite3.connect(tmp)
             try:
                 self.connection.backup(target)
+                target.execute('PRAGMA journal_mode=DELETE').fetchone()  # one self-contained file: no -wal/-shm to ship
             finally:
                 target.close()
+                for suffix in ('-wal', '-shm'):  # some SQLite builds keep these after close; the snapshot ships alone
+                    Path(tmp + suffix).unlink(missing_ok=True)
             os.chmod(tmp, 0o600)
             os.replace(tmp, out)
         except BaseException:
@@ -838,7 +880,7 @@ class History:
             shutil.copyfile(snapshot, copy)
             os.chmod(copy, 0o600)
             try:
-                raw = sqlite3.connect(copy.as_uri() + '?mode=ro', uri=True)  # read-only: no attacker trigger can fire
+                raw = sqlite3.connect(copy.as_uri() + '?mode=ro&immutable=1', uri=True)  # read-only: no attacker trigger can fire; immutable: a lone WAL-mode copy has no -shm to open
                 try:
                     raw.execute('PRAGMA trusted_schema=OFF')
                     active = raw.execute("SELECT type FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1").fetchone()

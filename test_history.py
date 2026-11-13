@@ -1,5 +1,8 @@
+import contextlib
+import io
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -49,26 +52,158 @@ def write_claude(path, request='req', output=5):
 
 
 class HistoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        self.db=self.root/'state/history.sqlite3'
 
-    def test_read_only_refresh_waits_for_a_long_reader_then_succeeds(self):
+
+    # --- TOKEN-190: concurrent commands -------------------------------------------------------------------------
+
+    CHILD_REFRESH = ("import sys\nfrom tokenatlas.history import History\n"
+                     "with History(sys.argv[1]) as h:\n"
+                     " print('ready', flush=True)\n"
+                     " print(h.refresh('claude', sys.argv[2])['status'], flush=True)\n")
+
+    def _spawn(self, code, *args, stdin=None):
+        proc = subprocess.Popen([sys.executable, '-c', code, *map(str, args)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=stdin, text=True, cwd=str(Path(__file__).parent))
+        self.addCleanup(self._reap, proc)
+        return proc
+
+    @staticmethod
+    def _reap(proc):
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()
+
+    def _seeded(self):
         source = self.root / 'logs/a.jsonl'
         write_claude(source, 'first')
         with History(self.db) as history:
             history.refresh('claude', source.parent)
         write_claude(self.root / 'logs/b.jsonl', 'second')
+        return source.parent
+
+    def test_write_open_switches_the_history_to_wal(self):
+        with History(self.db) as history:
+            self.assertEqual(history.connection.execute('PRAGMA journal_mode').fetchone()[0], 'wal')
+        with closing(sqlite3.connect(self.db)) as raw:
+            self.assertEqual(raw.execute('PRAGMA journal_mode').fetchone()[0], 'wal')
+
+    def test_refresh_proceeds_while_a_reader_holds_a_long_read_transaction(self):
+        logs = self._seeded()
         with History(self.db, read_only=True) as reader:
             reader.connection.execute('BEGIN')
-            reader.connection.execute('SELECT count(*) FROM observations').fetchone()
-            code = "import sys\nfrom tokenatlas.history import History\n" \
-                   "with History(sys.argv[1]) as h:\n print(h.refresh('claude', sys.argv[2])['status'])\n"
-            proc = subprocess.Popen([sys.executable, '-c', code, str(self.db), str(source.parent)],
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            time.sleep(0.2)
-            self.assertIsNone(proc.poll(), 'writer should wait while the read transaction is held')
+            before = reader.connection.execute('SELECT count(*) FROM observations').fetchone()[0]
+            proc = self._spawn(self.CHILD_REFRESH, self.db, logs)
+            self.assertEqual(proc.stdout.readline().strip(), 'ready')  # the child is about to refresh while we still read
+            self.assertEqual(proc.stdout.readline().strip(), 'ok')  # it finishes without the reader releasing anything
+            self.assertEqual(reader.connection.execute('SELECT count(*) FROM observations').fetchone()[0], before)
             reader.connection.rollback()
-            out, err = proc.communicate(timeout=5)
-            self.assertEqual(proc.returncode, 0, err)
-            self.assertIn('ok', out)
+            self.assertEqual(proc.wait(timeout=120), 0, proc.stderr.read())
+            self.assertEqual(reader.connection.execute('SELECT count(*) FROM observations').fetchone()[0], before + 1)
+
+    def test_rollback_journal_writer_waits_for_the_reader_to_release(self):
+        """The fallback for a file that could not be converted to WAL: the writer waits, then succeeds."""
+        logs = self._seeded()
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as raw:
+            raw.execute('PRAGMA journal_mode=DELETE')
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as reader:
+            reader.execute('BEGIN')
+            reader.execute('SELECT count(*) FROM observations').fetchone()
+            proc = self._spawn(self.CHILD_REFRESH.replace('with History', "print('ready', flush=True)\nwith History", 1)
+                               .replace(" print('ready', flush=True)\n", '', 1), self.db, logs)
+            self.assertEqual(proc.stdout.readline().strip(), 'ready')  # signalled just before the open that must now wait
+            deadline = time.monotonic() + 1.5  # it cannot commit while we hold the read lock
+            while time.monotonic() < deadline:
+                self.assertIsNone(proc.poll(), 'writer finished while the reader still held its read lock')
+                time.sleep(0.05)
+            reader.rollback()
+            self.assertEqual(proc.wait(timeout=120), 0, proc.stderr.read())
+
+    def _plant_hot_journal(self, name):
+        """Copy the database and its journal while a spilled write transaction is open: what a SIGKILLed writer leaves."""
+        hot = self.root / name / 'history.sqlite3'
+        hot.parent.mkdir()
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as raw:
+            raw.execute('PRAGMA cache_size=10')
+            raw.execute('PRAGMA cache_spill=1')
+            raw.execute('BEGIN')
+            for _ in range(300):  # dirty pages spill to the database file, so the journal is needed for recovery
+                raw.execute('INSERT INTO strings(value) VALUES (hex(randomblob(3000)))')
+            shutil.copy(self.db, hot)
+            shutil.copy(str(self.db) + '-journal', str(hot) + '-journal')
+            raw.rollback()
+        os.chmod(hot, 0o600)
+        return hot
+
+    def test_read_only_recovers_a_hot_rollback_journal_from_a_killed_writer(self):
+        self._seeded()
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as raw:
+            raw.execute('PRAGMA journal_mode=DELETE')
+            count = raw.execute('SELECT count(*) FROM observations').fetchone()[0]
+        with self.assertRaises(sqlite3.OperationalError):  # a mode=ro open (the first version of this fix) cannot recover it
+            with closing(sqlite3.connect(self._plant_hot_journal('old').as_uri() + '?mode=ro', uri=True)) as old:
+                old.execute('SELECT count(*) FROM observations').fetchone()
+        with History(self._plant_hot_journal('hot'), read_only=True) as reader:
+            self.assertEqual(reader.connection.execute('SELECT count(*) FROM observations').fetchone()[0], count)
+            self.assertEqual(reader.connection.execute('SELECT count(*) FROM strings WHERE length(value)=6000').fetchone()[0], 0)
+
+    def test_read_only_survives_a_killed_wal_writer(self):
+        logs = self._seeded()
+        proc = self._spawn(self.CHILD_REFRESH.replace("print(h.refresh('claude', sys.argv[2])['status'], flush=True)",
+                                                       "h.refresh('claude', sys.argv[2]); h.connection.execute('BEGIN IMMEDIATE')"
+                                                       ".execute(\"UPDATE meta SET value='x' WHERE key='revision'\")"
+                                                       "; import os; print('dirty', flush=True); os._exit(0)"), self.db, logs)
+        self.assertEqual(proc.stdout.readline().strip(), 'ready')
+        self.assertEqual(proc.stdout.readline().strip(), 'dirty')
+        proc.wait(timeout=60)
+        with History(self.db, read_only=True) as reader:
+            self.assertGreaterEqual(reader.revision, 1)  # the uncommitted 'x' never became visible
+
+    def test_read_only_does_not_migrate_and_gives_actionable_errors(self):
+        self.db.parent.mkdir(parents=True)
+        self.db.touch(mode=0o600)
+        with self.assertRaisesRegex(ValueError, 'not initialised.*refresh'):
+            with History(self.db, read_only=True):
+                pass
+        self.assertEqual(self.db.stat().st_size, 0)  # a reader never creates the schema
+        with History(self.db) as history:
+            history.connection.execute("DELETE FROM meta WHERE key='machine'")
+        with self.assertRaisesRegex(ValueError, 'no machine id.*refresh'):
+            with History(self.db, read_only=True):
+                pass
+
+    def test_read_only_connection_cannot_write(self):
+        with History(self.db):
+            pass
+        with History(self.db, read_only=True) as reader:
+            with self.assertRaises(sqlite3.OperationalError):
+                reader.connection.execute("INSERT INTO meta VALUES ('x','y')")
+
+    def test_is_lock_error_uses_the_result_code_and_falls_back_to_the_message(self):
+        from tokenatlas.history import is_lock_error
+        self.assertTrue(is_lock_error(sqlite3.OperationalError('database is locked')))
+        self.assertTrue(is_lock_error(sqlite3.OperationalError('database table is locked: x')))
+        self.assertFalse(is_lock_error(sqlite3.OperationalError('disk I/O error')))
+        self.assertFalse(is_lock_error(ValueError('database is locked')))
+        coded = sqlite3.OperationalError('opaque')
+        coded.sqlite_errorcode = 5 | (1 << 8)  # SQLITE_BUSY_RECOVERY
+        self.assertTrue(is_lock_error(coded))
+        other = sqlite3.OperationalError('database is locked')  # a message alone does not override a known other code
+        other.sqlite_errorcode = 10
+        self.assertFalse(is_lock_error(other))
+
+    def test_snapshot_is_one_self_contained_rollback_mode_file(self):
+        out = self.root / 'snap.sqlite3'
+        with History(self.db) as history:
+            history.snapshot(out)
+        with closing(sqlite3.connect(out)) as raw:
+            self.assertEqual(raw.execute('PRAGMA journal_mode').fetchone()[0], 'delete')
+        self.assertEqual(sorted(p.name for p in self.root.glob('snap.sqlite3*')), ['snap.sqlite3'])
+
 
     def test_read_only_rejects_incomplete_schema_with_migration_hint(self):
         with History(self.db) as history:
@@ -80,11 +215,6 @@ class HistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'schema is incomplete.*files.origin.*refresh'):
             with History(self.db, read_only=True):
                 pass
-    def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root=Path(self.tmp.name)
-        self.db=self.root/'state/history.sqlite3'
 
     def test_environment_is_normalized_and_roundtrips_through_schema_two_storage(self):
         item = normalize(record(provider='berget', environment=BERGET_ENVIRONMENT), 'm-test')
@@ -1391,3 +1521,59 @@ class PromptProvenanceTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class ConcurrentCliTests(unittest.TestCase):
+    """TOKEN-190: analytics commands finish while another connection holds the write lock."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.db = self.root / 'state/history.sqlite3'
+        source = self.root / 'logs/a.jsonl'
+        write_claude(source, 'first')
+        with History(self.db) as history:
+            history.refresh('claude', source.parent)
+        self.env = {**os.environ, 'HOME': str(self.root / 'home'), 'XDG_STATE_HOME': str(self.root / 'xdg'),
+                    'XDG_CONFIG_HOME': str(self.root / 'cfg')}
+
+    def run_cli(self, *argv, **kw):
+        return subprocess.run([sys.executable, '-m', 'tokenatlas', '--db', str(self.db), *argv], capture_output=True, text=True,
+                              cwd=str(Path(__file__).parent), env=self.env, timeout=180, **kw)
+
+    def test_insights_top_and_overhead_complete_while_a_writer_holds_begin_immediate(self):
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as writer:
+            writer.execute('PRAGMA cache_size=10')
+            writer.execute('PRAGMA cache_spill=1')
+            writer.execute('BEGIN IMMEDIATE')
+            for _ in range(300):  # enough dirty pages to spill: under a rollback journal this takes the exclusive lock
+                writer.execute('INSERT INTO strings(value) VALUES (hex(randomblob(3000)))')
+            for argv in (('insights', '--days', '30', '--json'), ('top', '--json'), ('overhead', '--json'),
+                         ('report', '--html', str(self.root / 'r.html'), '--private')):
+                done = self.run_cli(*argv)
+                self.assertEqual(done.returncode, 0, f'{argv}: {done.stderr}')
+                self.assertNotIn('locked', done.stderr)
+            writer.rollback()
+
+    def test_lock_error_is_reported_under_database_with_exit_75(self):
+        from tokenatlas.__main__ import main
+        err = io.StringIO()
+        with patch('tokenatlas.history.History.__enter__', side_effect=sqlite3.OperationalError('database is locked')), \
+                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+            main(['--db', str(self.db), 'insights', '--json'])
+        self.assertEqual(raised.exception.code, 75)
+        self.assertTrue(err.getvalue().startswith('database: database is locked'), err.getvalue())
+        self.assertNotIn('usage:', err.getvalue())
+
+    def test_statusline_never_opens_the_history(self):
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as raw:
+            raw.execute('PRAGMA journal_mode=DELETE')
+            raw.execute('BEGIN EXCLUSIVE')
+            code = ("import sys, tokenatlas.__main__ as m\n"
+                    "rc = m.main(['--db', sys.argv[1], 'statusline'])\n"
+                    "assert 'tokenatlas.history' not in sys.modules, 'statusline imported the history'\n")
+            done = subprocess.run([sys.executable, '-c', code, str(self.db)], input='{}', capture_output=True, text=True,
+                                  cwd=str(Path(__file__).parent), env=self.env, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            raw.rollback()

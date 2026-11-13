@@ -372,7 +372,7 @@ def _main(argv=None):
     done=_statusline_dispatch(sys.argv[1:] if argv is None else argv)
     if done is not None:return done
     from tokenatlas import insights, limits, pricing, prompt_store, prompts, quota_share, sessions, subscriptions, why
-    from tokenatlas.history import History, summarize
+    from tokenatlas.history import History, is_lock_error, summarize
     from tokenatlas.report import build_report, coverage_key, read_report_state, render_report, report_state, write_report
     if Path(sys.argv[0]).name.lower() in ('energy-monitor','energy-monitor.exe','energy-monitor-script.py'):
         print('energy-monitor is deprecated; use tokenatlas',file=sys.stderr)
@@ -904,7 +904,7 @@ def _main(argv=None):
         print(json.dumps(result,indent=2,sort_keys=True))
         return 0 if args.command!='refresh' or result['status']=='ok' else 2
     except (OSError,ValueError,sqlite3.Error,ZoneInfoNotFoundError) as exc:
-        if isinstance(exc, sqlite3.OperationalError) and any(word in str(exc).lower() for word in ('locked', 'busy')):
+        if is_lock_error(exc):
             parser.exit(75, f'database: {terminal_safe(exc)}\n')
         parser.exit(2,f'usage: {terminal_safe(exc)}\n')
 

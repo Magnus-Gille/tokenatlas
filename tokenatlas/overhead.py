@@ -617,6 +617,8 @@ def _by_currency(values, fmt):
 
 def render(result):
     lines = [NOTE, '']
+    if result.get('reason') and not result['harnesses']:
+        lines += [result['reason'], '']
     rows = sorted(((h, r['relative']) for h, r in result['harnesses'].items()),
                   key=lambda i: (i[1]['fixed_share_of_input']['pct'] is None, i[1]['fixed_share_of_input']['pct'] or 0, i[0]))
     if rows:

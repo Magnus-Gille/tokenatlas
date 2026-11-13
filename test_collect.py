@@ -109,6 +109,16 @@ class CollectTest(CollectBase):
         self.assertEqual(len(attempts), 3)
         self.assertEqual(pause.call_count, 2)
 
+    def test_cli_step_with_the_lock_exit_code_is_retried_and_the_skip_is_logged(self):
+        from tokenatlas import collect
+        codes = iter([collect.LOCK_EXIT, collect.LOCK_EXIT, 0])
+        lines = []
+        with mock.patch.object(collect.time, 'sleep'), mock.patch.object(collect, 'log', lines.append):
+            self.assertEqual(collect._retry_busy(lambda: next(codes), 'report', retries=3, delay=0), 0)
+            self.assertEqual(collect._retry_busy(lambda: collect.LOCK_EXIT, 'top', retries=2, delay=0), collect.LOCK_EXIT)
+        self.assertTrue(any('report: database busy; retry 2/3' in line for line in lines), lines)
+        self.assertTrue(any('top: database lock error after 2 attempts' in line for line in lines), lines)
+
     def test_non_lock_operational_error_keeps_its_diagnostic(self):
         from tokenatlas import collect
         lines = []
@@ -117,11 +127,40 @@ class CollectTest(CollectBase):
         self.assertTrue(any('OperationalError: disk I/O error' in line for line in lines))
         self.assertFalse(any('lock error' in line for line in lines))
 
+    def test_lock_error_is_logged_as_such(self):
+        from tokenatlas import collect
+        lines = []
+        with mock.patch.object(collect, 'log', lines.append):
+            self.assertEqual(collect._step('refresh', lambda: (_ for _ in ()).throw(sqlite3.OperationalError('database is locked'))), 1)
+        self.assertTrue(any('refresh: database lock error: database is locked' in line for line in lines), lines)
+
+    def test_revision_check_failure_skips_top_but_still_builds_the_report(self):
+        """A ValueError from the read-only open (or any other database error) must not abandon the rest of the run."""
+        from argparse import Namespace
+        from tokenatlas import collect, history
+        (self.state / 'top-prompts.json').write_text('{"version":2,"k":3,"by":"cost","entries":[]}\n')
+        (self.state / 'top-prompts.json').chmod(0o600)
+        real = history.History.__enter__
+        def enter(self_):
+            if self_.read_only:
+                raise ValueError('history schema is incomplete (missing files.origin); run tokenatlas refresh to migrate it')
+            return real(self_)
+        steps = []
+        args = Namespace(db=self.state / 'history.sqlite3', lang='en', no_report=False, remote=[], remote_sync=None, sync_timeout=60)
+        with mock.patch.object(history.History, '__enter__', enter), mock.patch.object(collect, 'log', steps.append), \
+                mock.patch.dict(os.environ, {'REMOTE_HOSTS_OVERRIDE': '', 'HOME': str(self.home)}):
+            rc = collect._run(args)
+        text = '\n'.join(steps)
+        self.assertEqual(rc, 1, text)
+        self.assertIn('top: skipped: revision check failed: ValueError', text)
+        self.assertIn('report exit=', text)
+
     def test_top_revision_error_classifies_only_busy_errors_as_locks(self):
         from tokenatlas import collect
         self.assertTrue(collect._is_busy_error(sqlite3.OperationalError('database is locked')))
         self.assertTrue(collect._is_busy_error(sqlite3.OperationalError('database is busy')))
         self.assertFalse(collect._is_busy_error(sqlite3.OperationalError('disk I/O error')))
+
     def test_no_hosts_runs_refresh_and_report_only(self):
         proc = self.collect()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)

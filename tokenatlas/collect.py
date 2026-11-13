@@ -17,27 +17,31 @@ PACKAGED_SYNC=Path(__file__).with_name('remote_sync.sh')
 GRACE=5  # seconds between TERM and KILL of the sync group; longer than remote_sync.sh's own 2 s
 POLL=0.2  # seconds between checks for a noted signal while the sync runs
 BUSY_RETRIES=3
-BUSY_DELAY=0.5
+BUSY_DELAY=5.0  # SQLite already waits up to history.BUSY_TIMEOUT_MS inside each attempt; this is the pause between attempts
+LOCK_EXIT=75  # the CLI's exit code for a database lock (see __main__)
 
 
 def _is_busy_error(exc):
-    text = str(exc).lower()
-    return 'locked' in text or 'busy' in text
+    from tokenatlas.history import is_lock_error
+    return is_lock_error(exc)
 
 
-def _retry_busy(fn, label='step', retries=BUSY_RETRIES, delay=BUSY_DELAY):
-    """Run a database step again when SQLite reports a transient busy/locked writer."""
+def _retry_busy(fn,label='step',retries=BUSY_RETRIES,delay=BUSY_DELAY):
+    """Run fn() again when SQLite reports a busy/locked database, either as an exception or as the CLI's lock exit code."""
     for attempt in range(retries):
-        try:
-            return fn()
+        try:rc=fn()
         except sqlite3.OperationalError as exc:
-            if not _is_busy_error(exc):
-                raise
-            if attempt + 1 == retries:
+            if not _is_busy_error(exc):raise
+            if attempt+1==retries:
                 log(f'{label}: database lock error after {retries} attempts: {terminal_safe(exc)}')
                 raise
-            log(f'{label}: database busy; retry {attempt + 2}/{retries} after {delay:.1f}s')
-            time.sleep(delay)
+        else:
+            if rc!=LOCK_EXIT:return rc
+            if attempt+1==retries:
+                log(f'{label}: database lock error after {retries} attempts (exit {LOCK_EXIT})')
+                return rc
+        log(f'{label}: database busy; retry {attempt+2}/{retries} after {delay:.1f}s')
+        time.sleep(delay)
 
 
 def log(msg):
@@ -64,14 +68,8 @@ def _step(name,fn):
     with progress.step(name[:1].upper()+name[1:]) as shown:  # a terminal shows the step live; the log line below is unchanged
         try:rc=fn()
         except SystemExit as exc:rc=exc.code if isinstance(exc.code,int) else 1
-        except sqlite3.OperationalError as exc:
-            if _is_busy_error(exc):
-                log(f'{name}: database locked; retrying is handled by collect around write steps')
-            else:
-                log(f'{name}: {type(exc).__name__}: {terminal_safe(exc)}')
-            rc=1
         except Exception as exc:
-            log(f'{name}: {type(exc).__name__}: {terminal_safe(exc)}');rc=1
+            log(f'{name}: {"database lock error" if _is_busy_error(exc) else type(exc).__name__}: {terminal_safe(exc)}');rc=1
         shown.failed=bool(rc)
     log(f'{name} exit={rc} ({time.monotonic()-start:.1f}s)')
     return rc
@@ -187,39 +185,31 @@ def _run(args):
         for name in ('SIGTERM','SIGINT','SIGHUP'):
             if hasattr(signal,name):signal.signal(getattr(signal,name),_on_signal)
         def refresh():
-            try:
-                def write_refresh():
-                    with History(db) as history:result=refresh_all(history)
-                    return 0 if result['status']=='ok' else 2
-                return _retry_busy(write_refresh, 'refresh')
-            except sqlite3.OperationalError as exc:
-                if _is_busy_error(exc):
-                    return 1
-                raise
+            def write_refresh():
+                with History(db) as history:result=refresh_all(history)
+                return 0 if result['status']=='ok' else 2
+            return _retry_busy(write_refresh,'refresh')
         def report():  # at most one build an hour while only the data changes (an option or privacy change always rebuilds)
-            return lambda:_quiet(main,'--db',str(db),'report','--html',str(state/'report.html'),'--private','--if-changed','--max-age','1h','--lang',args.lang)
+            return lambda:_retry_busy(lambda:_quiet(main,'--db',str(db),'report','--html',str(state/'report.html'),'--private','--if-changed','--max-age','1h','--lang',args.lang),'report')
         failed=_step('refresh',refresh)!=0
         if prompt_store.store_path(db).exists():
             choice=_kept_choice(db)
             if choice is None:log(f'top: skipped: {prompt_store.store_path(db)} has no valid recorded k/by; choose one with tokenatlas top --keep-text -n N (or --forget-text)');failed=True
             else:
                 def top_revision():
-                    with History(db, read_only=True) as history:
-                        return history.revision, history.revision_token, history.machine
+                    with History(db,read_only=True) as history:
+                        return history.revision,history.revision_token,history.machine
                 try:
-                    current_revision, history_token, machine = _retry_busy(top_revision, 'top revision')
-                    from tokenatlas import budget, pricing
-                    prices = budget.table_id(pricing.load_prices())
-                    if _top_up_to_date(db, current_revision, history_token, machine, prices):
-                        log('top: skipped: history revision and stored choice are unchanged')
-                    else:
-                        failed|=_step('top',lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice))!=0
-                except sqlite3.OperationalError as exc:
+                    current_revision,history_token,machine=_retry_busy(top_revision,'top revision')
+                    from tokenatlas import budget,pricing
+                    prices=budget.table_id(pricing.load_prices())
+                    up_to_date=_top_up_to_date(db,current_revision,history_token,machine,prices)
+                except (sqlite3.Error,ValueError,OSError) as exc:
                     failed=True
-                    if _is_busy_error(exc):
-                        log('top: skipped: database lock prevented the revision check')
-                    else:
-                        log(f'top: skipped: database revision check failed: {type(exc).__name__}: {terminal_safe(exc)}')
+                    log(f'top: skipped: revision check failed: {"database lock error" if _is_busy_error(exc) else type(exc).__name__}: {terminal_safe(exc)}')
+                else:
+                    if up_to_date:log('top: skipped: history revision and stored choice are unchanged')
+                    else:failed|=_step('top',lambda:_retry_busy(lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice),'top'))!=0
         if not args.no_report:failed|=_step('report',report())!=0
         hosts=_hosts(args,state)
         if hosts:

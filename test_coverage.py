@@ -167,7 +167,7 @@ class SnapshotImportTests(unittest.TestCase):
         link = self.root / 'link.sqlite3'; link.symlink_to(self.remote)
         self.assertEqual(run('--db', str(self.remote), 'snapshot', str(link))[0], 2)
         with History(self.remote) as h: self.assertEqual(h.records(), before)
-        self.assertEqual([p.name for p in self.remote.parent.iterdir()], ['history.sqlite3'])
+        self.assertEqual([p.name for p in self.remote.parent.iterdir() if not p.name.endswith(('-wal', '-shm'))], ['history.sqlite3'])  # WAL sidecars belong to the database
 
     def imp(self, snap=None, label='pi:huginmunin.local'):
         return run('--db', str(self.local), 'import', str(snap or self.snap), '--label', label)
