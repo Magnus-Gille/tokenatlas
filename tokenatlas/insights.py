@@ -174,10 +174,10 @@ def cost_facts(records, table, start=None, end=None, big_turn=BIG_TURN, name=Non
         key = (provider, model)
         group = unpriced_groups.setdefault(key, {'requests': 0, 'tokens': 0})
         group['requests'] += 1
-        tokens = r.get('tokens') or {}
-        # reasoning is a subset of output in every supported history format;
-        # do not count it a second time when ranking unpriced models.
-        group['tokens'] += sum(tokens.get(part) or 0 for part in PARTS)
+        if res.get('explicit_unpriced'):
+            group['explicit_reason'] = res['reason']
+        # reasoning is a subset of output in every supported history format and is not counted again
+        group['tokens'] += pricing.token_volume(r)
     unpriced_models = [dict(name=name(p, m), **g)
                        for (p, m), g in sorted(unpriced_groups.items(), key=lambda kv: (-kv[1]['tokens'], -kv[1]['requests'], kv[0]))[:5]]
     ctx['scope'] = scope
@@ -518,6 +518,10 @@ _AGENT_NAMES = {'claude': 'Claude', 'codex': 'Codex', 'pi': 'Pi', 'opencode': 'O
 _LIMIT_NAMES = {'five_hour': '5-hour limit', 'weekly': 'weekly limit'}
 
 
+def _unpriced_label(m):
+    return f"{m['name']} ({m['requests']:,} requests" + (', explicitly unpriced' if m.get('explicit_reason') else '') + ')'
+
+
 def _lines(f):
     v, i = f['values'], f['id']
     lb = '≥' if v['lower_bound'] else ''
@@ -529,7 +533,7 @@ def _lines(f):
             out.append(f"other ({o['models']} models): {u(o['cost'])} ({_pct(o['share'])}), {_prq(o['priced_requests'])}")
         return out + [f"priced cost: {u(v['priced_cost'])} over {_prq(v['priced_requests'])}",
                       f"without a complete USD list price: {v['unpriced_requests']:,} of {_rq(v['requests'])} ({_pct(v['unpriced_share'])})"] + \
-               (["largest unpriced models: " + ', '.join(f"{m['name']} ({m['requests']:,} requests)" for m in v.get('unpriced_models', ())) ] if v.get('unpriced_models') else [])
+               (["largest unpriced models: " + ', '.join(_unpriced_label(m) for m in v.get('unpriced_models', ())) ] if v.get('unpriced_models') else [])
     if i == 'price_comparison':
         out = []
         for m in v['models']:
@@ -540,12 +544,12 @@ def _lines(f):
         out = [f"{p['part'].replace('_', ' ')}: {u(p['cost'])} ({_pct(p['share'])})" for p in v['parts']] + [f"priced cost: {u(v['priced_cost'])}",
                f"without a complete USD list price: {v['unpriced_requests']:,} of {_rq(v['requests'])} ({_pct(v['unpriced_share'])})"]
         if v.get('unpriced_models'):
-            out.append("largest unpriced models: " + ', '.join(f"{m['name']} ({m['requests']:,} requests)" for m in v['unpriced_models']))
+            out.append("largest unpriced models: " + ', '.join(_unpriced_label(m) for m in v['unpriced_models']))
         return out
     if i == 'unpriced_coverage':
         return [f"complete USD list price: {v['priced_requests']:,} of {_rq(v['requests'])}",
                 f"without a complete USD list price: {v['unpriced_requests']:,} of {_rq(v['requests'])} ({_pct(v['unpriced_share'])})",
-                "largest unpriced models: " + ', '.join(f"{m['name']} ({m['requests']:,} requests)" for m in v['unpriced_models'])]
+                "largest unpriced models: " + ', '.join(_unpriced_label(m) for m in v['unpriced_models'])]
     if i == 'context_size':
         out = [f"{h['harness']}: median {lb}{h['median']:,.0f} tokens, p90 {lb}{h['p90']:,} tokens, {_rq(h['requests'])}" for h in v['harnesses']]
         return out + ([f"not counted (an input class is unknown): {_rq(v['excluded_requests'])}"] if v['excluded_requests'] else [])

@@ -17,8 +17,6 @@ M = 1_000_000
 def entry(model, inp, cr, out, provider='openai', long=None, modifiers=None, write=None, **kw):
     e = dict(provider=provider, model=model, aliases=[], currency='USD', input=inp, cache_write_5m=None, cache_write_1h=None, cache_write=write,
              cache_read=cr, output=out, free=False, modifiers=modifiers or {}, long_context=long and dict(above_input_tokens=long[0], cache_write=None, **long[1]), **REF)
-    if write is not None:
-        e['cache_write_ttl'] = '30m'
     return dict(e, **kw)
 
 
@@ -108,6 +106,21 @@ class F1ModelShare(unittest.TestCase):
         self.assertEqual((v['requests'], v['priced_requests'], v['unpriced_requests'], v['unpriced_share']), (5, 4, 1, 0.2))
         self.assertEqual(v['unpriced_models'][0]['name'], 'mystery')
         self.assertEqual(v['unpriced_models'][0]['requests'], 1)
+
+    def test_unpriced_model_ranking_sums_all_token_classes(self):
+        rows = [ob('a', model='mystery-a', fresh=1000), ob('b', model='mystery-b', fresh=10, read=20, write=30, out=40),
+                ob('c', model='mystery-c', fresh=500, read=400)]
+        got = cost_facts(rows, TABLE)['unpriced_models']
+        self.assertEqual([(m['name'], m['tokens']) for m in got], [('mystery-a', 1000), ('mystery-c', 900), ('mystery-b', 100)])
+
+    def test_explicit_unpriced_model_is_flagged_in_insights(self):
+        table = dict(TABLE, unpriced_models=[dict(provider='openai', model='auto-review', reason='no public rate',
+                                                  source_url='https://example.test', retrieved_on='2026-09-01')])
+        res = cost_facts([ob('x', model='auto-review', fresh=5), ob('y', model='gpt-a', fresh=10)], table)
+        top = res['unpriced_models'][0]
+        self.assertEqual(top['name'], 'auto-review')
+        self.assertIn('explicitly unpriced', top['explicit_reason'])
+        self.assertIn('explicitly unpriced', insights.render_text(res))
 
     def test_unpriced_model_ranking_does_not_double_count_reasoning(self):
         first, second = ob('reasoning', model='mystery-a', out=100), ob('output', model='mystery-b', out=200)
@@ -252,9 +265,7 @@ class GroupedPricingIsExact(unittest.TestCase):
 class F3CostParts(unittest.TestCase):
     def test_parts_and_shares(self):
         # input 1M x 2 = 2, cache write 1M x 3 = 3, cache read 2M x .5 = 1, output 400k x 10 = 4; total 10
-        row = ob('p', model='gpt-cr', fresh=M, write=M, read=2 * M, out=400000)
-        row['raw_usage'] = {'cache_write_ttl': '30m'}
-        v = by_id(cost_facts([row], TABLE))['cost_parts']['values']
+        v = by_id(cost_facts([ob('p', model='gpt-cr', fresh=M, write=M, read=2 * M, out=400000)], TABLE))['cost_parts']['values']
         self.assertEqual([(p['part'], p['cost'], p['share']) for p in v['parts']],
                          [('input', 2.0, .2), ('cache_write', 3.0, .3), ('cache_read', 1.0, .1), ('output', 4.0, .4)])
         self.assertEqual(v['priced_cost'], 10.0)

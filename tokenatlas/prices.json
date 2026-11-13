@@ -10,6 +10,15 @@
   "ollama",
   "inference-gille"
  ],
+ "unpriced_models": [
+  {
+   "provider": "openai",
+   "model": "codex-auto-review",
+   "reason": "no public per-token rate for the model behind Codex Auto-review; not aliased to another model",
+   "source_url": "https://developers.openai.com/api/docs/pricing",
+   "retrieved_on": "2026-11-11"
+  }
+ ],
  "models": [
   {
    "provider": "anthropic",
@@ -436,14 +445,24 @@
     "output": 15
    },
    "modifiers": {
-    "service_tier=fast": {"input": 4, "cache_read": 0.2, "cache_write": 5, "output": 20},
-    "service_tier=flex": {"input": 1, "cache_read": 0.05, "cache_write": 1.25, "output": 5}
+    "service_tier=fast": {
+     "input": 4,
+     "cache_read": 0.2,
+     "cache_write": 5,
+     "output": 20
+    },
+    "service_tier=flex": {
+     "input": 1,
+     "cache_read": 0.05,
+     "cache_write": 1.25,
+     "output": 5
+    }
    },
    "free": false,
    "cache_write_ttl": "30m",
    "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
    "retrieved_on": "2026-11-11",
-   "notes": "Model page verified 2026-11-11; released 2026-09-29. Standard input $2, cached input $0.10, 30m cache write $2.50, output $10 per million tokens. The model page explicitly states >272K input uses 2x input/cache and 1.5x output, Fast is 2x Standard, Flex is 50% lower, and Ultrafast is 6x Standard. codex-auto-review remains explicitly unpriced."
+   "notes": "Model page verified 2026-11-11; released 2026-09-29. Standard input $2, cached input $0.10, 30m cache write $2.50, output $10 per million tokens. The model page explicitly states >272K input uses 2x input/cache and 1.5x output, Fast is 2x Standard, Flex is 50% lower, and Ultrafast is 6x Standard."
   },
   {
    "provider": "openai",
@@ -461,11 +480,21 @@
     "input": 2,
     "cache_read": 0.1,
     "cache_write": 2.5,
-   "output": 7.5
+    "output": 7.5
    },
    "modifiers": {
-    "service_tier=fast": {"input": 2, "cache_read": 0.1, "cache_write": 2.5, "output": 10},
-    "service_tier=flex": {"input": 0.5, "cache_read": 0.025, "cache_write": 0.625, "output": 2.5}
+    "service_tier=fast": {
+     "input": 2,
+     "cache_read": 0.1,
+     "cache_write": 2.5,
+     "output": 10
+    },
+    "service_tier=flex": {
+     "input": 0.5,
+     "cache_read": 0.025,
+     "cache_write": 0.625,
+     "output": 2.5
+    }
    },
    "free": false,
    "cache_write_ttl": "30m",

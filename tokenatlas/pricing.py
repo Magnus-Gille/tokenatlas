@@ -13,7 +13,10 @@ PACKAGED = Path(__file__).with_name('prices.json')
 PRICE_KEYS = ('input', 'cache_write_5m', 'cache_write_1h', 'cache_write', 'cache_read', 'output')
 _TOP_KEYS = ('schema', 'retrieved_on', 'unit', 'provider_aliases', 'local_providers', 'models')
 _MODEL_KEYS = ('provider', 'model', 'currency', 'input', 'cache_read', 'output', 'free', 'source_url', 'retrieved_on')
+_TTLS = ('5m', '30m', '1h')
 _CLASSES = ('fresh_input', 'cache_read', 'cache_write', 'output')
+NO_LIST_PRICE = 'no list price for '  # reason prefix of a model the table simply does not know
+_UNPRICED_KEYS = ('provider', 'model', 'reason', 'source_url', 'retrieved_on')
 _COVERED = ('priced', 'assumed', 'free')
 _STANDARD_CLAUDE = 'speed not recorded; priced as standard'
 _STANDARD_OTHER = 'service tier not recorded; priced as standard'
@@ -43,6 +46,13 @@ def load_prices(path=None):
             raise ValueError(f'price table: missing key {key}')
     if not isinstance(table['models'], list):
         raise ValueError('price table: models must be a list')
+    explicit = table.get('unpriced_models', [])
+    if not isinstance(explicit, list):
+        raise ValueError('price table: unpriced_models must be a list')
+    for entry in explicit:
+        name = f"{entry.get('provider')}/{entry.get('model')}" if isinstance(entry, dict) else repr(entry)
+        if not isinstance(entry, dict) or any(not isinstance(entry.get(k), str) or not entry[k] for k in _UNPRICED_KEYS):
+            raise ValueError(f'{name}: unpriced_models entries need non-empty string {", ".join(_UNPRICED_KEYS)}')
     for entry in table['models']:
         name = f"{entry.get('provider')}/{entry.get('model')}" if isinstance(entry, dict) else repr(entry)
         if not isinstance(entry, dict):
@@ -57,6 +67,9 @@ def load_prices(path=None):
             _check_prices(name, 'long_context', entry['long_context'], PRICE_KEYS)
             if not isinstance(entry['long_context'].get('above_input_tokens'), int):
                 raise ValueError(f'{name}: long_context.above_input_tokens must be an integer')
+        ttl = entry.get('cache_write_ttl')
+        if ttl is not None and ttl not in _TTLS:
+            raise ValueError(f'{name}: cache_write_ttl must be one of {", ".join(_TTLS)}')
         for label, modifier in (entry.get('modifiers') or {}).items():
             _check_prices(name, f'modifiers.{label}', modifier, PRICE_KEYS)
     return table
@@ -118,7 +131,15 @@ def reference_rate_card(table):
     return cards
 
 
-def _result(status, parts=None, cost=None, currency=None, assumptions=(), reason=None, ref=None):
+def token_volume(obs):
+    """All counted tokens of a request (reasoning is a subset of output and not added again); unknown classes count as 0."""
+    tokens = obs.get('tokens') or {}
+    return sum(tokens.get(k) or 0 for k in _CLASSES)
+
+
+def _result(status, parts=None, cost=None, currency=None, assumptions=(), reason=None, ref=None, explicit=False):
+    if explicit:
+        return {**_result(status, parts, cost, currency, assumptions, reason, ref), 'explicit_unpriced': True}
     return {'cost': cost, 'currency': currency, 'status': status,
             'parts': parts or dict.fromkeys(('input', 'cache_write', 'cache_read', 'output')),
             'assumptions': list(assumptions), 'reason': reason, 'price_ref': ref}
@@ -145,7 +166,11 @@ def _rates(obs, table, long_context=True, modifiers=True):
         return _result('unpriced', reason=f'no model recorded for {provider}'), None
     provider, entry = _find(table, provider, model)
     if entry is None:
-        return _result('unpriced', reason=f'no list price for {provider}/{model}'), None
+        for known in table.get('unpriced_models') or ():
+            if known['provider'] == provider and known['model'] == model:
+                ref = {'provider': provider, 'model': model, 'source_url': known['source_url'], 'retrieved_on': known['retrieved_on']}
+                return _result('unpriced', reason=f"explicitly unpriced: {known['reason']}", ref=ref, explicit=True), None
+        return _result('unpriced', reason=f'{NO_LIST_PRICE}{provider}/{model}'), None
     ref = {'provider': provider, 'model': entry['model'], 'source_url': entry.get('source_url'),
            'retrieved_on': entry.get('retrieved_on')}
     currency = entry.get('currency')
@@ -233,15 +258,12 @@ def _parts(r):
             if write:
                 reasons.append('cache write TTL unknown')
     else:
-        # When a price card declares a cache lifetime, require the observation
-        # to identify that same lifetime. OpenAI and other non-Claude logs
-        # normally expose only a write token count; applying a declared 30m
-        # card to an unknown/different TTL would overstate completeness.
-        expected_ttl = r.get('cache_write_ttl')
-        observed_ttl = raw.get('cache_write_ttl') or (raw.get('cache_creation') or {}).get('ttl')
-        if write and (not expected_ttl or observed_ttl != expected_ttl):
+        # Non-Claude logs normally record only a write token count: price it at the entry's cache_write rate. Only an
+        # explicit lifetime that conflicts with the entry's declared cache_write_ttl makes the observation partial.
+        expected_ttl, observed_ttl = r.get('cache_write_ttl'), raw.get('cache_write_ttl')
+        if write and expected_ttl and observed_ttl and observed_ttl != expected_ttl:
             write_part = None
-            reasons.append('cache write TTL unknown')
+            reasons.append(f'cache write TTL {observed_ttl} differs from the priced {expected_ttl}')
         else:
             write_part = _times(write, prices['cache_write'])
     parts = {'input': _times(tokens.get('fresh_input'), prices['input']), 'cache_write': write_part,
@@ -292,50 +314,58 @@ def unit_prices(obs, table):
 
 
 def diagnostics(records, table, *, now=None, days=30, threshold=0.10, max_age_days=30):
-    """Return bounded price coverage diagnostics for ``doctor``.
+    """Price-coverage diagnostics for ``doctor`` over the requests of the last *days* days.
 
-    The recent window is based on wall-clock UTC, while the table age is measured
-    from its declared retrieval date. Unknown and partial observations are both
-    counted as unpriced because their cost cannot contribute to a complete USD
-    total.
+    Only requests whose model the table does not know ("no list price") count towards the warning: local models,
+    non-USD prices, partial prices and explicitly unpriced models are reported separately and never warn. Synthetic-identity
+    requests are left out as in insights. The share is over all counted requests; models are ranked by token volume, as in
+    insights. Staleness is judged per model entry (``retrieved_on``), not by the table's overall date.
     """
+    from tokenatlas import prompts  # prompts imports this module
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
-    recent = [r for r in records if isinstance(r.get('ts'), str)
-              and cutoff <= datetime.fromisoformat(r['ts']).astimezone(timezone.utc) <= now]
-    groups = {}
-    priced = 0
+    recent = []
+    for r in records:
+        if r.get('id_synthetic') or not isinstance(r.get('ts'), str):
+            continue
+        if cutoff <= prompts._t(r['ts']).astimezone(timezone.utc) <= now:
+            recent.append(r)
+    groups, other, priced = {}, {}, 0
     for row in recent:
         result = price_observation(row, table)
         if result.get('cost') is not None and result.get('currency') in (None, 'USD'):
             priced += 1
             continue
-        ref = result.get('price_ref') or {}
-        key = (ref.get('provider') or row.get('provider') or 'unknown', ref.get('model') or row.get('model') or 'unknown')
-        groups[key] = groups.get(key, 0) + 1
+        if result['status'] == 'unpriced' and (result.get('reason') or '').startswith(NO_LIST_PRICE):
+            g = groups.setdefault((row.get('provider') or 'unknown', row.get('model') or 'unknown'), dict(requests=0, tokens=0))
+            g['requests'] += 1
+            g['tokens'] += token_volume(row)
+            continue
+        kind = ('local' if result['status'] == 'local' else 'explicitly_unpriced' if result.get('explicit_unpriced')
+                else 'other_currency' if result.get('cost') is not None else 'partial_or_unknown')
+        other[kind] = other.get(kind, 0) + 1
     total = len(recent)
-    unpriced = total - priced
+    no_list = sum(g['requests'] for g in groups.values())
     retrieved = table.get('retrieved_on')
-    entry_dates = [e.get('retrieved_on') for e in table.get('models', ()) if isinstance(e, dict)]
-    valid_dates = [value for value in [retrieved, *entry_dates] if isinstance(value, str)]
-    age_days = None
-    oldest_retrieved = min(valid_dates) if valid_dates else None
-    if oldest_retrieved is not None:
+    ages = []
+    for e in table.get('models', ()):
         try:
-            age_days = (now.date() - datetime.fromisoformat(oldest_retrieved).date()).days
-        except ValueError:
-            pass
-    largest = [dict(provider=p, model=m, requests=n) for (p, m), n in sorted(groups.items(), key=lambda kv: (-kv[1], kv[0]))[:5]]
+            ages.append(((now.date() - datetime.fromisoformat(e['retrieved_on']).date()).days, f"{e['provider']}/{e['model']}"))
+        except (KeyError, TypeError, ValueError):
+            continue
+    stale = [a for a in ages if a[0] > max_age_days]
+    oldest_age = max((a[0] for a in ages), default=None)
+    largest = [dict(provider=p, model=m, **g) for (p, m), g in sorted(groups.items(), key=lambda kv: (-kv[1]['tokens'], -kv[1]['requests'], kv[0]))[:5]]
     warnings = []
-    share = (unpriced / total) if total else 0.0
+    share = (no_list / total) if total else 0.0
     if total and share > threshold:
-        warnings.append(f'unpriced share {share:.1%} exceeds {threshold:.0%} of recent requests')
-    if age_days is not None and age_days > max_age_days:
-        warnings.append(f'price table is {age_days} days old (older than {max_age_days} days)')
-    return dict(retrieved_on=retrieved, oldest_entry_retrieved_on=oldest_retrieved,
-                max_age_days=max_age_days, age_days=age_days,
+        warnings.append(f'{share:.1%} of recent requests have no list price (limit {threshold:.0%})')
+    if stale:
+        warnings.append(f'{len(stale)} of {len(ages)} price entries are older than {max_age_days} days (oldest {oldest_age} days)')
+    return dict(retrieved_on=retrieved, max_age_days=max_age_days, oldest_entry_age_days=oldest_age,
+                stale_entries=len(stale), price_entries=len(ages),
                 window_days=days, requests=total, priced_requests=priced,
-                unpriced_requests=unpriced, unpriced_share=share,
+                no_list_price_requests=no_list, no_list_price_share=share, not_counted_as_missing=dict(sorted(other.items())),
                 largest_unpriced_models=largest, warnings=warnings)
 
 
