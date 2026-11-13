@@ -21,8 +21,10 @@ HARNESSES = ('claude', 'codex', 'pi', 'opencode')
 RESIDUAL_LABEL = 'other: tools, first prompt, unlogged'
 COST_LABEL = 'API-equivalent at list price, estimate'
 NO_DATA_HINT = 'No overhead data; run with --refresh.'
-WINDOW_HINT = ('No overhead sessions start on or after {since}; --since filters on session start, so try an earlier --since '
+WINDOW_HINT = ('No overhead sessions start {bounds}; --since/--until filter on session start, so {advice} '
                '(see cached_first_ts for the range of cached session starts).')
+NO_START_HINT = ('Overhead sessions are cached but none has a usable start timestamp, so --since/--until cannot match them; '
+                 'run without the date filter.')
 NOTE = ("Relative measures are usage-normalized. Token counts come from each provider's own tokenizer (Claude"
         ' 4.7+ counts about 30% more tokens for the same text), so compare percentages across providers rather than raw tokens.')
 _DDL = (
@@ -525,7 +527,7 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
     for h, s, sub, ts, floor, inp, write, read, calls, unidentified in db.execute(
             'SELECT harness, session, is_subagent, first_ts, floor_tokens, floor_input, floor_cache_write,'
             ' floor_cache_read, calls, unidentified_skill_reads FROM overhead_sessions ORDER BY harness, session'):
-        when = _moment(ts)
+        when = _stored_moment(ts)
         if harness not in (None, h) or (lo and (when is None or when < lo)) or (hi and (when is None or when >= hi)):
             continue
         sessions[(h, s)] = {'floor': floor, 'calls': calls, 'kinds': {}, 'skills': [], 'sub': bool(sub),
@@ -598,18 +600,35 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
             'recurring_cost': {'cost': cost if priced else None, 'assumptions': sorted(assumptions), 'sessions_priced': priced,
                                'sessions_unpriced': unpriced, 'label': COST_LABEL}}
     if not result['harnesses']:
-        result.update(_empty_reason(db, harness, since))
+        result.update(_empty_reason(db, harness, since, until))
     return result
 
 
-def _empty_reason(db, harness, since):
-    """Machine-readable explanation for an empty result: nothing cached (needs --refresh) or nothing in the --since window."""
-    n, first, last = db.execute('SELECT COUNT(*), MIN(first_ts), MAX(first_ts) FROM overhead_sessions WHERE ?1 IS NULL OR harness=?1',
-                                (harness,)).fetchone()
-    if not n:
+def _stored_moment(text):
+    """_moment for a stored value; None when missing or unparseable."""
+    try:
+        return _moment(text)
+    except ValueError:
+        return None
+
+
+def _empty_reason(db, harness, since, until):
+    """Machine-readable explanation for an empty result: nothing cached (needs --refresh), no usable start timestamps, or nothing in the window."""
+    stamps = [r[0] for r in db.execute('SELECT first_ts FROM overhead_sessions WHERE ?1 IS NULL OR harness=?1', (harness,))]
+    if not stamps:
         return {'reason': 'no_cached_data', 'hint': NO_DATA_HINT}
-    return {'reason': 'no_sessions_in_window', 'cached_sessions': n, 'cached_first_ts': {'earliest': first, 'latest': last},
-            'hint': WINDOW_HINT.format(since=since)}
+    parsed = [(m, t) for t in stamps for m in [_stored_moment(t)] if m is not None]
+    if not parsed:
+        return {'reason': 'no_start_timestamps', 'cached_sessions': len(stamps), 'hint': NO_START_HINT}
+    if since and until:
+        hint = WINDOW_HINT.format(bounds=f'in [{since}, {until})', advice='widen --since/--until')
+    elif until:
+        hint = WINDOW_HINT.format(bounds=f'before {until}', advice='try a later --until')
+    else:
+        hint = WINDOW_HINT.format(bounds=f'on or after {since}', advice='try an earlier --since')
+    return {'reason': 'no_sessions_in_window', 'cached_sessions': len(stamps),
+            'cached_first_ts': {'earliest': min(parsed, key=lambda p: p[0])[1], 'latest': max(parsed, key=lambda p: p[0])[1]},
+            'hint': hint}
 
 
 def _n(value):

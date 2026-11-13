@@ -633,5 +633,38 @@ class EmptyReasonTests(unittest.TestCase):
             self.assertNotIn('run with --refresh', out.getvalue())
 
 
+class EmptyReasonBoundsTests(unittest.TestCase):
+    def con(self, *stamps):
+        con = sqlite3.connect(':memory:')
+        overhead.save(con, 'claude', [sess(f's{i}', 10, 1, ts=t) for i, t in enumerate(stamps)])
+        return con
+
+    def test_until_only_hint(self):
+        res = overhead.summarize(self.con('2026-11-01T00:00:00Z'), until='2026-10-01T00:00:00Z')
+        self.assertEqual(res['reason'], 'no_sessions_in_window')
+        self.assertNotIn('None', res['hint'])
+        self.assertIn('--until', res['hint'])
+        self.assertNotIn('earlier --since', res['hint'])
+
+    def test_combined_bounds_hint(self):
+        res = overhead.summarize(self.con('2026-11-01T00:00:00Z'), since='2026-09-01T00:00:00Z', until='2026-10-01T00:00:00Z')
+        self.assertIn('--since', res['hint'])
+        self.assertIn('--until', res['hint'])
+        self.assertNotIn('None', res['hint'])
+
+    def test_extrema_use_instants_not_strings(self):
+        con = self.con('2026-10-11T00:30:00+02:00', '2026-10-10T23:00:00Z', 'garbage')
+        res = overhead.summarize(con, since='2026-12-01T00:00:00Z')
+        self.assertEqual(res['cached_first_ts'], {'earliest': '2026-10-11T00:30:00+02:00', 'latest': '2026-10-10T23:00:00Z'})
+        self.assertEqual(res['cached_sessions'], 3)
+
+    def test_no_usable_start_timestamps(self):
+        res = overhead.summarize(self.con(None, 'garbage'), since='2026-10-01T00:00:00Z')
+        self.assertEqual(res['reason'], 'no_start_timestamps')
+        self.assertEqual(res['cached_sessions'], 2)
+        self.assertNotIn('earlier --since', res['hint'])
+        self.assertIn('without', res['hint'])
+
+
 if __name__ == '__main__':
     unittest.main()
