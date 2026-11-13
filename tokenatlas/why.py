@@ -1283,64 +1283,121 @@ def _millisecond_timestamp(value: object) -> datetime | None:
         return None
 
 
+_OPENCODE_GENERATIONS = (("message", "session"), ("session_message", "session_v2"))  # legacy first: it wins for ids present in both
+_OPENCODE_MESSAGE_LIKE = re.compile(r"(?:^|_)(?:messages?|parts?)(?:_|$)")  # tables whose newest usage row the stale check compares
+_OPENCODE_TOKEN_SUM = (
+    "COALESCE(CAST(json_extract(data,'$.tokens.input') AS REAL),0)+COALESCE(CAST(json_extract(data,'$.tokens.output') AS REAL),0)"
+    "+COALESCE(CAST(json_extract(data,'$.tokens.reasoning') AS REAL),0)+COALESCE(CAST(json_extract(data,'$.tokens.cache.read') AS REAL),0)"
+    "+COALESCE(CAST(json_extract(data,'$.tokens.cache.write') AS REAL),0)"
+)
+
+
+def _opencode_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in connection.execute(f'PRAGMA table_info("{table}")')}
+
+
 def _opencode_rows(
     connection: sqlite3.Connection,
     table: str,
     session_table: str,
-    diagnostics: dict[str, int] | None = None,
-) -> tuple[list[sqlite3.Row], bool]:
-    """Read one OpenCode message generation using its stable shared columns."""
-    tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables: set[str],
+    diagnostics: dict[str, int],
+    problems: list[str],
+) -> list[sqlite3.Row]:
+    """Read one OpenCode message generation. Only id, session_id and data (plus type for session_message) are required; other columns read as NULL when absent."""
+    if table not in tables and session_table not in tables:
+        return []
     if table not in tables or session_table not in tables:
-        return [], False
-    message_columns = {r[1] for r in connection.execute(f'PRAGMA table_info("{table}")')}
-    session_columns = {r[1] for r in connection.execute(f'PRAGMA table_info("{session_table}")')}
-    required_message = {'id', 'session_id', 'time_created', 'time_updated', 'data'}
-    required_session = {'id', 'parent_id', 'directory', 'version'}
-    if not required_message <= message_columns or not required_session <= session_columns:
-        if diagnostics is not None:
-            diagnostics['schema_errors'] = diagnostics.get('schema_errors', 0) + 1
-        return [], False
-    message_type = 'm.type AS message_type' if 'type' in message_columns else 'NULL AS message_type'
+        # One table of the pair: a partial migration or an unknown layout. Say so instead of silently reading nothing.
+        diagnostics["schema_errors"] += 1
+        present = table if table in tables else session_table
+        problems.append(f"{present} exists without {session_table if present == table else table}")
+        return []
+    message_columns = _opencode_columns(connection, table)
+    session_columns = _opencode_columns(connection, session_table)
+    required = {"id", "session_id", "data"} | ({"type"} if table == "session_message" else set())  # V2 rows carry no role; type says assistant
+    if not required <= message_columns or "id" not in session_columns:
+        diagnostics["schema_errors"] += 1
+        problems.append(f"{table}/{session_table} lack required columns ({', '.join(sorted(required))} / id)")
+        return []
+    pick = lambda alias, columns, column: f'{alias}."{column}"' if column in columns else "NULL"
     return connection.execute(f'''
-        SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data,
-               {message_type}, s.parent_id, s.directory, s.version
-        FROM "{table}" AS m JOIN "{session_table}" AS s ON s.id = m.session_id
-    ''').fetchall(), True
+        SELECT m.id, m.session_id, {pick("m", message_columns, "time_created")} AS time_created,
+               {pick("m", message_columns, "time_updated")} AS time_updated, m.data,
+               {pick("m", message_columns, "type")} AS message_type, {pick("s", session_columns, "parent_id")} AS parent_id,
+               {pick("s", session_columns, "directory")} AS directory, {pick("s", session_columns, "version")} AS version,
+               s.id AS session_row
+        FROM "{table}" AS m LEFT JOIN "{session_table}" AS s ON s.id = m.session_id
+    ''').fetchall()
+
+
+def _opencode_newest_usage_ms(connection: sqlite3.Connection, tables: set[str]) -> int | None:
+    """Newest time_created among message-like rows that carry non-zero token counts, computed without the parser (no join, no role/type test)."""
+    newest = None
+    for table in sorted(tables):
+        if not _OPENCODE_MESSAGE_LIKE.search(table):
+            continue
+        columns = _opencode_columns(connection, table)
+        if not {"time_created", "data"} <= columns:
+            continue
+        try:
+            value = connection.execute(
+                f'SELECT MAX(time_created) FROM "{table}" WHERE CASE WHEN json_valid(data) THEN {_OPENCODE_TOKEN_SUM} ELSE 0 END > 0'
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            continue  # no JSON support: the check is skipped rather than guessed
+        if isinstance(value, (int, float)) and (newest is None or value > newest):
+            newest = int(value)
+    return newest
+
+
 def collect_opencode(
     db_path: Path,
     start: datetime,
     end: datetime,
     diagnostics: dict[str, int] | None = None,
 ) -> list[AttributionRecord]:
-    """Collect per-assistant-call usage from OpenCode's local SQLite store."""
-    if diagnostics is not None:
-        for key in ("malformed_lines", "unparsed_usage_lines", "schema_errors", "stale_parser"):
-            diagnostics.setdefault(key, 0)
+    """Collect per-assistant-call usage from OpenCode's local SQLite store.
+
+    OpenCode keeps two generations of the message log in one database: the legacy message/session
+    tables and (since the V2 migration) session_message/session_v2. Both are read in one read
+    transaction. Message ids survive the migration, and the legacy row is the frozen original, so it wins
+    for an id present in both; session_message only adds ids the legacy tables never had. Usage lives in
+    each message's data.tokens. session_part is not read: it carries no token counters (the legacy part
+    table's step-finish tokens only repeat the message-level counters).
+    `diagnostics["source_newest_ms"]` receives the newest token-bearing source row for the stale-parser check.
+    """
+    reported = diagnostics
+    diagnostics = {} if diagnostics is None else diagnostics
+    for key in ("malformed_lines", "unparsed_usage_lines", "schema_errors", "stale_parser", "orphan_rows"):
+        diagnostics.setdefault(key, 0)
+    problems: list[str] = []
     path = Path(db_path).expanduser().resolve()
-    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA query_only=ON")
-        # OpenCode 2 writes a second generation in the same database. Prefer it
-        # when a migrated message id exists in both generations, while keeping
-        # the legacy reader for databases that have not migrated.
-        v2_rows, v2_valid = _opencode_rows(connection, "session_message", "session_v2", diagnostics)
-        legacy_rows, legacy_valid = _opencode_rows(connection, "message", "session", diagnostics)
-        rows = v2_rows + legacy_rows
-        if not rows:
-            if not (v2_valid or legacy_valid or (diagnostics and diagnostics.get('schema_errors'))):
-                raise sqlite3.OperationalError("no such table: session or session_v2")
+        connection.execute("BEGIN")  # one snapshot for the catalog and every SELECT below
+        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not any(t in tables for pair in _OPENCODE_GENERATIONS for t in pair):
+            raise sqlite3.OperationalError("no such table: message/session or session_message/session_v2")
+        rows = []
+        for table, session_table in _OPENCODE_GENERATIONS:
+            rows += _opencode_rows(connection, table, session_table, tables, diagnostics, problems)
+        diagnostics["source_newest_ms"] = _opencode_newest_usage_ms(connection, tables)
+        connection.execute("COMMIT")
     finally:
         connection.close()
+    if reported is None and problems:
+        raise sqlite3.OperationalError("unsupported OpenCode schema: " + "; ".join(problems))
     records = []
     anchors: list[tuple[str, str | None, datetime, str]] = []  # every request with usage, in or out of the window
     aborts: list[tuple[str, str | None, str | None, datetime | None]] = []  # (session, turn, own call id): an abort usually carries no tokens, so it is read before the token guards
     seen_ids: set[str] = set()
-    source_assistant_latest: datetime | None = None
-    parsed_assistant_latest: datetime | None = None
     for row in rows:
         row_id = _meta_text(row["id"])
+        if row["session_row"] is None:
+            diagnostics["orphan_rows"] += 1  # message without a session row: still read, with no parent/directory/version
         try:
             data = json.loads(row["data"])
         except (TypeError, ValueError):
@@ -1355,14 +1412,8 @@ def collect_opencode(
         if role != "assistant":
             continue
         time_data = _mapping(data.get("time"))
-        aborted = _mapping(data.get("error")).get("name") == "MessageAbortedError"
-        source_timestamp = _millisecond_timestamp(
-            time_data.get("completed") or time_data.get("streamed") or time_data.get("created")
-            or row["time_created"]
-        )
-        if source_timestamp and not aborted and (
-                source_assistant_latest is None or source_timestamp > source_assistant_latest):
-            source_assistant_latest = source_timestamp
+        error = _mapping(data.get("error"))
+        aborted = error.get("name") == "MessageAbortedError" or error.get("type") == "aborted"  # legacy name / V2 type
         if aborted:
             aborts.append((_meta_text(row["session_id"], default="unknown"), _meta_text(_first_text(data, "parentID", "parentId")),
                            str(row["id"]) if row["id"] else None, _millisecond_timestamp(
@@ -1370,19 +1421,17 @@ def collect_opencode(
                                or row["time_updated"] or row["time_created"])))
         usage = data.get("tokens")
         if not isinstance(usage, dict):
-            if diagnostics is not None:
+            # A request still in flight, or one that failed (provider.auth, aborted) without usage, has nothing to count.
+            if "error" not in data and ("finish" in data or time_data.get("completed")):
                 diagnostics["unparsed_usage_lines"] += 1
             continue
         timestamp = _millisecond_timestamp(
-            time_data.get("completed") or time_data.get("streamed") or time_data.get("created")
-            or row["time_updated"] or row["time_created"]
+            time_data.get("completed") or time_data.get("created") or row["time_updated"] or row["time_created"]
         )
         if timestamp is None:
             if diagnostics is not None:
                 diagnostics["unparsed_usage_lines"] += 1
             continue
-        if parsed_assistant_latest is None or timestamp > parsed_assistant_latest:
-            parsed_assistant_latest = timestamp
         in_window = start <= timestamp < end  # requests outside the window still anchor an abort, so fresh and incremental reads agree
         raw_usage = _sanitize_usage(usage) or {}
         cache = _mapping(usage.get("cache"))
@@ -1440,9 +1489,6 @@ def collect_opencode(
                 if target in by_id:
                     flagged.add(by_id[target])
         records = [replace(r, flags=[INTERRUPTED]) if i in flagged else r for i, r in enumerate(records)]
-    if diagnostics is not None and source_assistant_latest and (
-            parsed_assistant_latest is None or source_assistant_latest > parsed_assistant_latest):
-        diagnostics["stale_parser"] = 1
     return sorted(records, key=lambda item: (item.timestamp, item.session_id, item.call_id))
 
 
