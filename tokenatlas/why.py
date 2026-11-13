@@ -278,7 +278,6 @@ _CACHE_CREATION_FIELDS = frozenset({
     "ephemeral_5m_input_tokens",
     "ephemeral_1h_input_tokens",
 })
-_CACHE_WRITE_TTLS = frozenset({'5m', '30m', '1h', 'conflict'})
 
 
 def _numeric_token(value: object) -> int | float | None:
@@ -325,8 +324,6 @@ def _sanitize_usage(value: object) -> dict | None:
                 for nested_key, nested_value in item.items()
                 if nested_key in {"read", "write"}
             }
-        elif key == "cache_write_ttl" and isinstance(item, str) and item in _CACHE_WRITE_TTLS:
-            result[key] = item
         elif key == "iterations":
             if item is None:
                 result[key] = None
@@ -369,9 +366,6 @@ def _merge_sanitized_usage(existing: dict, incoming: dict) -> dict:
         if key in ("iterations", "iteration_snapshots"):
             continue
         prior = merged.get(key)
-        if key == 'cache_write_ttl' and prior is not None and prior != value:
-            merged[key] = 'conflict'
-            continue
         if isinstance(value, dict) and isinstance(prior, dict):
             merged[key] = _merge_sanitized_usage(prior, value)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
