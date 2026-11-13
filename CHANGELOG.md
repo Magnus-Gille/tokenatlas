@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex rollouts compressed to `rollout-*.jsonl.zst` and the `~/.codex/archived_sessions` root are imported with the same parser and keys as plain rollouts. Reading compressed files needs the optional `tokenatlas[zstd]` extra (`pip install 'tokenatlas[zstd]'`, `pipx inject tokenatlas zstandard` or `uv tool install 'tokenatlas[zstd]'`) or the `zstd` binary on PATH. Without either, one diagnostic and a count of unreadable files are reported and `doctor` and the coverage section show the import as partial. Rollout files with an unrecognised suffix count as unreadable too.
+
 ## [1.25.0] - 2026-10-25
 
 ### Added
