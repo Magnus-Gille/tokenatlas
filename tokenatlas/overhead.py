@@ -514,7 +514,8 @@ def _relative(h, mine, joined, rec_costs):
 def summarize(db, since=None, until=None, harness=None, records=None, prices=None):
     """Per-harness floor distribution, estimated component tokens, residual, skill uses and recurring cost.
 
-    `records` (History.records) supplies each session's dominant model; without it the cost stays None.
+    `records` (History.records) supplies each session's dominant model; without it the cost stays None.  It may be a
+    callable, invoked only when the selection is non-empty (loading the full history is slow).
     """
     ensure(db)
     lo, hi = _moment(since), _moment(until)
@@ -534,6 +535,8 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
         if (h, s) in sessions:
             sessions[(h, s)]['skills'].append((name, chars, source))
     table, tariffs = None, {}
+    if callable(records):
+        records = records() if sessions else None
     if records is not None:
         from tokenatlas import pricing
         table = prices if prices is not None else pricing.load_prices()
@@ -661,44 +664,53 @@ def render(result):
     return '\n'.join(lines)
 
 
-def _stored_stats(db, since, until, harness):
-    """(total stored sessions, newest stored start, sessions matching the filters) from overhead_sessions only."""
-    total, newest = db.execute('SELECT COUNT(*), MAX(first_ts) FROM overhead_sessions').fetchone()
-    lo, hi = _moment(since), _moment(until)
-    matching = 0
+def _stored_stats(db, harness):
+    """(stored sessions in the harness scope, newest start as stored text) from overhead_sessions only.
+
+    Newest is compared as parsed instants, since stored timestamp text is not guaranteed to sort chronologically."""
+    total, newest = 0, None
     for h, ts in db.execute('SELECT harness, first_ts FROM overhead_sessions'):
-        when = _moment(ts)
-        if harness not in (None, h) or (lo and (when is None or when < lo)) or (hi and (when is None or when >= hi)):
+        if harness not in (None, h):
             continue
-        matching += 1
-    return total, newest, matching
+        total += 1
+        when = _moment(ts)
+        if when is not None and (newest is None or when > newest[0]):
+            newest = (when, ts)
+    return total, newest[1] if newest else None
 
 
 def _filters(args):
-    parts = [f'since {args.since}'] if args.since else []
-    return ' for ' + ', '.join(parts + ([f'harness {args.harness}'] if args.harness else [])) if parts or args.harness else ''
+    parts = ([f'since {args.since}'] if args.since else []) + ([f'harness {args.harness}'] if args.harness else [])
+    return ' for ' + ', '.join(parts) if parts else ''
 
 
 def explain_empty(args, total, newest, skipped_roots, scanned):
-    """(reason_code, text) for an overhead report with no harnesses.
+    """(reason_code, text) for an overhead report with no harnesses; `total`/`newest` are scoped to --harness.
 
     Request history and overhead rows are populated separately: only `overhead --refresh` writes overhead rows."""
     scope = _filters(args)
-    if total:
-        return ('filter_excludes_all',
-                f'{total} overhead sessions are stored (newest start {newest}) but none match{scope}. '
-                'Widen --since (use an explicit UTC offset) or drop --harness.')
-    if args.refresh and scanned:
+    skipped = (f' No session root exists for {", ".join(skipped_roots)}, so those were not scanned.'
+               if skipped_roots else '')
+    if args.refresh and not total:
+        if not scanned:
+            return ('root_missing', 'Nothing was scanned: no session root exists for ' + ', '.join(skipped_roots)
+                    + '. Request history is stored separately and does not provide overhead data.')
         return ('rescan_found_nothing',
                 f'Rescanned {", ".join(scanned)} but found no sessions with overhead data{scope}. Request history is '
-                'stored separately; those logs may lack the metadata overhead needs, or sessions may predate it.')
+                'stored separately; those logs may lack the metadata overhead needs.' + skipped)
+    if not total:
+        return ('no_rows_stored',
+                f'No overhead rows are stored{scope}. Request history is stored separately and `refresh`/`collect` do not '
+                'write overhead data; run `tokenatlas overhead --refresh` to scan the harness logs.')
+    plural = 'session is' if total == 1 else 'sessions are'
+    after = (f'Stored overhead data ends at {newest}' if newest else 'Stored overhead sessions have no start time')
     if args.refresh:
-        return ('root_missing',
-                'Nothing was scanned: no session root exists for ' + ', '.join(skipped_roots) + '. '
-                'Request history is stored separately and does not provide overhead data.')
-    return ('no_rows_stored',
-            f'No overhead rows are stored{scope}. Request history is stored separately and `refresh`/`collect` do not '
-            'write overhead data; run `tokenatlas overhead --refresh` once to scan the harness logs.')
+        advice = 'The rescan did not add sessions in range; ' + ('widen --since' if args.since else 'check --harness') + '.'
+    else:
+        advice = ('Run `tokenatlas overhead --refresh` to store later sessions'
+                  + ('; or use an earlier --since (include a UTC offset, e.g. +02:00).' if args.since else '.'))
+    return ('filter_excludes_all',
+            f'{total} overhead {plural} stored but none match{scope}. {after}. {advice}' + skipped)
 
 
 def run(args):
@@ -722,12 +734,9 @@ def run(args):
                     skipped.append(h)
         db.execute('BEGIN')
         ensure(db)
-        total, newest, matching = _stored_stats(db, args.since, None, args.harness)
-        if matching:
-            with progress.step('Summarize overhead'):
-                result = summarize(db, since=args.since, harness=args.harness, records=history.records())
-        else:  # nothing to report: skip loading the full request history
-            result = summarize(db, since=args.since, harness=args.harness)
+        total, newest = _stored_stats(db, args.harness)
+        with progress.step('Summarize overhead'):
+            result = summarize(db, since=args.since, harness=args.harness, records=history.records)
         db.rollback()
     progress.finish()
     if not result['harnesses']:

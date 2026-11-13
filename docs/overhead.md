@@ -7,7 +7,7 @@ Overhead rows are stored in the history database but are written only by `overhe
 `collect` store request history and do not write them, so a database that has never run `overhead --refresh` has
 no overhead data however many requests it holds. Without `--refresh` the command only reads stored rows. When the
 result is empty, JSON adds `reason` and a stable `reason_code` (`no_rows_stored`, `filter_excludes_all`,
-`rescan_found_nothing`, `root_missing`) and mirrors the reason to stderr; text mode prints the reason in the report.
+`rescan_found_nothing`, `root_missing`; counts and newest start are scoped to `--harness`) and mirrors the reason to stderr; text mode prints the reason in the report.
 `--since` is inclusive and accepts any offset (`2026-10-11T00:00:00+02:00`); a timestamp without an offset is UTC.
 
 ## What is exact and what is estimated
