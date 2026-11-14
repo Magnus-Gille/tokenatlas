@@ -4,8 +4,21 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-11-14
+
+### Added
+
+- Optional `tokenatlas[zstd]` extra (`zstandard`) for reading compressed Codex rollouts; the `zstd` binary on PATH works as a fallback (#185).
+
+### Changed
+
+- List-price coverage is shown beside every cost total: the headline figures, the usage and work panels, and the model-share, price-comparison and interrupted-turn insights report the share of requests without a complete USD list price and the largest unpriced models, following the report filters. `doctor` counts only requests with no list price and warns separately about price entries older than 30 days. `codex-auto-review` is listed as explicitly unpriced (#189).
+- Price table re-verified on 2026-11-14: current Claude list prices, `inference_geo=us` multipliers, Ultrafast tiers with their own long-context prices for `gpt-6.1-sol` and `gpt-6-astra`, per-model OpenRouter endpoint sources and OpenCode Zen free models at $0 (#189).
+
 ### Fixed
 
+- `overhead` explains an empty result with a `reason_code` (`no_rows_stored`, `filter_excludes_all`, `rescan_found_nothing`, `root_missing`) and says when `overhead --refresh` is needed; overhead data is still collected only by that rescan (#184).
+- OpenCode v2 session storage is imported alongside the legacy layout with stable keys; legacy rows win for shared message ids, v2-only messages are linked to their turn by sequence, and a stale-parser check looks at the source data (#186).
 - Codex rollouts compressed to `rollout-*.jsonl.zst` and the `~/.codex/archived_sessions` root are imported with the same parser and keys as plain rollouts. Reading compressed files needs the optional `tokenatlas[zstd]` extra (`pip install 'tokenatlas[zstd]'`, `pipx inject tokenatlas zstandard` or `uv tool install 'tokenatlas[zstd]'`) or the `zstd` binary on PATH. Without either, one diagnostic and a count of unreadable files are reported and `doctor` and the coverage section show the import as partial. Rollout files with an unrecognised suffix count as unreadable too.
 - Concurrent commands no longer fail with `usage: database is locked` (TOKEN-190). The history uses WAL mode, so long analytics commands and `refresh`/`collect` run side by side. Analytics commands (`report`, `insights`, `top` without `--keep-text`, `overhead`, `session`, `doctor`, `quota show`) are read-only and no longer migrate the schema: after an upgrade run `tokenatlas refresh` once. A lock between writers exits 75 with a `database:` prefix, and `collect` retries and logs the steps it skips.
 
