@@ -48,7 +48,7 @@ What is read, from each harness's default location (or where its own variable mo
 |---|---|
 | Claude Code | `~/.claude/projects` |
 | Claude desktop Cowork (macOS) | `~/Library/Application Support/Claude/local-agent-mode-sessions/…/.claude/projects` |
-| Codex | `~/.codex/sessions` |
+| Codex | `~/.codex/sessions` and `~/.codex/archived_sessions` (plain and compressed `rollout-*.jsonl[.zst]`; compressed files need `pip install 'tokenatlas[zstd]'`, `pipx inject tokenatlas zstandard` or the `zstd` binary) |
 | OpenCode | `~/.local/share/opencode/opencode.db` |
 | Pi | `~/.pi/agent/sessions` |
 
@@ -93,7 +93,7 @@ variable, which TokenAtlas reads at every run (an unset, empty or relative value
 | Harness | Variable | Read from | Default |
 | --- | --- | --- | --- |
 | Claude Code | `CLAUDE_CONFIG_DIR` | `$CLAUDE_CONFIG_DIR/projects` | `~/.claude/projects` |
-| Codex | `CODEX_HOME` | `$CODEX_HOME/sessions` and `session_index.jsonl` | `~/.codex/sessions` |
+| Codex | `CODEX_HOME` | `$CODEX_HOME/sessions`, `$CODEX_HOME/archived_sessions` and `session_index.jsonl` | `~/.codex/sessions` |
 | Pi | `PI_CODING_AGENT_DIR` (leading `~` expanded) | `$PI_CODING_AGENT_DIR/sessions` | `~/.pi/agent/sessions` |
 | OpenCode | `XDG_DATA_HOME` | `$XDG_DATA_HOME/opencode/opencode.db` | `~/.local/share/opencode/opencode.db` |
 

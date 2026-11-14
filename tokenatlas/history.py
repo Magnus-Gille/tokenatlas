@@ -736,6 +736,7 @@ class History:
                           coverage_complete=False, errors=[])
             expects_file = harness == 'opencode'
             dirty = False
+            zstd_state = dict(decoder=None, error=None, skipped=0)
             if not (root.is_file() if expects_file else root.is_dir()):
                 result['status'] = 'missing'
                 result['errors'].append('source database is not a readable file' if expects_file else
@@ -748,10 +749,18 @@ class History:
                 def walk_error(exc):
                     result['read_errors'] += 1
                     result['errors'].append(f'{type(exc).__name__}: {exc}')
-                paths = sorted(Path(directory) / name
-                    for directory, _, names in os.walk(root, onerror=walk_error)
-                    for name in names if Path(name).match(pattern))
-            result['files_seen'] = len(paths)
+                listed = [Path(directory) / name
+                          for directory, _, names in os.walk(root, onerror=walk_error) for name in names]
+                paths = sorted(p for p in listed if p.match(pattern) or
+                               (harness == 'codex' and p.match('rollout-*.jsonl.zst')))
+                if harness == 'codex':
+                    # A rollout under a suffix this version cannot read is still a source file: count it, never hide it.
+                    odd = sorted(p for p in listed if p.match('rollout-*.jsonl.*') and not p.match('rollout-*.jsonl.zst'))
+                    if odd:
+                        result['read_errors'] += len(odd)
+                        result['files_seen'] += len(odd)
+                        result['errors'].append(f'{len(odd)} Codex rollout file(s) have an unrecognised suffix and were not read (first: {odd[0]})')
+            result['files_seen'] += len(paths)
             collect = {'claude':why.collect_claude, 'codex':why.collect_codex,
                        'pi':why.collect_pi, 'opencode':why.collect_opencode}[harness]
             for number, path in enumerate(paths, 1):
@@ -768,7 +777,25 @@ class History:
                         result['errors'] += [f'{path}: {n}' for n in diagnostics.get('notes', ())]
                         continue
                     diagnostics = dict.fromkeys(DIAGNOSTIC_KEYS, 0)
-                    if harness != 'opencode':
+                    if harness == 'codex' and path.name.endswith('.zst'):
+                        if zstd_state['error']:
+                            # No decoder: skip without retrying; one summary diagnostic is added after the loop.
+                            zstd_state['skipped'] += 1
+                            result['read_errors'] += 1
+                            continue
+                        if zstd_state['decoder'] is None:
+                            try:
+                                zstd_state['decoder'] = why.resolve_zstd_decoder()
+                            except why.ZstdUnavailableError as exc:
+                                zstd_state['error'] = str(exc)
+                                zstd_state['skipped'] += 1
+                                result['read_errors'] += 1
+                                continue
+                        # One decode feeds both the collector and the line diagnostics.
+                        records = collect(root, datetime(1970,1,1,tzinfo=timezone.utc),
+                                          datetime(9999,1,1,tzinfo=timezone.utc), paths=[path], strict=True,
+                                          decoder=zstd_state['decoder'], diagnostics=diagnostics)
+                    elif harness != 'opencode':
                         with path.open('rb') as handle:
                             for raw in handle:
                                 try:
@@ -840,6 +867,8 @@ class History:
                 except (OSError, UnicodeError) as exc:
                     result['read_errors'] += 1
                     result['errors'].append(f'{path}: {type(exc).__name__}: {exc}')
+            if zstd_state['error']:
+                result['errors'].append(f"{zstd_state['skipped']} compressed Codex rollout(s) could not be read: {zstd_state['error']}")
             if result['status'] == 'ok':
                 if any(result[k] for k in ('malformed_lines','partial_lines','unparsed_usage_lines','schema_errors','stale_parser','read_errors','changed_during_read')):
                     result['status'] = 'partial'

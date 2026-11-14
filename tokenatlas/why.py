@@ -8,13 +8,19 @@ line is retired and only the collectors live here.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import stat
+import subprocess
+import tempfile
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +34,10 @@ OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 # Claude desktop Cowork (macOS only): local_*/.claude/projects hold ordinary Claude Code transcripts.
 # Never read the sibling audit.jsonl: it is an SDK stream copy of the same calls under other id keys.
 COWORK_SESSIONS = Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+
+
+class ZstdUnavailableError(OSError):
+    """Raised when a compressed Codex rollout cannot be decoded locally."""
 
 
 def _env_dir(var, tilde=False):
@@ -60,6 +70,12 @@ def codex_session_index():
     """Codex's session index next to its sessions: CODEX_HOME/session_index.jsonl, else the default."""
     base = _env_dir('CODEX_HOME')
     return (base if base else CODEX_SESSIONS.parent) / 'session_index.jsonl'
+
+
+def codex_roots() -> list[Path]:
+    """Codex keeps active and archived rollouts in separate roots."""
+    active = harness_root('codex')[0]
+    return [active, active.parent / 'archived_sessions']
 
 
 def cowork_scan() -> tuple[list[Path], list[str]]:
@@ -441,20 +457,176 @@ def _paths_for(root: Path, pattern: str, start: datetime, paths: list[Path] | No
     return _recent_files(root, pattern, start)
 
 
-def _read_json_lines(path: Path, *, strict: bool = False) -> Iterable[tuple[int, dict]]:
+ZSTD_INSTALL_HINT = ("install the optional extra (pip install 'tokenatlas[zstd]', pipx inject tokenatlas zstandard, "
+                     "or uv tool install 'tokenatlas[zstd]') or provide the zstd binary on PATH")
+
+
+def _check_zstd_frames(path: Path, zstd) -> None:
+    """Walk the frame and block headers of a .zst file without decompressing: it must hold whole frames only.
+
+    zstandard's stream reader returns a silent prefix for an empty or truncated file, unlike `zstd -d`.
+    """
+    def bad(why_: str):
+        return OSError(f"cannot read compressed rollout {path}: {why_}")
+    with path.open("rb") as fh:
+        size = fh.seek(0, 2)
+        pos = frames = 0
+        while pos < size:
+            fh.seek(pos)
+            head = fh.read(18)
+            magic = int.from_bytes(head[:4], "little")
+            if 0x184D2A50 <= magic <= 0x184D2A5F:  # skippable frame: magic, length, payload
+                if len(head) < 8 or pos + 8 + int.from_bytes(head[4:8], "little") > size:
+                    raise bad("truncated zstd skippable frame")
+                pos += 8 + int.from_bytes(head[4:8], "little")
+                frames += 1
+                continue
+            if magic != 0xFD2FB528:
+                raise bad("not a zstd frame")
+            try:
+                pos += zstd.frame_header_size(head)
+            except zstd.ZstdError as exc:
+                raise bad(f"truncated or invalid zstd frame header: {exc}") from exc
+            while True:
+                fh.seek(pos)
+                block = fh.read(3)
+                if len(block) < 3:
+                    raise bad("truncated zstd frame")
+                value = int.from_bytes(block, "little")
+                kind = (value >> 1) & 3
+                if kind == 3:
+                    raise bad("invalid zstd block")
+                pos += 3 + (1 if kind == 1 else value >> 3)
+                if pos > size:
+                    raise bad("truncated zstd frame")
+                if value & 1:
+                    break
+            if head[4] & 0x04:  # content checksum
+                pos += 4
+                if pos > size:
+                    raise bad("truncated zstd frame")
+            frames += 1
+        if not frames:
+            raise bad("no zstd frame (empty file)")
+
+
+class _ZstdModuleReader(io.RawIOBase):
+    """Binary stream over zstandard's stream reader: every frame, output bounded by the caller's read size.
+
+    A truncated or empty file is an error (verified structurally at EOF), as with `zstd -d`.
+    """
+
+    def __init__(self, zstd, path: Path, source):
+        self._zstd, self._path = zstd, path
+        self._reader = zstd.ZstdDecompressor().stream_reader(source, read_across_frames=True)
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        try:
+            n = self._reader.readinto(buffer)
+        except self._zstd.ZstdError as exc:
+            raise OSError(f"cannot read compressed rollout {self._path}: {exc}") from exc
+        if not n:
+            _check_zstd_frames(self._path, self._zstd)
+        return n
+
+
+def resolve_zstd_decoder():
+    """The zstd decoder to use for a whole refresh: ('module', zstandard) or ('binary', path); raises ZstdUnavailableError."""
     try:
-        with path.open(errors="replace") as handle:
-            for line_number, raw in enumerate(handle, 1):
-                try:
-                    value = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if isinstance(value, dict):
-                    yield line_number, value
+        import zstandard
+        return "module", zstandard
+    except ImportError:
+        pass
+    binary = shutil.which("zstd")
+    if binary:
+        return "binary", binary
+    raise ZstdUnavailableError(f"cannot read compressed Codex rollouts: {ZSTD_INSTALL_HINT}")
+
+
+@contextlib.contextmanager
+def _zstd_text_stream(path: Path, decoder):
+    """Decoded text of a .zst file: one TextIOWrapper path for both decoders, so lines are split identically."""
+    kind, tool = decoder or resolve_zstd_decoder()
+    if kind == "module":
+        with path.open("rb") as compressed:
+            with io.TextIOWrapper(io.BufferedReader(_ZstdModuleReader(tool, path, compressed)),
+                                  encoding="utf-8", errors="replace") as text:
+                yield text
+        return
+    with tempfile.TemporaryFile() as errors:
+        proc = subprocess.Popen([tool, "-q", "-d", "-c", "--", str(path)], stdout=subprocess.PIPE, stderr=errors)
+        expired = threading.Event()
+        def expire():  # the deadline covers consuming stdout too: killing the decoder gives the reader EOF
+            expired.set()
+            proc.kill()
+        timeout = _zstd_timeout(path)
+        watchdog = threading.Timer(timeout, expire)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            try:
+                with io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="replace") as text:
+                    yield text
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            returncode = proc.wait()  # still under the watchdog: a decoder that closes stdout and stalls is killed
+        finally:
+            watchdog.cancel()
+        if expired.is_set():
+            raise OSError(f"cannot read compressed rollout {path}: zstd did not finish within {timeout:g} s")
+        if returncode:
+            errors.seek(0)
+            detail = errors.read().decode("utf-8", "replace").strip() or "decoder failed"
+            raise OSError(f"cannot read compressed rollout {path}: {detail}")
+
+
+def _zstd_timeout(path: Path) -> float:
+    """Total seconds the zstd binary may take for one file: generous, growing with the compressed size."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return max(60.0, size / (1 << 20) * 4)
+
+
+def _read_text_lines(path: Path, *, strict: bool = False, decoder=None) -> Iterable[str]:
+    try:
+        if not path.name.endswith(".zst"):
+            with path.open(errors="replace") as handle:
+                yield from handle
+            return
+        with _zstd_text_stream(path, decoder) as text:
+            yield from text
     except OSError:
         if strict:
             raise
         return
+
+
+def _read_json_lines(path: Path, *, strict: bool = False, decoder=None, diagnostics: dict | None = None) -> Iterable[tuple[int, dict]]:
+    """Dict rows with their line numbers. With `diagnostics`, also count malformed, partial and unusable-usage lines."""
+    for line_number, raw in enumerate(_read_text_lines(path, strict=strict, decoder=decoder), 1):
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            if diagnostics is not None:
+                diagnostics["malformed_lines" if raw.endswith(("\n", "\r")) else "partial_lines"] += 1
+            continue
+        if not isinstance(value, dict):
+            if diagnostics is not None:
+                diagnostics["malformed_lines"] += 1
+            continue
+        if diagnostics is not None:
+            payload = _mapping(value.get("payload"))
+            usage = _mapping(payload.get("info")).get("last_token_usage") if payload.get("type") == "token_count" else None
+            if usage is not None and (not isinstance(usage, dict) or parse_iso_timestamp(value.get("timestamp")) is None):
+                diagnostics["unparsed_usage_lines"] += 1
+        yield line_number, value
 
 
 def _recent_files(root: Path, pattern: str, start: datetime) -> list[Path]:
@@ -467,7 +639,10 @@ def _recent_files(root: Path, pattern: str, start: datetime) -> list[Path]:
         return []
     threshold = start.timestamp()
     files = []
-    for path in root.rglob(pattern):
+    candidates = root.rglob(pattern)
+    if pattern == 'rollout-*.jsonl':
+        candidates = (*candidates, *root.rglob('rollout-*.jsonl.zst'))
+    for path in candidates:
         try:
             if path.stat().st_mtime >= threshold:
                 files.append(path)
@@ -911,6 +1086,8 @@ def collect_codex(
     *,
     paths: list[Path] | None = None,
     strict: bool = False,
+    decoder=None,
+    diagnostics: dict | None = None,
 ) -> list[AttributionRecord]:
     """Collect Codex per-turn deltas from rollout JSONL files.
 
@@ -922,7 +1099,7 @@ def collect_codex(
     calls: dict[tuple[str, str], dict] = {}
     interrupted: set[tuple[str, str]] = set()
     for path in _paths_for(root, "rollout-*.jsonl", start, paths):
-        rows = list(_read_json_lines(path, strict=strict))
+        rows = list(_read_json_lines(path, strict=strict, decoder=decoder, diagnostics=diagnostics))
         meta_payload = next(
             (_mapping(row.get("payload")) for _, row in rows if row.get("type") == "session_meta"),
             {},

@@ -20,6 +20,7 @@ jobs:
             python: "3.10"
           - os: ubuntu-latest
             python: "3.11"
+            zstd: "module,binary"
           - os: macos-latest
             python: "3.12"
           - os: windows-latest
@@ -37,9 +38,16 @@ jobs:
         run: |
           python -m pip install .
           python -c "from zoneinfo import ZoneInfo; ZoneInfo('Europe/Stockholm')"
+      - name: Install zstd decoders (compressed Codex rollouts)
+        if: matrix.zstd
+        run: |
+          python -m pip install "zstandard>=0.22"
+          sudo apt-get install -y zstd
       - name: Unit and release-artifact tests
         env:
           TOKENATLAS_TEST_MANAGERS: "1"
+          # On this leg a missing decoder fails the compressed-rollout tests instead of skipping them.
+          TOKENATLAS_REQUIRE_ZSTD: ${{ matrix.zstd }}
         run: python -m unittest discover -v
       - name: Compile Python
         run: python -m compileall -q -x "[\\/]\.git[\\/]" .

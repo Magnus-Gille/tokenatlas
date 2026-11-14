@@ -103,6 +103,12 @@ def _with_problems(entry,problems):
     return dict(entry,errors=[*entry.get('errors',[]),*problems],status=max(entry['status'],'partial',key=rank)) if problems else entry
 
 
+def _refresh_roots(history,name,found):
+    """Refresh every root of one harness; one result is returned as is, several are aggregated."""
+    results=[history.refresh(name,r) for r in found]
+    return (results[0] if len(results)==1 else aggregate(results)) if results else {'harness':name,'status':'ok','errors':[]}
+
+
 def refresh_all(history):
     """Refresh every harness from its default roots; absent ones are reported, an OSError only fails its own harness. Then rewrites the statusline cache."""
     from tokenatlas import why
@@ -114,12 +120,14 @@ def refresh_all(history):
         try:
             # Claude: main root, then each Cowork transcript root (macOS; absent elsewhere and simply skipped).
             cowork,problems=why.cowork_scan() if name=='claude' else ([],[])
-            found=[r for r in [root,*cowork] if _present(r)]
+            candidates = [root, *cowork]
+            if name == 'codex':
+                candidates = why.codex_roots()
+            found=[r for r in candidates if _present(r)]
             if not found and not problems:
                 entries.append({'harness':name,'status':'absent'});continue
             with progress.step(f'Refresh {name}') as shown:
-                results=[history.refresh(name,r) for r in found]
-                entry=(results[0] if len(results)==1 else aggregate(results)) if results else {'harness':name,'status':'ok','errors':[]}
+                entry=_refresh_roots(history,name,found)
                 entry=_with_problems(entry,problems)
                 shown.failed=entry['status']!='ok'  # a missing root or a partial import ends as failed, not ✓
         except OSError as exc:
@@ -733,7 +741,12 @@ def _main(argv=None):
                 roots={h:why.harness_root(h)[0] for h in ('claude','codex','pi','opencode')}
                 if args.root or args.harness!='claude':
                     with progress.step(f'Refresh {args.harness}') as shown:
-                        result=history.refresh(args.harness,args.root or roots[args.harness]);shown.failed=result['status']!='ok'
+                        if args.harness == 'codex' and not args.root:
+                            # Same roots as refresh --all (sessions and archived_sessions); with none present, keep the 'missing' report of the default root.
+                            result=_refresh_roots(history,'codex',[r for r in why.codex_roots() if _present(r)] or [roots['codex']])
+                        else:
+                            result=history.refresh(args.harness,args.root or roots[args.harness])
+                        shown.failed=result['status']!='ok'
                 else:
                     # Main root, then each Cowork transcript root (macOS; absent elsewhere and simply skipped).
                     cowork,problems=why.cowork_scan()
