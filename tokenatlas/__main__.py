@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -522,7 +522,8 @@ def _main(argv=None):
     provider_remove=provider_sub.add_parser('remove',help='Remove a local provider name.')
     provider_remove.add_argument('name')
     provider_sub.add_parser('show',help='Show configured local provider names.')
-    commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
+    doctor=commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
+    doctor.add_argument('--prices',type=Path,help='Override the price table used for coverage diagnostics.')
     args=parser.parse_args(argv)
     if args.command=='top' and args.plan is not None:
         args.plan=subscriptions._plan(args.plan)
@@ -842,6 +843,10 @@ def _main(argv=None):
             elif args.command=='doctor':
                 history.connection.execute('BEGIN')
                 result=history.doctor()
+                now = datetime.now(timezone.utc)
+                result['pricing']=pricing.diagnostics(
+                    history.records(start=now - timedelta(days=30), end=now),
+                    pricing.load_prices(args.prices), now=now)
                 # Where each harness is read from now, and why; only the harness variables, never the whole environment.
                 result['claude_quota']=_quota_status(args.db)
                 result['roots']={h:dict(zip(('path','source'),(str(r),src))) for h in ('claude','codex','pi','opencode') for r,src in [why.harness_root(h)]}

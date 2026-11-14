@@ -182,6 +182,10 @@ async function ready(page, errors, what = 'report') {
       const cs=own.find(f=>f.id==='context_size'),ms=own.find(f=>f.id==='model_share');if(cs)assert.equal(cs.prov,I.prov[1]);if(ms)assert.equal(ms.prov,I.prov[0]);
       // the card is computed server-side: the filters above do not touch it
       const before=await page.locator('#ins-body').innerText();await page.selectOption('#harness',{index:1});assert.equal(await page.locator('#ins-body').innerText(),before);await page.selectOption('#harness',{index:0});
+      // #185: the unpriced share beside the cost totals follows the selection (same rows as the totals)
+      const unpricedNote=async()=>page.evaluate(()=>{const gl=document.querySelector('#glance-text .glance-unpriced');const sel=UsageReport.getSelected().filter(r=>!r.id_synthetic),n=sel.filter(r=>r.cost==null).length,el=document.querySelector('#usage-body .usage-unpriced'),vis=!document.querySelector('#usage').classList.contains('hidden');return{n,of:sel.length,vis,text:el&&el.textContent,glance:gl&&gl.textContent}});
+      for(const idx of [0,1]){await page.selectOption('#harness',{index:idx});const u=await unpricedNote();if(u.n)assert.ok(u.glance&&u.glance.replace(/\D/g,'').startsWith(String(u.n)+String(u.of)),'headline unpriced note follows the filter: '+JSON.stringify(u));else assert.equal(u.glance,null);if(u.vis){if(u.n)assert.ok(u.text&&u.text.replace(/\D/g,'').startsWith(String(u.n)+String(u.of)),'unpriced note follows the filter: '+JSON.stringify(u));else assert.equal(u.text,null)}}
+      await page.selectOption('#harness',{index:0});
       assert.equal(await page.locator('#cost-facts [data-win="30d"]').getAttribute('aria-pressed'),'true');
     }
     assert.equal(await page.evaluate(()=>document.title.startsWith('TokenAtlas')),true);
@@ -592,7 +596,7 @@ async function ready(page, errors, what = 'report') {
         assert.deepEqual(par.inc[0],par.inc[1]);assert.ok(par.inc[0]>0,'the fixture has an incomplete row');for(const [k,pg,py] of par.parts)assert.ok(Math.abs(pg-py)<=1e-9*Math.max(1,py),k+': page '+pg+' vs python '+py);
       }
       {
-        const I=INS[T.lang],money=async()=>{const f=(await facts(p2)).find(x=>x.id==='model_share');return {ids:(await facts(p2)).map(x=>x.id),total:norm(f.rows.find(r=>r[0]===(T.lang==='sv'?'Prissatt kostnad':'Priced cost'))[1]),unpriced:norm(f.rows.at(-1)[1])}};
+        const I=INS[T.lang],money=async()=>{const f=(await facts(p2)).find(x=>x.id==='model_share');return {ids:(await facts(p2)).map(x=>x.id),total:norm(f.rows.find(r=>r[0]===(T.lang==='sv'?'Prissatt kostnad':'Priced cost'))[1]),unpriced:norm(f.rows.find(r=>r[0]===(T.lang==='sv'?'Anrop utan komplett USD-listpris':'Requests without a complete USD list price'))[1])}};
         const first=(await facts(p2)).find(x=>x.id==='model_share').assumptions.join(' | ');
         assert.ok(first.includes(I.spd)&&first.includes(I.tier)&&first.includes(I.table),'pricing assumptions with counts and the table date: '+first);assert.ok(!first.includes(I.lower),'the 30-day window has no incomplete request');
         {const cf=(await facts(p2)).find(x=>x.id==='credits');assert.ok(cf,'credits fact');
