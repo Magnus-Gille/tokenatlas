@@ -164,6 +164,7 @@ class CollectTests(unittest.TestCase):
         records, diagnostics = self.collect(path)
         self.assertEqual([r.call_id for r in records], ['m1'])
         self.assertEqual(diagnostics['schema_errors'], 0)
+        self.assertEqual(diagnostics['checks_skipped'], 1)  # no time_created: the stale check says so
 
     def test_message_without_session_row_is_read_and_counted_as_orphan(self):
         db = Db(self.root / 'orphan.db', legacy=False)
@@ -184,6 +185,54 @@ class CollectTests(unittest.TestCase):
             self.assertEqual((records, diagnostics['schema_errors']), ([], 1), name)
             with self.assertRaisesRegex(sqlite3.OperationalError, 'unsupported OpenCode schema.*' + expected):
                 why.collect_opencode(path, START, END)
+
+    def test_v2_turn_is_the_nearest_preceding_user_or_synthetic_row(self):
+        db = Db(self.root / 'turn.db', legacy=False)
+        db.session()
+        db.v2('u1', {'text': 'q', 'time': {'created': T0}}, kind='user')
+        db.v2('a1', v2_data(T0 + 10, T0 + 20))
+        db.v2('syn1', {'text': 'q', 'time': {'created': T0 + 30}}, kind='synthetic')
+        db.v2('a2', v2_data(T0 + 40, T0 + 50))
+        db.v2('a3', v2_data(T0 + 60, T0 + 70))
+        # an abort without usage right after a3 is attributed to the request that was running in that turn
+        db.v2('ab', v2_data(T0 + 80, T0 + 90, tok=False, error={'type': 'aborted', 'message': 'x'}))
+        records, _ = self.collect(db.done())
+        by_id = {r.call_id: r for r in records}
+        self.assertEqual({k: (v.turn_id, v.turn_confidence) for k, v in by_id.items()},
+                         {'a1': ('u1', 'observed'), 'a2': ('syn1', 'observed'), 'a3': ('syn1', 'observed')})
+        self.assertEqual({k: list(v.flags) for k, v in by_id.items() if v.flags}, {'a3': [why.INTERRUPTED]})
+
+    def test_v2_turn_equals_legacy_parent_for_shared_ids(self):
+        db = Db(self.root / 'shared-turn.db')
+        db.session()
+        db.v2('u1', {'text': 'q', 'time': {'created': T0}}, kind='user')
+        db.v2('a1', v2_data(T0 + 10, T0 + 20))
+        db.v2('syn', {'text': 'q', 'time': {'created': T0 + 30}}, kind='synthetic')
+        db.v2('a2', v2_data(T0 + 40, T0 + 50))
+        db.legacy('a1', legacy_data(T0 + 10, T0 + 20, parent='u1'))
+        db.legacy('a2', legacy_data(T0 + 40, T0 + 50, parent='syn'))
+        path = db.done()
+        both, _ = self.collect(path)
+        c = sqlite3.connect(path); c.executescript('DROP TABLE message; DROP TABLE session;'); c.close()
+        v2_only, _ = self.collect(path)
+        self.assertEqual({r.call_id: r.turn_id for r in both}, {r.call_id: r.turn_id for r in v2_only})
+
+    def test_one_readable_generation_is_not_discarded_when_the_other_is_broken(self):
+        db = Db(self.root / 'mixed.db', legacy=False)
+        db.session()
+        db.v2('m1', v2_data(T0, T0 + 5))
+        db.c.execute('CREATE TABLE message (id TEXT PRIMARY KEY)')  # legacy message without its session table
+        records = why.collect_opencode(db.done(), START, END)  # no diagnostics: must not raise, the V2 side is readable
+        self.assertEqual([r.call_id for r in records], ['m1'])
+
+    def test_message_like_table_the_stale_check_cannot_read_is_reported(self):
+        db = Db(self.root / 'untimed.db', legacy=False)
+        db.session()
+        db.v2('m1', v2_data(T0, T0 + 5))
+        db.c.execute('CREATE TABLE "we""ird_message" (id TEXT, data TEXT)')
+        _, diagnostics = self.collect(db.done())
+        self.assertEqual((diagnostics['schema_errors'], diagnostics['checks_skipped']), (0, 1))
+        self.assertIn('stale-parser check skipped for we"ird_message', diagnostics['notes'][0])
 
     def test_no_known_table_still_raises(self):
         path = self.root / 'none.db'
@@ -256,7 +305,12 @@ class HistoryTests(unittest.TestCase):
             db.c.execute('INSERT INTO message_v3 VALUES (?,?,?,?)', ('x', 's1', T0 + 5 * HOUR, json.dumps({'tokens': tokens()})))
         result, records, doctor = self._stale_case(build)
         self.assertEqual((result['status'], result['stale_parser'], len(records)), ('partial', 1, 1))
+        self.assertTrue(any('stale parser: newest source usage row is 2026-09-03T15' in e for e in result['errors']), result['errors'])
         self.assertIsNone(result['last_success'])
+        with History(self.hist) as h:  # the fingerprint-skip path keeps the diagnostics and their text
+            again = h.refresh('opencode', self.root / 'case.db')
+        self.assertEqual((again['files_skipped'], again['stale_parser']), (1, 1))
+        self.assertEqual(again['errors'], result['errors'])
         entry = doctor['imports'][0]
         self.assertEqual((entry['status'], entry['stale_parser']), ('partial', 1))
         self.assertEqual(doctor['files_by_harness']['opencode']['stale_parser'], 1)
@@ -299,6 +353,7 @@ class HistoryTests(unittest.TestCase):
         first, _, _ = self.refresh(path)
         second, _, doctor = self.refresh(path)
         self.assertEqual((first['status'], first['schema_errors'], first['files_skipped']), ('partial', 1, 0))
+        self.assertIn('session_message exists without session_v2', first['errors'][0])
         self.assertEqual((second['status'], second['schema_errors'], second['files_skipped']), ('partial', 1, 1))
         self.assertEqual(doctor['files_by_harness']['opencode']['schema_errors'], 1)
 

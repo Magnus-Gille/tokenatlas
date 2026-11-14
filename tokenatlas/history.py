@@ -26,7 +26,8 @@ OBSERVATION_VERSION = 1  # the 'v' field inside observation dicts
 SCHEMA_VERSION = 2  # PRAGMA user_version of the SQLite layout
 COLLECTOR_VERSION = 5
 STALE_PARSER_GRACE_US = 3600 * 10**6  # newest source usage may exceed the newest stored observation by this much before the parser is called stale
-DIAGNOSTIC_KEYS = ('malformed_lines', 'partial_lines', 'unparsed_usage_lines', 'schema_errors', 'stale_parser', 'orphan_rows')
+DIAGNOSTIC_KEYS = ('malformed_lines', 'partial_lines', 'unparsed_usage_lines', 'schema_errors', 'stale_parser', 'orphan_rows', 'checks_skipped')  # orphan_rows and checks_skipped are informational: they never make an import partial
+# A checkpointed stale/schema state clears only when the source file changes or this revision is bumped.
 HARNESS_REVISION = {'pi': 3, 'codex': 7, 'claude': 3, 'opencode': 3}  # bump to force a re-read of one harness's files only (appended to its fingerprint)
 FIELDS = ('fresh_input', 'cache_read', 'cache_write', 'output')
 ALL_FIELDS = FIELDS + ('reasoning',)
@@ -648,7 +649,7 @@ class History:
             result = dict(harness=harness, root=str(root), last_attempt=utcnow(),
                           last_success=prior.get('last_success'), status='ok', files_seen=0,
                           files_parsed=0, files_skipped=0, observations_seen=0,
-                          malformed_lines=0, partial_lines=0, unparsed_usage_lines=0, schema_errors=0, stale_parser=0, orphan_rows=0, read_errors=0, changed_during_read=0,
+                          malformed_lines=0, partial_lines=0, unparsed_usage_lines=0, schema_errors=0, stale_parser=0, orphan_rows=0, checks_skipped=0, read_errors=0, changed_during_read=0,
                           coverage_complete=False, errors=[])
             expects_file = harness == 'opencode'
             dirty = False
@@ -681,6 +682,7 @@ class History:
                         diagnostics = json.loads(previous['diagnostics'])
                         for k in DIAGNOSTIC_KEYS:
                             result[k] += diagnostics.get(k, 0)
+                        result['errors'] += [f'{path}: {n}' for n in diagnostics.get('notes', ())]
                         continue
                     diagnostics = dict.fromkeys(DIAGNOSTIC_KEYS, 0)
                     if harness != 'opencode':
@@ -716,6 +718,7 @@ class History:
                             continue
                     result['files_parsed'] += 1
                     source_newest_ms = diagnostics.pop('source_newest_ms', None)
+                    notes = list(diagnostics.pop('notes', ()))
                     changed = before != self.fingerprint(path, harness == 'opencode', harness)
                     if changed:
                         result['changed_during_read'] += 1
@@ -741,11 +744,14 @@ class History:
                                                   (file_id,)).fetchone()[0]
                         if stored_newest is None or source_newest_ms * 1000 - stored_newest > STALE_PARSER_GRACE_US:
                             diagnostics['stale_parser'] = 1
+                            notes.append('stale parser: newest source usage row is ' + _ts_text(source_newest_ms * 1000) + ', newest stored observation is '
+                                         + ('none' if stored_newest is None else _ts_text(stored_newest)))
                     for k in diagnostics:
                         result[k] += diagnostics.get(k, 0)
                     # Never checkpoint an incomplete tail; try it again next refresh. Schema errors and stale parsers are checkpointed: they cannot self-heal without a source or code change, and either changes the fingerprint.
                     checkpoint = before if not diagnostics['partial_lines'] and not changed else None
-                    stored = (str(root),checkpoint,json.dumps(diagnostics))
+                    result['errors'] += [f'{path}: {n}' for n in notes]
+                    stored = (str(root),checkpoint,json.dumps({**diagnostics, **({'notes': notes} if notes else {})}))
                     c.execute("UPDATE files SET root=?,fingerprint=?,diagnostics=?,origin='local' WHERE id=?", (*stored,file_id))
                     dirty = dirty or not previous or (previous['fingerprint'],previous['diagnostics']) != stored[1:]
                 except (OSError, UnicodeError) as exc:
