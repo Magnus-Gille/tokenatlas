@@ -122,7 +122,7 @@ def encode_columns(rows):
 COVERAGE_FIELDS = ('observations', 'first_event', 'last_event', 'missing_source_files',
                    'incomplete_observations', 'unlinked_turns')
 IMPORT_FIELDS = ('harness', 'status', 'files_seen', 'files_parsed', 'malformed_lines', 'partial_lines',
-                 'read_errors', 'unparsed_usage_lines', 'last_success')
+                 'read_errors', 'unparsed_usage_lines', 'schema_errors', 'stale_parser', 'last_success')
 
 
 def coverage_key(source_status):

@@ -533,8 +533,6 @@ class AtAGlance(unittest.TestCase):
         self.assertNotIn('I korthet', json.dumps(decode_html(html)))
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class ReportClarity(unittest.TestCase):  # #145
@@ -698,3 +696,7 @@ class I18nPlurals(unittest.TestCase):
                     self.assertIn(key + '_one', texts[lang], (lang, key))
         template = (Path(__file__).parent / 'tokenatlas' / 'report_template.html').read_text(encoding='utf-8')
         self.assertIn("+'_one'", template)
+
+
+if __name__ == '__main__':
+    unittest.main()

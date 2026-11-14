@@ -2,9 +2,10 @@ import copy
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
-from tokenatlas.pricing import (load_prices, price_observation, price_vector, reference_rate_card,
+from tokenatlas.pricing import (diagnostics, load_prices, price_observation, price_vector, reference_rate_card,
                                 summarize_costs, unit_prices)
 
 REF = {'source_url': 'https://example.test/prices', 'retrieved_on': '2026-09-01', 'notes': ''}
@@ -238,9 +239,40 @@ class PriceObservationTests(unittest.TestCase):
 
     def test_other_harness_cache_write_price_and_null_price(self):
         r = self.price(obs(harness='pi', provider='openai', model='gpt-write', fresh=M, write=M))
-        self.assertAlmostEqual(r['cost'], 5.0)  # input 1M*2 + write 1M*3
+        self.assertAlmostEqual(r['cost'], 5.0)  # input 1M*2 + write 1M*3; no TTL evidence is priced as before
         r = self.price(obs(harness='pi', provider='openai', model='gpt-x', fresh=1, write=5, raw={'input_tokens': 6}))
-        self.assertEqual((r['status'], r['parts']['cache_write'], r['cost']), ('partial', None, None))
+        self.assertEqual((r['status'], r['parts']['cache_write'], r['cost']), ('partial', None, None))  # no cache_write rate at all
+
+    def test_non_claude_cache_write_pricing_is_unchanged_from_before_this_pr(self):
+        # fixed expectations equal to the pre-PR (c8fc3c4) results: write x cache_write rate, whatever the raw usage carries
+        for harness in ('codex', 'pi', 'opencode'):
+            for raw in (None, {'cache_write_ttl': '1h'}, {'input_tokens': 4 * M}):
+                r = price_observation(obs(harness=harness, provider='openai', model='gpt-write', fresh=M, write=M, read=M, out=M, raw=raw), TABLE)
+                self.assertEqual((r['status'], r['cost'], r['reason']), ('assumed', 2 + 3 + .5 + 10, None))
+                self.assertEqual(r['parts'], {'input': 2.0, 'cache_write': 3.0, 'cache_read': .5, 'output': 10.0})
+        self.assertEqual(price_vector(obs('pi', 'openai', 'gpt-write', write=M), TABLE)[0][1:3], [3e-6, 3e-6])
+        r = price_observation(obs(harness='pi', provider='openai', model='gpt-x', fresh=1, write=5, raw={'input_tokens': 6}), TABLE)
+        self.assertEqual((r['status'], r['parts']['cache_write'], r['cost']), ('partial', None, None))  # no cache_write rate
+
+    def test_packaged_table_has_no_cache_write_ttl_key(self):
+        self.assertFalse([e['model'] for e in load_prices()['models'] if 'cache_write_ttl' in e])
+
+    def test_packaged_terra_long_boundary_and_tier_combinations(self):
+        table = load_prices()
+        exact = price_observation(obs(harness='codex', provider='openai', model='gpt-6.1-terra', fresh=272_000, out=M), table)
+        self.assertAlmostEqual(exact['parts']['output'], 5.0)
+        self.assertAlmostEqual(exact['cost'], 5.272)
+        long = price_observation(obs(harness='codex', provider='openai', model='gpt-6.1-terra', fresh=272_001, out=M), table)
+        self.assertAlmostEqual(long['parts']['input'], 0.544002)
+        self.assertAlmostEqual(long['parts']['output'], 7.5)
+        self.assertAlmostEqual(long['cost'], 8.044002)
+        fast = price_observation(obs(harness='codex', provider='openai', model='gpt-6.1-terra', fresh=1_000, out=M,
+                                     tariff={'service_tier': 'fast'}), table)
+        self.assertAlmostEqual(fast['cost'], 10.002)
+        for tier in ('fast', 'flex'):
+            combined = price_observation(obs(harness='codex', provider='openai', model='gpt-6.1-terra', fresh=272_001, out=M,
+                                              tariff={'service_tier': tier}), table)
+            self.assertEqual((combined['status'], combined['cost']), ('unpriced', None))
 
     def test_none_token_field_is_partial_never_zero(self):
         r = self.price(obs(fresh=M, out=None, tariff={'speed': 'standard'}))
@@ -288,6 +320,164 @@ class LoadPricesTests(unittest.TestCase):
         self.assertEqual(load_prices()['schema'], 1)
         self.assertEqual(self.load(TABLE)['models'][0]['model'], 'claude-x')
 
+    def test_packaged_new_openai_models_keep_model_page_tiers_and_dates(self):
+        entries = {e['model']: e for e in load_prices()['models']}
+        for model, standard, long, fast, flex, date, url in (
+                ('gpt-6.1-sol', (2, .1, 2.5, 10), (4, .2, 5, 15), (4, .2, 5, 20), (1, .05, 1.25, 5), '2026-11-14', 'gpt-6.1-sol'),
+                ('gpt-6.1-terra', (1, .05, 1.25, 5), (2, .1, 2.5, 7.5), (2, .1, 2.5, 10), (.5, .025, .625, 2.5), '2026-11-14', 'gpt-6.1-terra')):
+            entry = entries[model]
+            self.assertEqual(tuple(entry[k] for k in ('input', 'cache_read', 'cache_write', 'output')), standard)
+            self.assertEqual(entry['long_context']['above_input_tokens'], 272000)
+            self.assertEqual(tuple(entry['long_context'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), long)
+            self.assertEqual(tuple(entry['modifiers']['service_tier=fast'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), fast)
+            self.assertEqual(tuple(entry['modifiers']['service_tier=flex'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), flex)
+            self.assertEqual(entry['retrieved_on'], date)
+            self.assertTrue(entry['source_url'].endswith('/' + url))
+
+    def test_packaged_anthropic_fable_and_haiku_dimensions_and_boundaries(self):
+        table = load_prices()
+        entries = {e['model']: e for e in table['models']}
+        self.assertEqual(entries['claude-fable-5-2']['retrieved_on'], '2026-11-14')
+        self.assertEqual(entries['claude-haiku-5-5']['retrieved_on'], '2026-11-14')
+        self.assertEqual(entries['claude-fable-5-2']['source_url'], 'https://platform.claude.com/docs/en/about-claude/pricing')
+        self.assertEqual(entries['claude-haiku-5-5']['source_url'], 'https://platform.claude.com/docs/en/about-claude/pricing')
+        fable = price_observation(obs(harness='claude', provider='anthropic', model='claude-fable-5-2', fresh=M,
+                                      read=2 * M, write=1_500_000, out=100_000,
+                                      raw=split(M, 500_000)), table)
+        self.assertEqual(fable['status'], 'assumed')
+        self.assertAlmostEqual(fable['parts']['input'], 8.0)
+        self.assertAlmostEqual(fable['parts']['cache_read'], 0.4)
+        self.assertAlmostEqual(fable['parts']['cache_write'], 18.0)
+        self.assertAlmostEqual(fable['parts']['output'], 4.0)
+        self.assertAlmostEqual(fable['cost'], 30.4)
+        self.assertIn('speed not recorded', fable['assumptions'][0])
+        fable_fast = price_observation(obs(harness='claude', provider='anthropic', model='claude-fable-5-2', fresh=M,
+                                           read=2 * M, write=1_500_000, out=100_000,
+                                           raw=split(M, 500_000), tariff={'speed': 'fast'}), table)
+        self.assertEqual(fable_fast['status'], 'priced')
+        self.assertAlmostEqual(fable_fast['cost'], 60.8)
+
+        haiku_exact = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=100_000, out=M), table)
+        self.assertAlmostEqual(haiku_exact['parts']['input'], 0.01)
+        self.assertAlmostEqual(haiku_exact['parts']['output'], 0.5)
+        self.assertAlmostEqual(haiku_exact['cost'], 0.51)
+        haiku_cache_exact = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=99_000,
+                                                 write=1_000, raw=split(400, 600)), table)
+        self.assertAlmostEqual(haiku_cache_exact['cost'], 0.01007)
+        haiku_cache_long = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=99_001,
+                                                write=1_000, raw=split(400, 600)), table)
+        self.assertAlmostEqual(haiku_cache_long['cost'], 0.0503505)
+        haiku_long = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=100_001,
+                                           write=M, out=M, raw=split(400_000, 600_000)), table)
+        self.assertAlmostEqual(haiku_long['parts']['input'], 0.0500005)
+        self.assertAlmostEqual(haiku_long['parts']['cache_write'], 0.85)
+        self.assertAlmostEqual(haiku_long['parts']['output'], 2.5)
+        self.assertAlmostEqual(haiku_long['cost'], 3.4000005)
+        haiku_fast = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=1,
+                                           tariff={'speed': 'fast'}), table)
+        self.assertEqual((haiku_fast['status'], haiku_fast['cost']), ('unpriced', None))
+
+    def test_diagnostics_count_only_no_list_price_and_rank_by_tokens(self):
+        stamp = lambda r, ts='2026-10-14T00:00:00Z': dict(r, ts=ts)
+        rows = [stamp(obs(model='unknown-a', fresh=10, out=5, harness='codex', provider='openai')),      # 15 tokens, 1 request
+                stamp(obs(model='unknown-b', fresh=1, harness='codex', provider='openai')),              # 1 token, 2 requests
+                stamp(obs(model='unknown-b', fresh=1, harness='codex', provider='openai')),
+                stamp(obs(model='gpt-x', fresh=M, harness='codex', provider='openai')),
+                stamp(obs(model='eu-model', fresh=M, harness='codex', provider='mistral')),             # priced in EUR: not a missing price
+                stamp(obs(model='anything', fresh=M, harness='codex', provider='m5')),                  # local
+                stamp(obs(model='codex-auto-review', fresh=M, harness='codex', provider='openai')),     # explicit
+                dict(stamp(obs(model='synthetic-model', fresh=M, harness='codex', provider='openai')), id_synthetic=True),
+                stamp(obs(model='future', fresh=M, harness='codex', provider='openai'), '2026-10-16T00:00:00+00:00'),
+                dict(obs(model='no-ts', harness='codex', provider='openai'), ts=None)]
+        table = dict(TABLE, unpriced_models=[dict(provider='openai', model='codex-auto-review', reason='no public rate',
+                                                  source_url='https://example.test/p', retrieved_on='2026-09-01')])
+        result = diagnostics(rows, table, now=datetime(2026, 10, 15, tzinfo=timezone.utc), threshold=.1)
+        self.assertEqual((result['requests'], result['priced_requests'], result['no_list_price_requests']), (7, 1, 3))
+        self.assertEqual(result['not_counted_as_missing'], {'explicitly_unpriced': 1, 'local': 1, 'other_currency': 1})
+        self.assertEqual([(m['model'], m['requests'], m['tokens']) for m in result['largest_unpriced_models']],
+                         [('unknown-a', 1, 15), ('unknown-b', 2, 2)])
+        self.assertTrue(any('have no list price' in w for w in result['warnings']))
+
+    def test_explicit_unpriced_models_are_machine_readable_and_validated(self):
+        table = load_prices()
+        r = price_observation(obs(harness='codex', provider='openai', model='codex-auto-review', fresh=M), table)
+        self.assertEqual((r['status'], r['cost'], r['explicit_unpriced']), ('unpriced', None, True))
+        self.assertTrue(r['reason'].startswith('explicitly unpriced: '))
+        self.assertEqual(r['price_ref']['model'], 'codex-auto-review')
+        # not the generic "no list price" case: doctor does not count it
+        result = diagnostics([dict(obs(harness='codex', provider='openai', model='codex-auto-review', fresh=M), ts='2026-10-14T00:00:00Z')],
+                             table, now=datetime(2026, 10, 15, tzinfo=timezone.utc))
+        self.assertEqual((result['no_list_price_requests'], result['not_counted_as_missing']), (0, {'explicitly_unpriced': 1}))
+        bad = copy.deepcopy(TABLE)
+        bad['unpriced_models'] = [dict(provider='openai', model='x')]
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'p.json'
+            path.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(ValueError, 'unpriced_models'):
+                load_prices(path)
+
+    def test_diagnostics_stale_entries_are_counted_per_entry(self):
+        old, fresh = dict(GPT, model='old', retrieved_on='2026-09-01'), dict(GPT, model='new', retrieved_on='2026-10-10')
+        result = diagnostics([], dict(TABLE, models=[old, fresh]), now=datetime(2026, 10, 15, tzinfo=timezone.utc), max_age_days=30)
+        self.assertEqual((result['stale_entries'], result['price_entries'], result['oldest_entry_age_days']), (1, 2, 44))
+        self.assertEqual(len(result['warnings']), 1)
+        self.assertIn('1 of 2 price entries', result['warnings'][0])
+
+    def test_packaged_table_does_not_warn_on_its_own_date(self):
+        table = load_prices()
+        day = datetime.fromisoformat(table['retrieved_on']).replace(tzinfo=timezone.utc)
+        result = diagnostics([], table, now=day)
+        # Only the two OpenCode Zen rows that are no longer listed there keep an older date.
+        stale = sorted(e['model'] for e in table['models'] if (day.date() - datetime.fromisoformat(e['retrieved_on']).date()).days > 30)
+        self.assertEqual(stale, ['muse-spark-1.3-contributor-free', 'space-bunny-free'])
+        self.assertEqual(result['stale_entries'], 2)
+        fresh = [e for e in table['models'] if e['model'] not in stale]
+        self.assertEqual(diagnostics([], dict(table, models=fresh), now=day)['warnings'], [])
+
+    def test_packaged_anthropic_us_geo_and_sonnet_cache_read(self):
+        table = load_prices()
+        entries = {e['model']: e for e in table['models']}
+        self.assertEqual(entries['claude-sonnet-5-5']['cache_read'], 0.1)
+        for model, kw in (('claude-fable-5-2', dict(fresh=M, read=M, write=M, out=M, raw=split(M, 0))),
+                          ('claude-haiku-5-5', dict(fresh=100_001, read=M, write=M, out=M, raw=split(0, M)))):
+            std = price_observation(obs(harness='claude', provider='anthropic', model=model, **kw, tariff={'inference_geo': 'global'}), table)
+            us = price_observation(obs(harness='claude', provider='anthropic', model=model, **kw, tariff={'inference_geo': 'us'}), table)
+            self.assertIsNotNone(us['cost'], model)
+            for part in std['parts']:
+                self.assertAlmostEqual(us['parts'][part], std['parts'][part] * 1.1)
+        long_us = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=100_001, out=M,
+                                        tariff={'inference_geo': 'us'}), table)
+        self.assertAlmostEqual(long_us['cost'], (100_001 * 0.5 + M * 2.5) / 1e6 * 1.1)  # the >100K tier, times 1.1
+
+    def test_packaged_ultrafast_tiers_and_their_combinations(self):
+        table = load_prices()
+        for model, std, long_ in (('gpt-6.1-sol', (12, .6, 60), (24, 1.2, 90)), ('gpt-6-astra', (60, 6, 300), (120, 12, 450))):
+            def cost(**kw):
+                return price_observation(obs(harness='codex', provider='openai', model=model, tariff={'service_tier': 'ultrafast'}, **kw), table)
+            r = cost(fresh=1000, read=2000, out=3000)
+            self.assertAlmostEqual(r['cost'], (1000 * std[0] + 2000 * std[1] + 3000 * std[2]) / 1e6, msg=model)
+            r = cost(fresh=272_001, read=1000, out=M)
+            self.assertAlmostEqual(r['cost'], (272_001 * long_[0] + 1000 * long_[1] + M * long_[2]) / 1e6, msg=model)
+            r = cost(fresh=1000, write=500, out=10)  # no published ultrafast cache-write rate: partial, never a guess
+            self.assertEqual((r['status'], r['cost'], r['parts']['cache_write']), ('partial', None, None))
+            r = cost(fresh=272_001, write=500, out=10)
+            self.assertEqual((r['status'], r['cost']), ('partial', None))
+            # fast + long context and flex + long context stay unpriced
+            for tier in ('fast', 'flex'):
+                if tier in ('fast', 'flex') and model in ('gpt-6.1-sol', 'gpt-6-astra'):
+                    r = price_observation(obs(harness='codex', provider='openai', model=model, fresh=272_001, out=M,
+                                              tariff={'service_tier': tier}), table)
+                    self.assertEqual((r['status'], r['cost']), ('unpriced', None), (model, tier))
+
+    def test_modifier_long_context_is_validated(self):
+        bad = copy.deepcopy(TABLE)
+        bad['models'][3]['modifiers'] = {'service_tier=ultrafast': {'input': 1, 'long_context': {'input': -1}}}
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'p.json'
+            path.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(ValueError, 'long_context'):
+                load_prices(path)
+
     def test_negative_price_and_missing_keys_are_rejected_with_the_model_name(self):
         bad = copy.deepcopy(TABLE)
         bad['models'][1]['long_context']['input'] = -1
@@ -332,6 +522,30 @@ class CloudReferenceTests(unittest.TestCase):
         self.assertEqual(next(x for x in cards if x['model'] == 'bad-long')['long_context'],
                          {'above_input_tokens': None, 'input': 2.0, 'output': None})
 
+
+
+class DoctorCliTests(unittest.TestCase):
+    def test_doctor_reports_pricing_and_warnings(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from tokenatlas.__main__ import main
+        from tokenatlas.history import History
+        stale = copy.deepcopy(TABLE)
+        stale['retrieved_on'] = '2020-01-01'
+        for e in stale['models']:
+            e['retrieved_on'] = '2020-01-01'
+        with tempfile.TemporaryDirectory() as d:
+            path, db = Path(d) / 'p.json', Path(d) / 'h.sqlite3'
+            path.write_text(json.dumps(stale))
+            with History(db):
+                pass
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = main(['--db', str(db), 'doctor', '--prices', str(path)])
+        self.assertEqual(code, 0)
+        pricing = json.loads(out.getvalue())['pricing']
+        self.assertEqual(pricing['stale_entries'], len(stale['models']))
+        self.assertIn('price entries are older than', ' '.join(pricing['warnings']))
 
 
 if __name__ == '__main__':

@@ -25,6 +25,10 @@ dependencies = [
   "tzdata>=2024.1; platform_system == 'Windows'",
 ]
 
+[project.optional-dependencies]
+# Reads Codex's compressed rollouts (rollout-*.jsonl.zst); the `zstd` binary on PATH is the fallback.
+zstd = ["zstandard>=0.22"]
+
 [project.urls]
 Homepage = "https://github.com/Magnus-Gille/tokenatlas"
 Issues = "https://github.com/Magnus-Gille/tokenatlas/issues"

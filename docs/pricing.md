@@ -24,6 +24,8 @@ A missing price or dimension is never defaulted or zeroed. Costs are summed per 
   output and are never priced again. Cache is not inside `fresh_input`.
 - Claude cache writes need the 5m/1h split from `raw_usage.cache_creation`; without it, writes above zero make the
   observation `partial`.
+- Non-Claude cache writes are priced at the entry's `cache_write` rate; their logs record only a token count, and no
+  cache lifetime is checked.
 - Long context: when a model has `long_context` and total input exceeds `above_input_tokens`, the long prices
   replace the whole price set for that request. Total input is `raw_usage.input_tokens` for Codex/OpenAI and
   fresh + cache read + cache write otherwise.
@@ -35,16 +37,25 @@ A missing price or dimension is never defaulted or zeroed. Costs are summed per 
 ## Updating the table
 
 Edit `tokenatlas/prices.json` (schema 1, USD/EUR per million tokens). Give each model its `source_url` and
-`retrieved_on`, and keep the top-level `retrieved_on` current. Run `python3 -m unittest test_pricing`; `load_prices`
+`retrieved_on`; the top-level `retrieved_on` is the last full-table review date, so per-model dates must be used to
+judge freshness. Run `python3 -m unittest test_pricing`; `load_prices`
 rejects negative prices and missing keys. History is never re-priced silently: costs are computed at report time
 from the table in use, and reports show that table's `retrieved_on`.
 
-## Models without a published list price (checked 2026-09-29)
+`tokenatlas doctor [--prices FILE]` reports, for the last 30 days, the share of requests with "no list price" (unknown
+models only; local, non-USD, partial and explicitly unpriced requests are listed separately), the largest such models by
+token volume, and warnings when that share exceeds 10% or when model entries are older than 30 days (counted per entry
+from its `retrieved_on`). The offline table is the source of truth;
+refreshing it requires an explicit review of provider pages and the recorded retrieval date.
+
+## Models without a published list price (checked 2026-09-29; codex-auto-review 2026-11-11)
 
 These show as `unpriced` with reason `no list price for <provider>/<model>`:
 
-- `openai/codex-auto-review`: no row on the OpenAI pricing page, no model page; Codex documents Auto-review
-  only as a feature.
+- `openai/codex-auto-review`: explicitly unpriced (a machine-readable entry in `unpriced_models` with a reason; reason
+  `explicitly unpriced: ...`, counted separately from "no list price"). The current OpenAI pricing page has no model row or token
+  rate for this identifier; Codex documents Auto-review as a feature, not a billable model. TokenAtlas does
+  not alias it to another model or invent a rate.
 - `openai/gpt-5.3-codex-spark`: no row on the pricing page; the model page returns 404.
 - `berget/openai/gpt-oss-120b`, `berget/zai-org/GLM-4.7`: Berget AI publishes subscription plans, not
   per-token prices, for these (both retired in September 2026).

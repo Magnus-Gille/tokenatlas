@@ -514,14 +514,20 @@ def _relative(h, mine, joined, rec_costs):
 def summarize(db, since=None, until=None, harness=None, records=None, prices=None):
     """Per-harness floor distribution, estimated component tokens, residual, skill uses and recurring cost.
 
-    `records` (History.records) supplies each session's dominant model; without it the cost stays None.
+    `records` (History.records) supplies each session's dominant model; without it the cost stays None.  It may be a
+    callable, invoked only when the selection is non-empty (loading the full history is slow).
     """
-    ensure(db)
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {'overhead_sessions', 'overhead_items', 'overhead_skill_uses'} <= tables:
+        return {'chars_per_token': CHARS_PER_TOKEN, 'token_basis': 'estimate', 'harnesses': {},
+                'reason': 'No overhead tables are stored in this history database. Run `tokenatlas overhead --refresh` to collect overhead metadata.'}
     lo, hi = _moment(since), _moment(until)
     sessions = {}
+    overhead_columns = {row[1] for row in db.execute('PRAGMA table_info(overhead_sessions)')}
+    unidentified_expr = 'unidentified_skill_reads' if 'unidentified_skill_reads' in overhead_columns else '0'
     for h, s, sub, ts, floor, inp, write, read, calls, unidentified in db.execute(
             'SELECT harness, session, is_subagent, first_ts, floor_tokens, floor_input, floor_cache_write,'
-            ' floor_cache_read, calls, unidentified_skill_reads FROM overhead_sessions ORDER BY harness, session'):
+            f' floor_cache_read, calls, {unidentified_expr} FROM overhead_sessions ORDER BY harness, session'):
         when = _moment(ts)
         if harness not in (None, h) or (lo and (when is None or when < lo)) or (hi and (when is None or when >= hi)):
             continue
@@ -534,6 +540,8 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
         if (h, s) in sessions:
             sessions[(h, s)]['skills'].append((name, chars, source))
     table, tariffs = None, {}
+    if callable(records):
+        records = records() if sessions else None
     if records is not None:
         from tokenatlas import pricing
         table = prices if prices is not None else pricing.load_prices()
@@ -612,6 +620,8 @@ def _by_currency(values, fmt):
 
 def render(result):
     lines = [NOTE, '']
+    if result.get('reason') and not result['harnesses']:
+        lines += [result['reason'], '']
     rows = sorted(((h, r['relative']) for h, r in result['harnesses'].items()),
                   key=lambda i: (i[1]['fixed_share_of_input']['pct'] is None, i[1]['fixed_share_of_input']['pct'] or 0, i[0]))
     if rows:
@@ -640,7 +650,7 @@ def render(result):
                              f"{x['subagents']['excluded']} excluded from the history join")
     lines += ['', f"Fixed context overhead; component tokens are estimates at {result['chars_per_token']} characters per token."]
     if not result['harnesses']:
-        lines.append('No overhead data; run with --refresh.')
+        lines.append(result.get('reason') or 'No overhead data; run with --refresh.')
     for h, r in result['harnesses'].items():
         f = r['floor']
         lines += ['', f"{h}: {r['sessions']} sessions ({r['subagent_sessions']} subagent); floor tokens n={f['n']} "
@@ -661,6 +671,57 @@ def render(result):
     return '\n'.join(lines)
 
 
+def _stored_stats(db, harness):
+    """(stored sessions in the harness scope, newest start as stored text) from overhead_sessions only.
+
+    Newest is compared as parsed instants, since stored timestamp text is not guaranteed to sort chronologically."""
+    total, newest = 0, None
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='overhead_sessions'").fetchone():
+        return total, newest  # read-only open of a history that never ran `overhead --refresh`
+    for h, ts in db.execute('SELECT harness, first_ts FROM overhead_sessions'):
+        if harness not in (None, h):
+            continue
+        total += 1
+        when = _moment(ts)
+        if when is not None and (newest is None or when > newest[0]):
+            newest = (when, ts)
+    return total, newest[1] if newest else None
+
+
+def _filters(args):
+    parts = ([f'since {args.since}'] if args.since else []) + ([f'harness {args.harness}'] if args.harness else [])
+    return ' for ' + ', '.join(parts) if parts else ''
+
+
+def explain_empty(args, total, newest, skipped_roots, scanned):
+    """(reason_code, text) for an overhead report with no harnesses; `total`/`newest` are scoped to --harness.
+
+    Request history and overhead rows are populated separately: only `overhead --refresh` writes overhead rows."""
+    scope = _filters(args)
+    skipped = (f' No session root exists for {", ".join(skipped_roots)}, so those were not scanned.'
+               if skipped_roots else '')
+    if args.refresh and not total:
+        if not scanned:
+            return ('root_missing', 'Nothing was scanned: no session root exists for ' + ', '.join(skipped_roots)
+                    + '. Request history is stored separately and does not provide overhead data.')
+        return ('rescan_found_nothing',
+                f'Rescanned {", ".join(scanned)} but found no sessions with overhead data{scope}. Request history is '
+                'stored separately; those logs may lack the metadata overhead needs.' + skipped)
+    if not total:
+        return ('no_rows_stored',
+                f'No overhead rows are stored{scope}. Request history is stored separately and `refresh`/`collect` do not '
+                'write overhead data; run `tokenatlas overhead --refresh` to scan the harness logs.')
+    plural = 'session is' if total == 1 else 'sessions are'
+    after = (f'Stored overhead data ends at {newest}' if newest else 'Stored overhead sessions have no start time')
+    if args.refresh:
+        advice = 'The rescan did not add sessions in range; ' + ('widen --since' if args.since else 'check --harness') + '.'
+    else:
+        advice = ('Run `tokenatlas overhead --refresh` to store later sessions'
+                  + ('; or use an earlier --since (include a UTC offset, e.g. +02:00).' if args.since else '.'))
+    return ('filter_excludes_all',
+            f'{total} overhead {plural} stored but none match{scope}. {after}. {advice}' + skipped)
+
+
 def run(args):
     """`overhead` command: optional rescan of the default roots, then the report; returns the exit status."""
     from tokenatlas import why
@@ -668,7 +729,8 @@ def run(args):
     if not args.refresh and not args.db.expanduser().is_file():
         raise ValueError('history database does not exist; run refresh or overhead --refresh first')
     roots = {h: why.harness_root(h)[0] for h in ('claude', 'codex', 'pi', 'opencode')}
-    with History(args.db) as history:
+    scanned, skipped = [], []
+    with History(args.db, read_only=not args.refresh) as history:
         db = history.connection
         if args.refresh:
             for h in (args.harness,) if args.harness else HARNESSES:
@@ -676,10 +738,19 @@ def run(args):
                     with progress.step(f'Scan {h}'):
                         db.execute('BEGIN')
                         save(db, h, scan(h, roots[h]))
+                    scanned.append(h)
+                else:
+                    skipped.append(h)
         db.execute('BEGIN')
+        total, newest = _stored_stats(db, args.harness)
         with progress.step('Summarize overhead'):
-            result = summarize(db, since=args.since, harness=args.harness, records=history.records())
+            result = summarize(db, since=args.since, harness=args.harness, records=history.records)
         db.rollback()
     progress.finish()
+    if not result['harnesses']:
+        code, text = explain_empty(args, total, newest, skipped, scanned)
+        result['reason_code'], result['reason'] = code, text
+        if args.json:
+            print('overhead: ' + text, file=sys.stderr)
     print(json.dumps(result, indent=2, sort_keys=True) if args.json else render(result))
     return 0
