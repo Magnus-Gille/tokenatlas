@@ -217,6 +217,21 @@ class CollectTests(unittest.TestCase):
         v2_only, _ = self.collect(path)
         self.assertEqual({r.call_id: r.turn_id for r in both}, {r.call_id: r.turn_id for r in v2_only})
 
+    def test_shared_no_usage_abort_flags_only_the_legacy_turn(self):
+        db = Db(self.root / 'shared-abort.db')
+        db.session()
+        db.v2('u1', {'text': 'q', 'time': {'created': T0}}, kind='user')
+        db.v2('a1', v2_data(T0 + 10, T0 + 20))
+        db.v2('u2', {'text': 'q', 'time': {'created': T0 + 30}}, kind='user')
+        db.v2('a2', v2_data(T0 + 40, T0 + 50))
+        db.legacy('a1', legacy_data(T0 + 10, T0 + 20, parent='u1'))
+        db.legacy('a2', legacy_data(T0 + 40, T0 + 50, parent='u2'))
+        # The same no-usage abort in both generations, with differing turns: legacy says u1, the V2 seq rule says u2.
+        db.legacy('ab', {'role': 'assistant', 'parentID': 'u1', 'time': {'created': T0 + 60, 'completed': T0 + 60}, 'error': {'name': 'MessageAbortedError'}})
+        db.v2('ab', v2_data(T0 + 60, T0 + 60, tok=False, error={'type': 'aborted', 'message': 'x'}))
+        records, _ = self.collect(db.done())
+        self.assertEqual({r.call_id: list(r.flags or []) for r in records}, {'a1': [why.INTERRUPTED], 'a2': []})
+
     def test_one_readable_generation_is_not_discarded_when_the_other_is_broken(self):
         db = Db(self.root / 'mixed.db', legacy=False)
         db.session()

@@ -1423,6 +1423,7 @@ def collect_opencode(
     anchors: list[tuple[str, str | None, datetime, str]] = []  # every request with usage, in or out of the window
     aborts: list[tuple[str, str | None, str | None, datetime | None]] = []  # (session, turn, own call id): an abort usually carries no tokens, so it is read before the token guards
     seen_ids: set[str] = set()
+    abort_ids: set[str | None] = set()
     for row in rows:
         row_id = _meta_text(row["id"])
         if row["session_row"] is None:
@@ -1441,7 +1442,8 @@ def collect_opencode(
         time_data = _mapping(data.get("time"))
         error = _mapping(data.get("error"))
         aborted = error.get("name") == "MessageAbortedError" or error.get("type") == "aborted"  # legacy name / V2 type
-        if aborted:
+        if aborted and not (row_id and row_id in abort_ids):  # one abort per message id: the legacy copy is read first and wins
+            abort_ids.add(row_id)
             aborts.append((_meta_text(row["session_id"], default="unknown"), _meta_text(_first_text(data, "parentID", "parentId"), v2_turn.get(row["id"])),
                            str(row["id"]) if row["id"] else None, _millisecond_timestamp(
                                time_data.get("completed") or time_data.get("created")
