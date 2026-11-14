@@ -13,7 +13,6 @@ PACKAGED = Path(__file__).with_name('prices.json')
 PRICE_KEYS = ('input', 'cache_write_5m', 'cache_write_1h', 'cache_write', 'cache_read', 'output')
 _TOP_KEYS = ('schema', 'retrieved_on', 'unit', 'provider_aliases', 'local_providers', 'models')
 _MODEL_KEYS = ('provider', 'model', 'currency', 'input', 'cache_read', 'output', 'free', 'source_url', 'retrieved_on')
-_TTLS = ('5m', '30m', '1h')
 _CLASSES = ('fresh_input', 'cache_read', 'cache_write', 'output')
 NO_LIST_PRICE = 'no list price for '  # reason prefix of a model the table simply does not know
 _UNPRICED_KEYS = ('provider', 'model', 'reason', 'source_url', 'retrieved_on')
@@ -67,10 +66,10 @@ def load_prices(path=None):
             _check_prices(name, 'long_context', entry['long_context'], PRICE_KEYS)
             if not isinstance(entry['long_context'].get('above_input_tokens'), int):
                 raise ValueError(f'{name}: long_context.above_input_tokens must be an integer')
-        ttl = entry.get('cache_write_ttl')
-        if ttl is not None and ttl not in _TTLS:
-            raise ValueError(f'{name}: cache_write_ttl must be one of {", ".join(_TTLS)}')
         for label, modifier in (entry.get('modifiers') or {}).items():
+            if isinstance(modifier, dict) and 'long_context' in modifier:  # a tier's own long-context prices
+                _check_prices(name, f'modifiers.{label}.long_context', modifier['long_context'], PRICE_KEYS)
+                modifier = {k: v for k, v in modifier.items() if k != 'long_context'}
             _check_prices(name, f'modifiers.{label}', modifier, PRICE_KEYS)
     return table
 
@@ -228,19 +227,21 @@ def _rates(obs, table, long_context=True, modifiers=True):
         if tier not in (None, 'standard'):
             if f'service_tier={tier}' not in modifiers:
                 return unpriced(f'unknown service_tier {tier}')
-            if (claude and tariff.get('speed') == 'fast') or long_applies:
+            tier_prices = modifiers[f'service_tier={tier}']
+            if long_applies:  # only a tier that publishes its own long-context prices can combine with long context
+                tier_prices = tier_prices.get('long_context')
+            if (claude and tariff.get('speed') == 'fast') or tier_prices is None:
                 return unpriced(f'service_tier {tier} with fast mode or long context is not priced')
             modifier = f'service_tier={tier}'
             if modifiers_on:
-                prices = {k: modifiers[f'service_tier={tier}'].get(k) for k in PRICE_KEYS}
+                prices = {k: tier_prices.get(k) for k in PRICE_KEYS}
     elif not claude:
         assumptions.append(_STANDARD_OTHER)
     if context_unknown:
         prices = dict.fromkeys(PRICE_KEYS)
 
     return None, dict(prices=prices, multiplier=multiplier, assumptions=assumptions, reasons=reasons, claude=claude,
-                      currency=currency, ref=ref, tokens=tokens, raw=raw, long=long_applies, has_long=bool(long), modifier=modifier,
-                      cache_write_ttl=entry.get('cache_write_ttl'))
+                      currency=currency, ref=ref, tokens=tokens, raw=raw, long=long_applies, has_long=bool(long), modifier=modifier)
 
 
 def _parts(r):
@@ -258,14 +259,7 @@ def _parts(r):
             if write:
                 reasons.append('cache write TTL unknown')
     else:
-        # Non-Claude logs normally record only a write token count: price it at the entry's cache_write rate. Only an
-        # explicit lifetime that conflicts with the entry's declared cache_write_ttl makes the observation partial.
-        expected_ttl, observed_ttl = r.get('cache_write_ttl'), raw.get('cache_write_ttl')
-        if write and expected_ttl and observed_ttl and observed_ttl != expected_ttl:
-            write_part = None
-            reasons.append(f'cache write TTL {observed_ttl} differs from the priced {expected_ttl}')
-        else:
-            write_part = _times(write, prices['cache_write'])
+        write_part = _times(write, prices['cache_write'])
     parts = {'input': _times(tokens.get('fresh_input'), prices['input']), 'cache_write': write_part,
              'cache_read': _times(tokens.get('cache_read'), prices['cache_read']),
              'output': _times(tokens.get('output'), prices['output'])}

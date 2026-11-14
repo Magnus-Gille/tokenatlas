@@ -24,9 +24,8 @@ A missing price or dimension is never defaulted or zeroed. Costs are summed per 
   output and are never priced again. Cache is not inside `fresh_input`.
 - Claude cache writes need the 5m/1h split from `raw_usage.cache_creation`; without it, writes above zero make the
   observation `partial`.
-- Non-Claude cache writes are priced at the entry's `cache_write` rate; their logs record only a token count. An entry
-  may declare `cache_write_ttl` (`5m`, `30m` or `1h`); only an observation that explicitly records a different lifetime
-  is `partial`. Entries without the key are unaffected.
+- Non-Claude cache writes are priced at the entry's `cache_write` rate; their logs record only a token count, and no
+  cache lifetime is checked.
 - Long context: when a model has `long_context` and total input exceeds `above_input_tokens`, the long prices
   replace the whole price set for that request. Total input is `raw_usage.input_tokens` for Codex/OpenAI and
   fresh + cache read + cache write otherwise.

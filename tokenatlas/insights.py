@@ -199,7 +199,7 @@ def cost_facts(records, table, start=None, end=None, big_turn=BIG_TURN, name=Non
                      priced_requests=sum(g['requests'] for _, g in rest)) if rest else None
         facts.append(_fact('model_share', dict(models=shown, other=other, priced_cost=total, unpriced_models=unpriced_models, **scope), 'ins_model_share_c',
                            (*COMMON, 'ins_a_alias'), used=priced))
-        facts += _comparison(ranked, total, table, name)
+        facts += _comparison(ranked, total, table, name, scope, unpriced_models)
         parts = {p: sum(x[1]['parts'][p] for x in priced) for p in PARTS}
         facts.append(_fact('cost_parts', dict(parts=[dict(part=p, cost=parts[p], share=parts[p] / total) for p in PARTS],
                                                       priced_cost=total, unpriced_models=unpriced_models, **scope),
@@ -215,7 +215,7 @@ def cost_facts(records, table, start=None, end=None, big_turn=BIG_TURN, name=Non
     facts += _context(rows)
     if k and total > 0:
         facts += _long(priced, table, k, scope) + _turns(clean, inside, big_turn, scope, memo) + _subagents(priced, total, k, scope) + _tiers(priced, table, k, scope)
-    facts += _interrupted(clean, inside, scope, memo, total)
+    facts += _interrupted(clean, inside, scope, memo, total, unpriced_models)
     facts += _credits(inside, credit_table or credit_rates.packaged(), name)
     facts += _energy(inside)
     facts += _limit_hits(hits, start, end)
@@ -282,12 +282,12 @@ def _ladder(ranked_entry, total, table, name):
                 ladder=[dict(name=name(provider, m), cost=c, actual=a) for c, m, a in entries[first:first + LADDER]])
 
 
-def _comparison(ranked, total, table, name):
+def _comparison(ranked, total, table, name, scope, unpriced_models):
     out = [x for x in (_ladder(e, total, table, name) for e in ranked if e[1]['cost'] / total >= MIN_SHARE) if x]
     used = [x for m in out for x in m['_x']]
     for m in out:
         del m['_x']
-    return [_fact('price_comparison', dict(models=out), 'ins_price_comparison_c', (*COMMON, 'ins_a_samecounts', 'ins_a_alternatives'), used=used)] if out else []
+    return [_fact('price_comparison', dict(models=out, unpriced_models=unpriced_models, **scope), 'ins_price_comparison_c', (*COMMON, 'ins_a_samecounts', 'ins_a_alternatives'), used=used)] if out else []
 
 
 def _context(rows):
@@ -425,7 +425,7 @@ def _credits(inside, ctable, name):
                   credit_url=ctable['source_url'], credit_retrieved=ctable['retrieved_on'], credit_fast=ctable['fast_multiplier'])]
 
 
-def _interrupted(records, inside, scope, memo, total):
+def _interrupted(records, inside, scope, memo, total, unpriced_models=()):
     """Turns the user stopped (an observation of the turn carries the 'interrupted' flag, which the harness logged): how many, what their requests
     cost at list prices and the share of all priced cost in the window. A turn without a priced request is counted but adds no cost; it is
     never guessed. Omitted when no turn in the window was interrupted."""
@@ -448,7 +448,8 @@ def _interrupted(records, inside, scope, memo, total):
     used = [memo[id(r)] for r in inside if memo[id(r)][2] is not None]  # the share's denominator is every priced request, so its disclosures are too
     cost = sum(t[1] for t in stopped)
     return [_fact('interrupted_turns', dict(count=len(stopped), cost=cost, priced_cost=total, share=_share(cost, total),
-                                            unpriced_turns=sum(1 for t in stopped if not t[2]), partly_priced_turns=sum(1 for t in stopped if 0 < t[2] < t[3]), **scope),
+                                            unpriced_turns=sum(1 for t in stopped if not t[2]), partly_priced_turns=sum(1 for t in stopped if 0 < t[2] < t[3]),
+                                            unpriced_models=list(unpriced_models), **scope),
                   'ins_interrupted_turns_c', (*COMMON, 'ins_a_turn_window', 'ins_a_turn_lower', 'ins_a_unattributed', 'ins_a_interrupted'),
                   provenance='computed', used=used)]
 
@@ -522,6 +523,13 @@ def _unpriced_label(m):
     return f"{m['name']} ({m['requests']:,} requests" + (', explicitly unpriced' if m.get('explicit_reason') else '') + ')'
 
 
+def _unpriced_lines(v):
+    out = [f"without a complete USD list price: {v['unpriced_requests']:,} of {_rq(v['requests'])} ({_pct(v['unpriced_share'])})"]
+    if v.get('unpriced_models'):
+        out.append("largest unpriced models: " + ', '.join(_unpriced_label(m) for m in v['unpriced_models']))
+    return out
+
+
 def _lines(f):
     v, i = f['values'], f['id']
     lb = '≥' if v['lower_bound'] else ''
@@ -539,7 +547,7 @@ def _lines(f):
         for m in v['models']:
             out.append(f"{m['name']}: {u(m['cost'])} ({_pct(m['share'])} of priced cost, {_prq(m['priced_requests'])}); the same tokens at list prices of {len(m['ladder'])} of {m['ladder_models']} models from the same provider, highest first:")
             out += [f"  {x['name']}: {u(x['cost'])}" + ('  <- model used' if x['actual'] else '') for x in m['ladder']]
-        return out
+        return out + _unpriced_lines(v)
     if i == 'cost_parts':
         out = [f"{p['part'].replace('_', ' ')}: {u(p['cost'])} ({_pct(p['share'])})" for p in v['parts']] + [f"priced cost: {u(v['priced_cost'])}",
                f"without a complete USD list price: {v['unpriced_requests']:,} of {_rq(v['requests'])} ({_pct(v['unpriced_share'])})"]
@@ -567,7 +575,7 @@ def _lines(f):
             out.append(f"without a priced request (no cost counted): {v['unpriced_turns']:,}")
         if v['partly_priced_turns']:
             out.append(f"with some unpriced requests (cost is a lower bound): {v['partly_priced_turns']:,}")
-        return out
+        return out + _unpriced_lines(v)
     if i == 'quota_share':
         each = [f"{_quota_pct(x)} of the weekly {_AGENT_NAMES[x['harness']]} limit" if x['harness'] in _AGENT_NAMES else f"{_quota_pct(x)} of the weekly limit (other agent)" for x in v['turns']]
         listed = ', '.join(each[:-1]) + (' and ' if len(each) > 1 else '') + each[-1]

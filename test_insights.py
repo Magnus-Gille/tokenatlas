@@ -107,6 +107,28 @@ class F1ModelShare(unittest.TestCase):
         self.assertEqual(v['unpriced_models'][0]['name'], 'mystery')
         self.assertEqual(v['unpriced_models'][0]['requests'], 1)
 
+    def test_unpriced_share_and_names_beside_every_total_follow_the_window(self):
+        rows = [ob('p1', '2026-09-03T10:00:00+00:00', model='gpt-a', fresh=1000, out=100, session='s', turn='t1'),
+                dict(ob('p2', '2026-09-03T11:00:00+00:00', model='gpt-a', fresh=1000, session='s', turn='t2'), flags=['interrupted']),
+                ob('u1', '2026-09-03T12:00:00+00:00', model='mystery', fresh=500, session='s', turn='t2'),
+                ob('u2', '2026-09-10T12:00:00+00:00', model='other-mystery', fresh=900, session='s', turn='t3')]
+        for lo, hi, want in (('2026-09-03T00:00:00+00:00', '2026-09-04T00:00:00+00:00', (3, 1, 'mystery')),  # filtered: u2 is outside
+                             (None, None, (4, 2, 'other-mystery'))):
+            res = cost_facts(rows, TABLE, lo and datetime.fromisoformat(lo), hi and datetime.fromisoformat(hi))
+            facts = by_id(res)
+            for fid in ('model_share', 'price_comparison', 'interrupted_turns', 'cost_parts'):
+                v = facts[fid]['values']
+                self.assertEqual((v['requests'], v['unpriced_requests']), want[:2], fid)
+                self.assertIn(want[2], [m['name'] for m in v['unpriced_models']], fid)
+            text = insights.render_text(res)
+            self.assertGreaterEqual(text.count('largest unpriced models'), 4)
+
+    def test_all_unpriced_window_still_names_its_models(self):
+        res = cost_facts([ob('u1', model='mystery', fresh=500), dict(ob('u2', model='mystery', fresh=1, session='s', turn='t'), flags=['interrupted'])], TABLE)
+        v = by_id(res)['unpriced_coverage']['values']
+        self.assertEqual((v['requests'], v['unpriced_requests'], v['unpriced_share']), (2, 2, 1.0))
+        self.assertEqual(v['unpriced_models'][0]['name'], 'mystery')
+
     def test_unpriced_model_ranking_sums_all_token_classes(self):
         rows = [ob('a', model='mystery-a', fresh=1000), ob('b', model='mystery-b', fresh=10, read=20, write=30, out=40),
                 ob('c', model='mystery-c', fresh=500, read=400)]

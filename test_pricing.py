@@ -20,7 +20,7 @@ NOFAST = dict(CLAUDE, model='claude-nofast', aliases=[], modifiers={})
 GPT = dict(provider='openai', model='gpt-x', aliases=['gpt-x-alias'], currency='USD', input=2.0, cache_write_5m=None,
            cache_write_1h=None, cache_write=None, cache_read=0.5, output=10.0, free=False, modifiers={}, long_context=dict(
                above_input_tokens=272000, input=4.0, cache_read=1.0, cache_write=None, output=15.0), **REF)
-GPT_WRITE = dict(GPT, model='gpt-write', long_context=None, cache_write=3.0, cache_write_ttl='30m')
+GPT_WRITE = dict(GPT, model='gpt-write', long_context=None, cache_write=3.0)
 FREE = dict(GPT, model='free-model', free=True, input=None, cache_read=None, output=None, long_context=None)
 EUR = dict(GPT, provider='mistral', model='eu-model', currency='EUR', input=1.0, cache_read=0.1, output=3.0, long_context=None)
 TABLE = {'schema': 1, 'retrieved_on': '2026-09-01', 'unit': 'per_million_tokens',
@@ -243,36 +243,19 @@ class PriceObservationTests(unittest.TestCase):
         r = self.price(obs(harness='pi', provider='openai', model='gpt-x', fresh=1, write=5, raw={'input_tokens': 6}))
         self.assertEqual((r['status'], r['parts']['cache_write'], r['cost']), ('partial', None, None))  # no cache_write rate at all
 
-    def test_cache_write_without_ttl_evidence_costs_the_same_with_or_without_the_ttl_key(self):
-        # a pre-PR entry has no cache_write_ttl; declaring one must not change a request that carries no TTL evidence
-        plain = dict(GPT_WRITE)
-        plain.pop('cache_write_ttl')
+    def test_non_claude_cache_write_pricing_is_unchanged_from_before_this_pr(self):
+        # fixed expectations equal to the pre-PR (c8fc3c4) results: write x cache_write rate, whatever the raw usage carries
         for harness in ('codex', 'pi', 'opencode'):
-            row = obs(harness=harness, provider='openai', model='gpt-write', fresh=M, write=M, read=M, out=M)
-            before = price_observation(row, dict(TABLE, models=[plain]))
-            after = price_observation(row, dict(TABLE, models=[GPT_WRITE]))
-            self.assertEqual(before['cost'], after['cost'])
-            self.assertEqual(before, after)
-            self.assertAlmostEqual(after['cost'], 2 + 3 + .5 + 10)
-        # a matching explicit TTL is also priced; only an explicit conflicting one is partial
-        ok = self.price(obs(harness='pi', provider='openai', model='gpt-write', fresh=M, write=M, raw={'cache_write_ttl': '30m'}))
-        self.assertAlmostEqual(ok['cost'], 5.0)
-        bad = self.price(obs(harness='pi', provider='openai', model='gpt-write', fresh=M, write=M, raw={'cache_write_ttl': '1h'}))
-        self.assertEqual((bad['status'], bad['parts']['cache_write'], bad['cost']), ('partial', None, None))
-        self.assertIn('differs', bad['reason'])
-        # an entry that declares no TTL never complains about an explicit one
-        free = price_observation(obs(harness='pi', provider='openai', model='gpt-write', fresh=M, write=M, raw={'cache_write_ttl': '1h'}),
-                                 dict(TABLE, models=[plain]))
-        self.assertAlmostEqual(free['cost'], 5.0)
+            for raw in (None, {'cache_write_ttl': '1h'}, {'input_tokens': 4 * M}):
+                r = price_observation(obs(harness=harness, provider='openai', model='gpt-write', fresh=M, write=M, read=M, out=M, raw=raw), TABLE)
+                self.assertEqual((r['status'], r['cost'], r['reason']), ('assumed', 2 + 3 + .5 + 10, None))
+                self.assertEqual(r['parts'], {'input': 2.0, 'cache_write': 3.0, 'cache_read': .5, 'output': 10.0})
+        self.assertEqual(price_vector(obs('pi', 'openai', 'gpt-write', write=M), TABLE)[0][1:3], [3e-6, 3e-6])
+        r = price_observation(obs(harness='pi', provider='openai', model='gpt-x', fresh=1, write=5, raw={'input_tokens': 6}), TABLE)
+        self.assertEqual((r['status'], r['parts']['cache_write'], r['cost']), ('partial', None, None))  # no cache_write rate
 
-    def test_cache_write_ttl_key_is_validated_when_present(self):
-        bad = copy.deepcopy(TABLE)
-        bad['models'][4]['cache_write_ttl'] = 'forever'
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / 'p.json'
-            path.write_text(json.dumps(bad))
-            with self.assertRaisesRegex(ValueError, 'cache_write_ttl'):
-                load_prices(path)
+    def test_packaged_table_has_no_cache_write_ttl_key(self):
+        self.assertFalse([e['model'] for e in load_prices()['models'] if 'cache_write_ttl' in e])
 
     def test_packaged_terra_long_boundary_and_tier_combinations(self):
         table = load_prices()
@@ -340,24 +323,24 @@ class LoadPricesTests(unittest.TestCase):
     def test_packaged_new_openai_models_keep_model_page_tiers_and_dates(self):
         entries = {e['model']: e for e in load_prices()['models']}
         for model, standard, long, fast, flex, date, url in (
-                ('gpt-6.1-sol', (2, .1, 2.5, 10), (4, .2, 5, 15), (4, .2, 5, 20), (1, .05, 1.25, 5), '2026-11-11', 'gpt-6.1-sol'),
-                ('gpt-6.1-terra', (1, .05, 1.25, 5), (2, .1, 2.5, 7.5), (2, .1, 2.5, 10), (.5, .025, .625, 2.5), '2026-11-11', 'gpt-6.1-terra')):
+                ('gpt-6.1-sol', (2, .1, 2.5, 10), (4, .2, 5, 15), (4, .2, 5, 20), (1, .05, 1.25, 5), '2026-11-14', 'gpt-6.1-sol'),
+                ('gpt-6.1-terra', (1, .05, 1.25, 5), (2, .1, 2.5, 7.5), (2, .1, 2.5, 10), (.5, .025, .625, 2.5), '2026-11-14', 'gpt-6.1-terra')):
             entry = entries[model]
             self.assertEqual(tuple(entry[k] for k in ('input', 'cache_read', 'cache_write', 'output')), standard)
             self.assertEqual(entry['long_context']['above_input_tokens'], 272000)
             self.assertEqual(tuple(entry['long_context'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), long)
             self.assertEqual(tuple(entry['modifiers']['service_tier=fast'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), fast)
             self.assertEqual(tuple(entry['modifiers']['service_tier=flex'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), flex)
-            self.assertEqual((entry['retrieved_on'], entry['cache_write_ttl']), (date, '30m'))
+            self.assertEqual
             self.assertTrue(entry['source_url'].endswith('/' + url))
 
     def test_packaged_anthropic_fable_and_haiku_dimensions_and_boundaries(self):
         table = load_prices()
         entries = {e['model']: e for e in table['models']}
-        self.assertEqual(entries['claude-fable-5-2']['retrieved_on'], '2026-11-11')
-        self.assertEqual(entries['claude-haiku-5-5']['retrieved_on'], '2026-11-11')
+        self.assertEqual(entries['claude-fable-5-2']['retrieved_on'], '2026-11-14')
+        self.assertEqual(entries['claude-haiku-5-5']['retrieved_on'], '2026-11-14')
         self.assertEqual(entries['claude-fable-5-2']['source_url'], 'https://platform.claude.com/docs/en/about-claude/pricing')
-        self.assertEqual(entries['claude-haiku-5-5']['source_url'], 'https://platform.claude.com/docs/en/models/haiku-5-5/overview')
+        self.assertEqual(entries['claude-haiku-5-5']['source_url'], 'https://platform.claude.com/docs/en/about-claude/pricing')
         fable = price_observation(obs(harness='claude', provider='anthropic', model='claude-fable-5-2', fresh=M,
                                       read=2 * M, write=1_500_000, out=100_000,
                                       raw=split(M, 500_000)), table)
@@ -443,7 +426,57 @@ class LoadPricesTests(unittest.TestCase):
     def test_packaged_table_does_not_warn_on_its_own_date(self):
         table = load_prices()
         day = datetime.fromisoformat(table['retrieved_on']).replace(tzinfo=timezone.utc)
-        self.assertEqual(diagnostics([], table, now=day)['warnings'], [])
+        result = diagnostics([], table, now=day)
+        # Only the two OpenCode Zen rows that are no longer listed there keep an older date.
+        stale = sorted(e['model'] for e in table['models'] if (day.date() - datetime.fromisoformat(e['retrieved_on']).date()).days > 30)
+        self.assertEqual(stale, ['muse-spark-1.3-contributor-free', 'space-bunny-free'])
+        self.assertEqual(result['stale_entries'], 2)
+        fresh = [e for e in table['models'] if e['model'] not in stale]
+        self.assertEqual(diagnostics([], dict(table, models=fresh), now=day)['warnings'], [])
+
+    def test_packaged_anthropic_us_geo_and_sonnet_cache_read(self):
+        table = load_prices()
+        entries = {e['model']: e for e in table['models']}
+        self.assertEqual(entries['claude-sonnet-5-5']['cache_read'], 0.1)
+        for model, kw in (('claude-fable-5-2', dict(fresh=M, read=M, write=M, out=M, raw=split(M, 0))),
+                          ('claude-haiku-5-5', dict(fresh=100_001, read=M, write=M, out=M, raw=split(0, M)))):
+            std = price_observation(obs(harness='claude', provider='anthropic', model=model, **kw, tariff={'inference_geo': 'global'}), table)
+            us = price_observation(obs(harness='claude', provider='anthropic', model=model, **kw, tariff={'inference_geo': 'us'}), table)
+            self.assertIsNotNone(us['cost'], model)
+            for part in std['parts']:
+                self.assertAlmostEqual(us['parts'][part], std['parts'][part] * 1.1)
+        long_us = price_observation(obs(harness='claude', provider='anthropic', model='claude-haiku-5-5', fresh=100_001, out=M,
+                                        tariff={'inference_geo': 'us'}), table)
+        self.assertAlmostEqual(long_us['cost'], (100_001 * 0.5 + M * 2.5) / 1e6 * 1.1)  # the >100K tier, times 1.1
+
+    def test_packaged_ultrafast_tiers_and_their_combinations(self):
+        table = load_prices()
+        for model, std, long_ in (('gpt-6.1-sol', (12, .6, 60), (24, 1.2, 90)), ('gpt-6-astra', (60, 6, 300), (120, 12, 450))):
+            def cost(**kw):
+                return price_observation(obs(harness='codex', provider='openai', model=model, tariff={'service_tier': 'ultrafast'}, **kw), table)
+            r = cost(fresh=1000, read=2000, out=3000)
+            self.assertAlmostEqual(r['cost'], (1000 * std[0] + 2000 * std[1] + 3000 * std[2]) / 1e6, msg=model)
+            r = cost(fresh=272_001, read=1000, out=M)
+            self.assertAlmostEqual(r['cost'], (272_001 * long_[0] + 1000 * long_[1] + M * long_[2]) / 1e6, msg=model)
+            r = cost(fresh=1000, write=500, out=10)  # no published ultrafast cache-write rate: partial, never a guess
+            self.assertEqual((r['status'], r['cost'], r['parts']['cache_write']), ('partial', None, None))
+            r = cost(fresh=272_001, write=500, out=10)
+            self.assertEqual((r['status'], r['cost']), ('partial', None))
+            # fast + long context and flex + long context stay unpriced
+            for tier in ('fast', 'flex'):
+                if tier in ('fast', 'flex') and model in ('gpt-6.1-sol', 'gpt-6-astra'):
+                    r = price_observation(obs(harness='codex', provider='openai', model=model, fresh=272_001, out=M,
+                                              tariff={'service_tier': tier}), table)
+                    self.assertEqual((r['status'], r['cost']), ('unpriced', None), (model, tier))
+
+    def test_modifier_long_context_is_validated(self):
+        bad = copy.deepcopy(TABLE)
+        bad['models'][3]['modifiers'] = {'service_tier=ultrafast': {'input': 1, 'long_context': {'input': -1}}}
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'p.json'
+            path.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(ValueError, 'long_context'):
+                load_prices(path)
 
     def test_negative_price_and_missing_keys_are_rejected_with_the_model_name(self):
         bad = copy.deepcopy(TABLE)
