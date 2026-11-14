@@ -331,7 +331,7 @@ class LoadPricesTests(unittest.TestCase):
             self.assertEqual(tuple(entry['long_context'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), long)
             self.assertEqual(tuple(entry['modifiers']['service_tier=fast'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), fast)
             self.assertEqual(tuple(entry['modifiers']['service_tier=flex'][k] for k in ('input', 'cache_read', 'cache_write', 'output')), flex)
-            self.assertEqual
+            self.assertEqual(entry['retrieved_on'], date)
             self.assertTrue(entry['source_url'].endswith('/' + url))
 
     def test_packaged_anthropic_fable_and_haiku_dimensions_and_boundaries(self):
