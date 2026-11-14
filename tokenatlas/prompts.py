@@ -1,6 +1,7 @@
 """Top prompts: roll every request up to the user prompt (turn) that caused it, then rank the prompts."""
 from bisect import bisect_right
 from datetime import datetime
+from functools import lru_cache
 
 from tokenatlas import credits as credit_rates
 from tokenatlas.pricing import price_observation
@@ -10,6 +11,7 @@ CLASSES = ('fresh_input', 'cache_write', 'cache_read', 'output', 'reasoning')
 MAX_DEPTH = 8
 
 
+@lru_cache(maxsize=1 << 20)  # datetimes are immutable; the same timestamp text is parsed over and over by every pass
 def _t(ts):
     return datetime.fromisoformat(ts.replace('Z', '+00:00'))
 

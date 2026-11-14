@@ -630,7 +630,7 @@ def read_report_state(path):
 
 def pack(value, ascii_only=True):
     payload = json.dumps(value, ensure_ascii=ascii_only, separators=(',', ':'), allow_nan=False)
-    return base64.b64encode(gzip.compress(payload.encode('utf-8'), compresslevel=9, mtime=0)).decode('ascii')
+    return base64.b64encode(gzip.compress(payload.encode('utf-8'), compresslevel=6, mtime=0)).decode('ascii')
 
 
 def render_report(report, template=None, state=None):

@@ -67,9 +67,11 @@ def annotate(records):
     direct = [_own_plan(record) for record in rows]
     snapshots = {}
     for index, (record, plan) in enumerate(zip(rows, direct)):
-        stamp = _utc(record.get("ts"))
         harness, session = record.get("harness"), record.get("session")
-        if plan is None or stamp is None or harness != "codex" or not session:
+        if plan is None or harness != "codex" or not session:
+            continue
+        stamp = _utc(record.get("ts"))
+        if stamp is None:
             continue
         snapshots.setdefault((harness, session), {}).setdefault(stamp, (index, plan))
     # Keep one deterministic snapshot per timestamp, then use the two
