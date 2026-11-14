@@ -466,7 +466,7 @@ class _ZstdModuleReader(io.RawIOBase):
     def __init__(self, zstd, source, label):
         self._zstd, self._source, self._label = zstd, source, label
         self._start()
-        self._pending = b""
+        self._pending, self._offset, self._frames = b"", 0, 0
         self._done = False
 
     def _start(self):
@@ -477,16 +477,19 @@ class _ZstdModuleReader(io.RawIOBase):
         return True
 
     def readinto(self, buffer):
-        while not self._pending and not self._done:
+        while self._offset >= len(self._pending) and not self._done:
             chunk = self._source.read(1 << 16)
             if not chunk:
                 if self._fed and not self._dobj.eof:
                     raise OSError(f"cannot read compressed rollout {self._label}: truncated zstd frame")
+                if not self._frames:
+                    raise OSError(f"cannot read compressed rollout {self._label}: no zstd frame (empty file)")
                 self._done = True
                 break
-            self._pending = self._feed(chunk)
-        n = min(len(buffer), len(self._pending))
-        buffer[:n], self._pending = self._pending[:n], self._pending[n:]
+            self._pending, self._offset = self._feed(chunk), 0
+        n = min(len(buffer), len(self._pending) - self._offset)
+        buffer[:n] = self._pending[self._offset:self._offset + n]
+        self._offset += n
         return n
 
     def _feed(self, chunk):
@@ -500,6 +503,7 @@ class _ZstdModuleReader(io.RawIOBase):
             if not self._dobj.eof:
                 break
             chunk = self._dobj.unused_data
+            self._frames += 1
             self._start()
         return b"".join(out)
 
@@ -536,7 +540,13 @@ def _zstd_text_stream(path: Path, decoder):
             proc.kill()
             proc.wait()
             raise
-        if proc.wait():
+        try:
+            returncode = proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise OSError(f"cannot read compressed rollout {path}: zstd did not finish within 60 s")
+        if returncode:
             errors.seek(0)
             detail = errors.read().decode("utf-8", "replace").strip() or "decoder failed"
             raise OSError(f"cannot read compressed rollout {path}: {detail}")

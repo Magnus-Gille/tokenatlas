@@ -669,7 +669,7 @@ class History:
                                (harness == 'codex' and p.match('rollout-*.jsonl.zst')))
                 if harness == 'codex':
                     # A rollout under a suffix this version cannot read is still a source file: count it, never hide it.
-                    odd = sorted(p for p in listed if p.match('rollout-*.jsonl.*') and not p.name.endswith('.zst'))
+                    odd = sorted(p for p in listed if p.match('rollout-*.jsonl.*') and not p.match('rollout-*.jsonl.zst'))
                     if odd:
                         result['read_errors'] += len(odd)
                         result['files_seen'] += len(odd)

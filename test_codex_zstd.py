@@ -45,6 +45,8 @@ def run(*argv):
 
 
 def compress(data: bytes) -> bytes:
+    if not (zstandard or BINARY):
+        raise unittest.SkipTest("no zstd decoder available")
     if zstandard:
         return zstandard.ZstdCompressor().compress(data)
     return subprocess.run([BINARY, "-q", "-c"], input=data, capture_output=True, check=True).stdout
@@ -146,6 +148,18 @@ class DecoderEquivalenceTests(DecoderCase):
                 path = self.root / name / "rollout-cut.jsonl.zst"
                 path.parent.mkdir()
                 path.write_bytes(data[:-12])
+                with self.assertRaises(OSError):
+                    list(why._read_json_lines(path, strict=True, decoder=decoder))
+                with patch.object(why, "resolve_zstd_decoder", return_value=decoder), History(self.root / f"{name}.sqlite3") as history:
+                    result = history.refresh("codex", path.parent)
+                self.assertEqual((result["status"], result["read_errors"]), ("partial", 1))
+
+    def test_empty_file_is_an_error_for_every_decoder(self):
+        for name, decoder in self.decoders():
+            with self.subTest(decoder=name):
+                path = self.root / name / "rollout-empty.jsonl.zst"
+                path.parent.mkdir()
+                path.write_bytes(b"")
                 with self.assertRaises(OSError):
                     list(why._read_json_lines(path, strict=True, decoder=decoder))
                 with patch.object(why, "resolve_zstd_decoder", return_value=decoder), History(self.root / f"{name}.sqlite3") as history:
@@ -286,10 +300,11 @@ class UnreadableTests(DecoderCase):
     def test_unrecognised_rollout_suffix_is_unreadable_not_ok(self):
         (self.root / "r").mkdir()
         (self.root / "r" / "rollout-a.jsonl").write_bytes(encode(rows()))
-        (self.root / "r" / "rollout-b.jsonl.gz").write_bytes(b"x")
+        for name in ("rollout-b.jsonl.gz", "rollout-c.jsonl.gz.zst", "rollout-d.jsonl.zst.zst"):
+            (self.root / "r" / name).write_bytes(b"x")
         with History(self.root / "h.sqlite3") as history:
             result = history.refresh("codex", self.root / "r")
-        self.assertEqual((result["status"], result["read_errors"], result["files_seen"]), ("partial", 1, 2))
+        self.assertEqual((result["status"], result["read_errors"], result["files_seen"]), ("partial", 3, 4))
         self.assertIn("unrecognised suffix", result["errors"][0])
 
 
