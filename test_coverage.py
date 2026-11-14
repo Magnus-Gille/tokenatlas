@@ -274,8 +274,6 @@ class RemoteSyncScriptTests(unittest.TestCase):
             self.assertIn(needle, text)
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class DistinctFiles(unittest.TestCase):  # #151
@@ -302,3 +300,7 @@ class DistinctFiles(unittest.TestCase):  # #151
                 (root / 'logs/b.jsonl').unlink()
                 status = h.doctor()
             self.assertEqual((status['files_by_harness']['claude']['files'], status['missing_source_files']), (1, 1))
+
+
+if __name__ == '__main__':
+    unittest.main()

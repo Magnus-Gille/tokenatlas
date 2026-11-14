@@ -13,6 +13,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import sys
 import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -490,6 +491,7 @@ class History:
         self.path = Path(path).expanduser().absolute()
         self.read_only = bool(read_only)
         self.connection = None
+        self.journal_mode = None
 
     def __enter__(self):
         if self.read_only:
@@ -602,20 +604,23 @@ class History:
         self.machine = c.execute("SELECT value FROM meta WHERE key='machine'").fetchone()[0]
         return self
 
-    @staticmethod
-    def _enable_wal(c):
+    def _enable_wal(self, c):
         """Switch the file to WAL (persistent), so readers never block the writer and the writer never blocks readers.
 
-        Converting needs exclusive access, so it is tried without waiting: while another connection is open the file
-        simply stays in its current mode and the next write open tries again."""
-        c.execute('PRAGMA busy_timeout=0')
+        Converting needs exclusive access, so it waits like any writer (BUSY_TIMEOUT_MS) for open connections to finish.
+        The resulting mode is verified; if the file could not be converted it stays in its rollback journal, a warning
+        is printed and the next write open tries again (self.journal_mode records what is in effect)."""
         try:
-            c.execute('PRAGMA journal_mode=WAL').fetchone()
+            mode = c.execute('PRAGMA journal_mode=WAL').fetchone()[0]
         except sqlite3.OperationalError as exc:
             if not is_lock_error(exc):
                 raise
-        finally:
-            c.execute(f'PRAGMA busy_timeout={BUSY_TIMEOUT_MS}')
+            mode = c.execute('PRAGMA journal_mode').fetchone()[0]
+        self.journal_mode = str(mode).lower()
+        if self.journal_mode != 'wal':
+            print(f'tokenatlas: history is in {self.journal_mode} journal mode, not WAL: another connection kept it busy for '
+                  f'{BUSY_TIMEOUT_MS // 1000} s. Concurrent commands can block until the next write command converts it.',
+                  file=sys.stderr)
 
     @property
     def revision(self):
@@ -1024,7 +1029,9 @@ class History:
             entry['files'] += 1
             for key, value in (json.loads(diagnostics) if diagnostics else {}).items():
                 if key in entry and isinstance(value, int):entry[key] += value
+        journal_mode = str(self.connection.execute('PRAGMA journal_mode').fetchone()[0]).lower()
         return dict(schema_version=SCHEMA_VERSION, machine=self.machine, revision=self.revision, observations=count,
+                    journal_mode=journal_mode,
                     first_event=None if first is None else _ts_text(first),
                     last_event=None if last is None else _ts_text(last),
                     missing_source_files=missing, imports=imports, files_by_harness=distinct, coverage_complete=False,

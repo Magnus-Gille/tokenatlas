@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -104,6 +105,37 @@ class HistoryTests(unittest.TestCase):
             reader.connection.rollback()
             self.assertEqual(proc.wait(timeout=120), 0, proc.stderr.read())
             self.assertEqual(reader.connection.execute('SELECT count(*) FROM observations').fetchone()[0], before + 1)
+
+    def test_rollback_database_with_a_short_lived_reader_converts_to_wal_and_doctor_reports_it(self):
+        self._seeded()
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as raw:
+            raw.execute('PRAGMA journal_mode=DELETE')
+        reader = sqlite3.connect(self.db, isolation_level=None, check_same_thread=False)
+        reader.execute('BEGIN')
+        reader.execute('SELECT count(*) FROM observations').fetchone()
+        threading.Timer(1.0, reader.rollback).start()  # a short-lived reader: released while the writer waits
+        start = time.monotonic()
+        with History(self.db) as history:
+            self.assertEqual(history.journal_mode, 'wal')
+            self.assertEqual(history.doctor()['journal_mode'], 'wal')
+        self.assertGreaterEqual(time.monotonic() - start, 0.5, 'the conversion should have waited for the reader')
+        reader.close()
+        with History(self.db, read_only=True) as ro:
+            self.assertEqual(ro.doctor()['journal_mode'], 'wal')
+
+    def test_conversion_that_cannot_finish_warns_and_continues_in_rollback_mode(self):
+        self._seeded()
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as raw:
+            raw.execute('PRAGMA journal_mode=DELETE')
+        reader = sqlite3.connect(self.db, isolation_level=None)
+        self.addCleanup(reader.close)
+        reader.execute('BEGIN')
+        reader.execute('SELECT count(*) FROM observations').fetchone()
+        err = io.StringIO()
+        with patch('tokenatlas.history.BUSY_TIMEOUT_MS', 300), contextlib.redirect_stderr(err):
+            with self.assertRaises(sqlite3.OperationalError):  # the schema transaction also cannot commit past the reader
+                History(self.db).__enter__()
+        self.assertIn('not WAL', err.getvalue())
 
     def test_rollback_journal_writer_waits_for_the_reader_to_release(self):
         """The fallback for a file that could not be converted to WAL: the writer waits, then succeeds."""
@@ -1520,7 +1552,6 @@ class PromptProvenanceTests(unittest.TestCase):
         self.assertTrue(all(local_file(r) is None for r in refs))
 
 
-if __name__=='__main__':unittest.main()
 
 
 class ConcurrentCliTests(unittest.TestCase):
@@ -1577,3 +1608,6 @@ class ConcurrentCliTests(unittest.TestCase):
                                   cwd=str(Path(__file__).parent), env=self.env, timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr)
             raw.rollback()
+
+
+if __name__=='__main__':unittest.main()

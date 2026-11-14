@@ -161,8 +161,10 @@ succeeded and 1 when any failed (a failed sync still gets its second report).
 
 ### Concurrent commands and the database lock
 
-The history database runs in SQLite WAL mode (switched on by the first write command, e.g. `refresh`), so readers and
-the writer never block each other: `insights`, `top`, `overhead`, `report`, `session`, `doctor` and `quota show`
+The history database runs in SQLite WAL mode, so readers and the writer never block each other. The guarantee holds
+once the file is in WAL: the first write command after upgrading (`refresh`, `import`, or the `collect` run that
+schedules them) converts it, waiting up to 120 s for open connections to finish; if it cannot, it prints a warning, stays in
+its rollback journal and tries again on the next write. `doctor --json` shows the mode as `journal_mode`. In WAL, `insights`, `top`, `overhead`, `report`, `session`, `doctor` and `quota show`
 can run for minutes while a `refresh` or `collect` writes. They open the database with `PRAGMA query_only=ON`, take
 only read snapshots, and can still recover a journal left by a killed writer. They never migrate the schema: after
 an upgrade that changes it (or on an empty file) they stop with `run tokenatlas refresh` until a write command has
