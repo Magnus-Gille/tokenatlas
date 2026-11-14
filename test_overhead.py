@@ -643,13 +643,13 @@ class EmptyReasonBoundsTests(unittest.TestCase):
         res = overhead.summarize(self.con('2026-11-01T00:00:00Z'), until='2026-10-01T00:00:00Z')
         self.assertEqual(res['reason'], 'no_sessions_in_window')
         self.assertNotIn('None', res['hint'])
-        self.assertIn('--until', res['hint'])
+        self.assertNotIn('--until', res['hint']); self.assertIn('2026-11-01T00:00:00Z', res['hint'])
         self.assertNotIn('earlier --since', res['hint'])
 
     def test_combined_bounds_hint(self):
         res = overhead.summarize(self.con('2026-11-01T00:00:00Z'), since='2026-09-01T00:00:00Z', until='2026-10-01T00:00:00Z')
         self.assertIn('--since', res['hint'])
-        self.assertIn('--until', res['hint'])
+        self.assertNotIn('--until', res['hint']); self.assertIn('2026-11-01T00:00:00Z', res['hint'])
         self.assertNotIn('None', res['hint'])
 
     def test_extrema_use_instants_not_strings(self):

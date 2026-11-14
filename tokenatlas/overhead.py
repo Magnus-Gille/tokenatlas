@@ -623,7 +623,7 @@ def _empty_reason(db, harness, since, until):
     earliest = min(parsed, key=lambda p: p[0])[1]
     latest = max(parsed, key=lambda p: p[0])[1]
     if since and until:
-        bounds, advice = f'in [{since}, {until})', 'widen the window'
+        bounds, advice = f'in [{since}, {until})', 'use an earlier --since or a later end'
     elif until:
         bounds, advice = f'before {until}', 'use a later end'
     else:
