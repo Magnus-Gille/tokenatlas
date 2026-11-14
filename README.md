@@ -159,6 +159,21 @@ ships inside the package (`tokenatlas/remote_sync.sh`; override with `--remote-s
 `--no-report` skips both reports and `--lang auto|sv|en` is passed to them. The exit code is 0 when every step
 succeeded and 1 when any failed (a failed sync still gets its second report).
 
+### Concurrent commands and the database lock
+
+The history database runs in SQLite WAL mode, so readers and the writer never block each other. The guarantee holds
+once the file is in WAL: the first write command after upgrading (`refresh`, `import`, or the `collect` run that
+schedules them) converts it, waiting up to 120 s for open connections to finish; if it cannot, it prints a warning, stays in
+its rollback journal and tries again on the next write. `doctor --json` shows the mode as `journal_mode`. In WAL, `insights`, `top`, `overhead`, `report`, `session`, `doctor` and `quota show`
+can run for minutes while a `refresh` or `collect` writes. They open the database with `PRAGMA query_only=ON`, take
+only read snapshots, and can still recover a journal left by a killed writer. They never migrate the schema: after
+an upgrade that changes it (or on an empty file) they stop with `run tokenatlas refresh` until a write command has
+migrated it once. `statusline` never opens the database. Only two writers contend (for example `refresh` and `import`):
+the second waits up to 120 s. A database that stays locked is reported as `database: ...` with exit code 75
+(not `usage:` and exit 2); `collect` retries a locked refresh, top or report step three times and logs
+`database lock error` for the step it had to skip. The `-wal` and `-shm` files next to `history.sqlite3` belong to the
+database: copy it only with `tokenatlas snapshot` (the SQLite backup API; the snapshot is one self-contained file).
+
 One run at a time, by a kernel lock: `collect` takes an exclusive `flock` on `collect.lock` in the state
 directory (`msvcrt.locking` on Windows). A second run prints `collect: already running` and exits 0. The kernel
 releases the lock when the process exits or crashes, so there is no stale-lock cleanup; the file itself is kept.

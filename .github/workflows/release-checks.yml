@@ -48,7 +48,7 @@ jobs:
 
   browser:
     name: Offline report / ${{ matrix.browser }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04  # pinned: the pinned Playwright version supports this runner's browser dependencies; ubuntu-latest does not
     strategy:
       fail-fast: false
       matrix:
