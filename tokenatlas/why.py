@@ -479,6 +479,7 @@ def _check_zstd_frames(path: Path, zstd) -> None:
                 if len(head) < 8 or pos + 8 + int.from_bytes(head[4:8], "little") > size:
                     raise bad("truncated zstd skippable frame")
                 pos += 8 + int.from_bytes(head[4:8], "little")
+                frames += 1
                 continue
             if magic != 0xFD2FB528:
                 raise bad("not a zstd frame")
@@ -566,15 +567,16 @@ def _zstd_text_stream(path: Path, decoder):
         watchdog.daemon = True
         watchdog.start()
         try:
-            with io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="replace") as text:
-                yield text
-        except BaseException:
-            proc.kill()
-            proc.wait()
-            raise
+            try:
+                with io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="replace") as text:
+                    yield text
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            returncode = proc.wait()  # still under the watchdog: a decoder that closes stdout and stalls is killed
         finally:
             watchdog.cancel()
-        returncode = proc.wait()
         if expired.is_set():
             raise OSError(f"cannot read compressed rollout {path}: zstd did not finish within {timeout:g} s")
         if returncode:

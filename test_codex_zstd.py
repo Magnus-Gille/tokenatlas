@@ -194,6 +194,34 @@ class DecoderEquivalenceTests(DecoderCase):
         self.assertLess(__import__("time").monotonic() - started, 20)
         self.assertIn("did not finish", str(error.exception))
 
+    @unittest.skipIf(os.name == "nt", "needs a POSIX shebang script")
+    def test_binary_decoder_that_closes_stdout_and_stalls_is_killed(self):
+        script = self.root / "stalling-zstd"
+        script.write_text(f"#!{__import__('sys').executable}\nimport os, sys, time\n"
+                          "sys.stdout.write('{\"a\":1}\\n'); sys.stdout.flush(); os.close(1)\ntime.sleep(60)\n")
+        script.chmod(0o755)
+        path = self.root / "rollout-stall.jsonl.zst"
+        path.write_bytes(b"ignored")
+        started = __import__("time").monotonic()
+        with patch.object(why, "_zstd_timeout", return_value=0.5):
+            with self.assertRaises(OSError) as error:
+                list(why._read_json_lines(path, strict=True, decoder=("binary", str(script))))
+        self.assertLess(__import__("time").monotonic() - started, 20)
+        self.assertIn("did not finish", str(error.exception))
+
+    @unittest.skipUnless(zstandard, "needs the zstandard module")
+    def test_file_of_only_skippable_frames_is_valid_and_empty_file_is_not(self):
+        skippable = (0x184D2A50).to_bytes(4, "little") + (3).to_bytes(4, "little") + b"abc"
+        path = self.root / "rollout-skip.jsonl.zst"
+        path.write_bytes(skippable * 2)
+        why._check_zstd_frames(path, zstandard)
+        path.write_bytes(skippable[:-1])
+        with self.assertRaises(OSError):
+            why._check_zstd_frames(path, zstandard)
+        path.write_bytes(b"")
+        with self.assertRaises(OSError):
+            why._check_zstd_frames(path, zstandard)
+
     def test_empty_file_is_an_error_for_every_decoder(self):
         for name, decoder in self.decoders():
             with self.subTest(decoder=name):
