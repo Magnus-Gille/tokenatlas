@@ -154,6 +154,46 @@ class DecoderEquivalenceTests(DecoderCase):
                     result = history.refresh("codex", path.parent)
                 self.assertEqual((result["status"], result["read_errors"]), ("partial", 1))
 
+    def test_second_frame_truncated_is_an_error_for_every_decoder(self):
+        data = compress(encode(rows())) + compress(encode(rows() * 100))[:-9]
+        for name, decoder in self.decoders():
+            with self.subTest(decoder=name):
+                path = self.root / name / "rollout-cut2.jsonl.zst"
+                path.parent.mkdir()
+                path.write_bytes(data)
+                with self.assertRaises(OSError):
+                    list(why._read_json_lines(path, strict=True, decoder=decoder))
+
+    @unittest.skipUnless(zstandard, "needs the zstandard module")
+    def test_module_output_memory_is_bounded_by_the_read_size(self):
+        import tracemalloc
+        path = self.root / "rollout-big.jsonl.zst"
+        path.write_bytes(zstandard.ZstdCompressor().compress(b"a" * (64 << 20) + b"\n"))
+        tracemalloc.start()
+        try:
+            with why._zstd_text_stream(path, DECODERS["module"]) as text:
+                total = sum(len(chunk) for chunk in iter(lambda: text.read(1 << 16), ""))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(total, (64 << 20) + 1)
+        self.assertLess(peak, 16 << 20)
+
+    @unittest.skipIf(os.name == "nt", "needs a POSIX shebang script")
+    def test_hanging_binary_decoder_fails_fast_and_is_reaped(self):
+        script = self.root / "slow-zstd"
+        script.write_text(f"#!{__import__('sys').executable}\nimport sys, time\n"
+                          "sys.stdout.write('{\"a\":1}\\n'); sys.stdout.flush()\ntime.sleep(60)\n")
+        script.chmod(0o755)
+        path = self.root / "rollout-hang.jsonl.zst"
+        path.write_bytes(b"ignored")
+        started = __import__("time").monotonic()
+        with patch.object(why, "_zstd_timeout", return_value=0.5):
+            with self.assertRaises(OSError) as error:
+                list(why._read_json_lines(path, strict=True, decoder=("binary", str(script))))
+        self.assertLess(__import__("time").monotonic() - started, 20)
+        self.assertIn("did not finish", str(error.exception))
+
     def test_empty_file_is_an_error_for_every_decoder(self):
         for name, decoder in self.decoders():
             with self.subTest(decoder=name):

@@ -20,6 +20,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -460,52 +461,75 @@ ZSTD_INSTALL_HINT = ("install the optional extra (pip install 'tokenatlas[zstd]'
                      "or uv tool install 'tokenatlas[zstd]') or provide the zstd binary on PATH")
 
 
+def _check_zstd_frames(path: Path, zstd) -> None:
+    """Walk the frame and block headers of a .zst file without decompressing: it must hold whole frames only.
+
+    zstandard's stream reader returns a silent prefix for an empty or truncated file, unlike `zstd -d`.
+    """
+    def bad(why_: str):
+        return OSError(f"cannot read compressed rollout {path}: {why_}")
+    with path.open("rb") as fh:
+        size = fh.seek(0, 2)
+        pos = frames = 0
+        while pos < size:
+            fh.seek(pos)
+            head = fh.read(18)
+            magic = int.from_bytes(head[:4], "little")
+            if 0x184D2A50 <= magic <= 0x184D2A5F:  # skippable frame: magic, length, payload
+                if len(head) < 8 or pos + 8 + int.from_bytes(head[4:8], "little") > size:
+                    raise bad("truncated zstd skippable frame")
+                pos += 8 + int.from_bytes(head[4:8], "little")
+                continue
+            if magic != 0xFD2FB528:
+                raise bad("not a zstd frame")
+            try:
+                pos += zstd.frame_header_size(head)
+            except zstd.ZstdError as exc:
+                raise bad(f"truncated or invalid zstd frame header: {exc}") from exc
+            while True:
+                fh.seek(pos)
+                block = fh.read(3)
+                if len(block) < 3:
+                    raise bad("truncated zstd frame")
+                value = int.from_bytes(block, "little")
+                kind = (value >> 1) & 3
+                if kind == 3:
+                    raise bad("invalid zstd block")
+                pos += 3 + (1 if kind == 1 else value >> 3)
+                if pos > size:
+                    raise bad("truncated zstd frame")
+                if value & 1:
+                    break
+            if head[4] & 0x04:  # content checksum
+                pos += 4
+                if pos > size:
+                    raise bad("truncated zstd frame")
+            frames += 1
+        if not frames:
+            raise bad("no zstd frame (empty file)")
+
+
 class _ZstdModuleReader(io.RawIOBase):
-    """Binary stream over zstandard that reads every frame and fails on a truncated one (like `zstd -d`)."""
+    """Binary stream over zstandard's stream reader: every frame, output bounded by the caller's read size.
 
-    def __init__(self, zstd, source, label):
-        self._zstd, self._source, self._label = zstd, source, label
-        self._start()
-        self._pending, self._offset, self._frames = b"", 0, 0
-        self._done = False
+    A truncated or empty file is an error (verified structurally at EOF), as with `zstd -d`.
+    """
 
-    def _start(self):
-        self._dobj = self._zstd.ZstdDecompressor().decompressobj()
-        self._fed = False  # bytes given to the current frame
+    def __init__(self, zstd, path: Path, source):
+        self._zstd, self._path = zstd, path
+        self._reader = zstd.ZstdDecompressor().stream_reader(source, read_across_frames=True)
 
     def readable(self):
         return True
 
     def readinto(self, buffer):
-        while self._offset >= len(self._pending) and not self._done:
-            chunk = self._source.read(1 << 16)
-            if not chunk:
-                if self._fed and not self._dobj.eof:
-                    raise OSError(f"cannot read compressed rollout {self._label}: truncated zstd frame")
-                if not self._frames:
-                    raise OSError(f"cannot read compressed rollout {self._label}: no zstd frame (empty file)")
-                self._done = True
-                break
-            self._pending, self._offset = self._feed(chunk), 0
-        n = min(len(buffer), len(self._pending) - self._offset)
-        buffer[:n] = self._pending[self._offset:self._offset + n]
-        self._offset += n
+        try:
+            n = self._reader.readinto(buffer)
+        except self._zstd.ZstdError as exc:
+            raise OSError(f"cannot read compressed rollout {self._path}: {exc}") from exc
+        if not n:
+            _check_zstd_frames(self._path, self._zstd)
         return n
-
-    def _feed(self, chunk):
-        out = []
-        while chunk:
-            self._fed = True
-            try:
-                out.append(self._dobj.decompress(chunk))
-            except self._zstd.ZstdError as exc:
-                raise OSError(f"cannot read compressed rollout {self._label}: {exc}") from exc
-            if not self._dobj.eof:
-                break
-            chunk = self._dobj.unused_data
-            self._frames += 1
-            self._start()
-        return b"".join(out)
 
 
 def resolve_zstd_decoder():
@@ -527,12 +551,20 @@ def _zstd_text_stream(path: Path, decoder):
     kind, tool = decoder or resolve_zstd_decoder()
     if kind == "module":
         with path.open("rb") as compressed:
-            with io.TextIOWrapper(io.BufferedReader(_ZstdModuleReader(tool, compressed, path)),
+            with io.TextIOWrapper(io.BufferedReader(_ZstdModuleReader(tool, path, compressed)),
                                   encoding="utf-8", errors="replace") as text:
                 yield text
         return
     with tempfile.TemporaryFile() as errors:
         proc = subprocess.Popen([tool, "-q", "-d", "-c", "--", str(path)], stdout=subprocess.PIPE, stderr=errors)
+        expired = threading.Event()
+        def expire():  # the deadline covers consuming stdout too: killing the decoder gives the reader EOF
+            expired.set()
+            proc.kill()
+        timeout = _zstd_timeout(path)
+        watchdog = threading.Timer(timeout, expire)
+        watchdog.daemon = True
+        watchdog.start()
         try:
             with io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="replace") as text:
                 yield text
@@ -540,16 +572,24 @@ def _zstd_text_stream(path: Path, decoder):
             proc.kill()
             proc.wait()
             raise
-        try:
-            returncode = proc.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            raise OSError(f"cannot read compressed rollout {path}: zstd did not finish within 60 s")
+        finally:
+            watchdog.cancel()
+        returncode = proc.wait()
+        if expired.is_set():
+            raise OSError(f"cannot read compressed rollout {path}: zstd did not finish within {timeout:g} s")
         if returncode:
             errors.seek(0)
             detail = errors.read().decode("utf-8", "replace").strip() or "decoder failed"
             raise OSError(f"cannot read compressed rollout {path}: {detail}")
+
+
+def _zstd_timeout(path: Path) -> float:
+    """Total seconds the zstd binary may take for one file: generous, growing with the compressed size."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return max(60.0, size / (1 << 20) * 4)
 
 
 def _read_text_lines(path: Path, *, strict: bool = False, decoder=None) -> Iterable[str]:
