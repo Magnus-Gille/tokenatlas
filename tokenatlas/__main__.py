@@ -456,10 +456,13 @@ def _main(argv=None):
     facts.add_argument('--context-threshold',type=int,default=200000,help='Input-token threshold for context-volume facts; a presentation choice, not a waste detector.')
     facts.add_argument('--scenario-population',choices=('large_context_input','subagent_input'),help='Opt-in hypothetical input-reduction population; requires --reduction-percent.')
     facts.add_argument('--reduction-percent',type=float,help='Hypothetical input reduction, 0–100; no prediction of savings.')
-    overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes.')
-    overhead.add_argument('--refresh',action='store_true',help='Rescan the default session roots first.')
+    overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes (needs a prior overhead --refresh).',
+                                 description='Fixed context overhead: floor tokens, instruction and skill sizes. Reads overhead rows stored in the history database; '
+                                             'request history from refresh/collect does not include them, and only --refresh scans the harness session logs and writes them. '
+                                             'An empty result carries a reason and reason_code explaining why.')
+    overhead.add_argument('--refresh',action='store_true',help='Scan the default harness session roots and store overhead rows before reporting (slow on large histories).')
     overhead.add_argument('--harness',choices=('claude','codex','pi','opencode'))
-    overhead.add_argument('--since',help='Inclusive ISO timestamp of the session start.')
+    overhead.add_argument('--since',help='Inclusive ISO timestamp of the session start, e.g. 2026-10-11T00:00:00+02:00 or 2026-10-11T00:00:00Z; a timestamp without an offset is read as UTC.')
     overhead.add_argument('--json',action='store_true')
     collect=commands.add_parser('collect',help='One scheduled run under a lock: refresh, top text if opted in, report, remote sync, report again.')
     collect.add_argument('--remote',action='append',default=[],metavar='TAG:HOST',help='Remote machine to sync (repeatable); else REMOTE_HOSTS_OVERRIDE or the remote-hosts file in the state directory.')

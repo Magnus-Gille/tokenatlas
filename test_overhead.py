@@ -4,11 +4,13 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
 from test_why_harnesses import create_opencode_db, pi_message, write_pi_session
+from test_history import record
+from tokenatlas.history import History, _encode, normalize
 from tokenatlas import overhead
 from tokenatlas.__main__ import main
 
@@ -557,6 +559,152 @@ class RelativeTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def run_cli(self, tmp, db, argv, roots=None):
+        none = Path(tmp) / 'none'
+        roots = {'CLAUDE_PROJECTS': none, 'CODEX_SESSIONS': none, 'PI_SESSIONS': none, 'OPENCODE_DB': Path(tmp) / 'none.db',
+                 **(roots or {})}
+        out, err = io.StringIO(), io.StringIO()
+        with patch.multiple('tokenatlas.why', **roots), redirect_stdout(out), redirect_stderr(err):
+            self.assertEqual(main(['--db', str(db), 'overhead', *argv]), 0)
+        return out.getvalue(), err.getvalue()
+
+    def history_db(self, tmp, stored=()):
+        db = Path(tmp) / 'state' / 'h.sqlite3'
+        with History(db) as history:
+            history._insert(history.connection, _encode(normalize(record(), history.machine)))
+            for harness, rows in stored:
+                overhead.save(history.connection, harness, rows)
+        return db
+
+    def test_history_without_overhead_rows_reports_no_rows_stored_and_skips_history_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp)
+            with patch.object(History, 'records', side_effect=AssertionError('history loaded')):
+                out, err = self.run_cli(tmp, db, ['--since', '2026-09-02T00:00:00+02:00', '--json'])
+                text, _ = self.run_cli(tmp, db, ['--since', '2026-09-02T00:00:00Z'])
+            data = json.loads(out)
+            self.assertEqual(data['harnesses'], {})
+            self.assertEqual(data['reason_code'], 'no_rows_stored')
+            self.assertIn('overhead --refresh', data['reason'])
+            self.assertIn('do not write overhead data', data['reason'])
+            self.assertIn(data['reason'], err)
+            self.assertIn('No overhead rows are stored', text)
+            with History(db) as history:
+                self.assertEqual(len(history.records()), 1)
+
+    def test_stored_rows_filtered_by_since_offset_and_harness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [sess('old', 100, 2, ts='2026-09-10T10:00:00Z'), sess('new', 300, 2, ts='2026-10-12T08:00:00Z')]
+            db = self.history_db(tmp, [('claude', rows), ('pi', [sess('p', 50, 2, harness='pi', ts='2026-10-12T09:00:00Z')])])
+            # 2026-10-12T09:30+02:00 is 07:30Z: includes 'new' (08:00Z), excludes 'old'
+            out, err = self.run_cli(tmp, db, ['--json', '--since', '2026-10-12T09:30:00+02:00'])
+            data = json.loads(out)
+            self.assertEqual(data['harnesses']['claude']['sessions'], 1)
+            self.assertEqual(data['harnesses']['claude']['floor']['median'], 300)
+            self.assertNotIn('reason', data)
+            self.assertNotIn('reason_code', data)
+            self.assertEqual(err, '')
+            # the same instant just after the session start excludes it; offset and Z forms agree
+            for since in ('2026-10-12T10:30:00+02:00', '2026-10-12T08:30:00Z'):
+                out, err = self.run_cli(tmp, db, ['--json', '--since', since, '--harness', 'claude'])
+                data = json.loads(out)
+                self.assertEqual(data['harnesses'], {})
+                self.assertEqual(data['reason_code'], 'filter_excludes_all')
+                self.assertIn('2 overhead sessions are stored', data['reason'])
+                # newest is scoped to claude (08:00Z), not the later pi session (09:00Z)
+                self.assertIn('ends at 2026-10-12T08:00:00Z', data['reason'])
+                self.assertIn('Run `tokenatlas overhead --refresh` to store later sessions', data['reason'])
+                self.assertNotIn('once', data['reason'])
+                self.assertIn(f'since {since}', data['reason'])
+            out, _ = self.run_cli(tmp, db, ['--json', '--harness', 'opencode'])
+            data = json.loads(out)
+            self.assertEqual(data['reason_code'], 'no_rows_stored')  # none stored for that harness
+            self.assertIn('harness opencode', data['reason'])
+            out, _ = self.run_cli(tmp, db, ['--json', '--harness', 'pi'])
+            self.assertEqual(list(json.loads(out)['harnesses']), ['pi'])
+
+    def test_refresh_without_session_roots_reports_root_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp)
+            out, err = self.run_cli(tmp, db, ['--refresh', '--json'])
+            data = json.loads(out)
+            self.assertEqual(data['reason_code'], 'root_missing')
+            self.assertIn('claude, codex, pi, opencode', data['reason'])
+            self.assertNotIn('Run `tokenatlas overhead --refresh`', data['reason'])
+            self.assertIn(data['reason'], err)
+
+    def test_refresh_missing_root_not_masked_by_other_harness_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp, [('pi', [sess('p', 50, 2, harness='pi')])])
+            out, _ = self.run_cli(tmp, db, ['--refresh', '--json', '--harness', 'claude'])
+            data = json.loads(out)
+            self.assertEqual(data['reason_code'], 'root_missing')
+            self.assertIn('claude', data['reason'])
+
+    def test_refresh_mixed_roots_names_skipped_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp)
+            root = Path(tmp) / 'projects'
+            write_jsonl(root / 'p' / 'plain.jsonl', [{'type': 'user', 'timestamp': '2026-09-10T10:00:00Z', 'message': {'role': 'user', 'content': 'hi'}}])
+            out, _ = self.run_cli(tmp, db, ['--refresh', '--json'], {'CLAUDE_PROJECTS': root})
+            data = json.loads(out)
+            self.assertEqual(data['reason_code'], 'rescan_found_nothing')
+            self.assertIn('Rescanned claude', data['reason'])
+            self.assertIn('codex, pi, opencode', data['reason'])
+
+    def test_stale_rows_advise_refresh_and_grammar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp, [('claude', [sess('old', 100, 2, ts='2026-09-10T10:00:00Z')])])
+            out, err = self.run_cli(tmp, db, ['--json', '--since', '2026-11-01T00:00:00Z'])
+            data = json.loads(out)
+            self.assertEqual(data['reason_code'], 'filter_excludes_all')
+            self.assertIn('1 overhead session is stored', data['reason'])
+            self.assertIn('ends at 2026-09-10T10:00:00Z', data['reason'])
+            self.assertIn('overhead --refresh', data['reason'])
+            text, err = self.run_cli(tmp, db, ['--harness', 'claude'])  # no --since: nothing excluded
+            self.assertNotIn('reason', text.lower().split('fixed context')[0])
+            self.assertEqual(err, '')
+            text, err = self.run_cli(tmp, db, ['--since', '2026-11-01T00:00:00Z'])
+            self.assertIn('ends at 2026-09-10T10:00:00Z', text)
+            self.assertEqual(err, '')
+
+    def test_since_without_offset_is_utc_and_inclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp, [('claude', [sess('a', 100, 2, ts='2026-10-12T08:00:00Z')])])
+            for since in ('2026-10-12T08:00:00', '2026-10-12T08:00:00Z', '2026-10-12T10:00:00+02:00'):
+                out, _ = self.run_cli(tmp, db, ['--json', '--since', since])
+                self.assertEqual(json.loads(out)['harnesses']['claude']['sessions'], 1, since)
+            out, _ = self.run_cli(tmp, db, ['--json', '--since', '2026-10-12T08:00:01'])
+            self.assertEqual(json.loads(out)['reason_code'], 'filter_excludes_all')
+
+    def test_non_empty_path_loads_history_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp, [('claude', [sess('a', 100, 2)])])
+            with patch.object(History, 'records', autospec=True, return_value=[]) as records:
+                self.run_cli(tmp, db, ['--json'])
+            records.assert_called_once()
+
+    def test_refresh_scanning_logs_without_overhead_metadata_reports_rescan_found_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.history_db(tmp)
+            root = Path(tmp) / 'projects'
+            write_jsonl(root / 'p' / 'plain.jsonl', [{'type': 'user', 'timestamp': '2026-09-10T10:00:00Z', 'message': {'role': 'user', 'content': 'hi'}}])
+            out, err = self.run_cli(tmp, db, ['--refresh', '--json', '--harness', 'claude'], {'CLAUDE_PROJECTS': root})
+            data = json.loads(out)
+            self.assertEqual(data['harnesses'], {})
+            self.assertEqual(data['reason_code'], 'rescan_found_nothing')
+            self.assertIn('Rescanned claude', data['reason'])
+            self.assertNotIn('Run `tokenatlas overhead --refresh`', data['reason'])
+
+    def test_help_describes_stored_source_and_rescan(self):
+        with patch.dict('os.environ', {'COLUMNS': '300'}), self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()) as out:
+            main(['overhead', '--help'])
+        self.assertEqual(ctx.exception.code, 0)
+        text = ' '.join(out.getvalue().split())
+        self.assertIn('overhead rows stored in the history database', text)
+        self.assertIn('only --refresh scans the harness session logs', text)
+        self.assertIn('2026-10-11T00:00:00+02:00', text)
+
     def test_refresh_json_and_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = claude_root(tmp)
