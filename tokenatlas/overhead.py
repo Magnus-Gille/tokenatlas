@@ -21,9 +21,9 @@ HARNESSES = ('claude', 'codex', 'pi', 'opencode')
 RESIDUAL_LABEL = 'other: tools, first prompt, unlogged'
 COST_LABEL = 'API-equivalent at list price, estimate'
 NO_DATA_HINT = 'No overhead data; run with --refresh.'
-WINDOW_HINT = ('No overhead sessions start {bounds}; --since/--until filter on session start, so {advice} '
-               '(see cached_first_ts for the range of cached session starts).')
-NO_START_HINT = ('Overhead sessions are cached but none has a usable start timestamp, so --since/--until cannot match them; '
+WINDOW_HINT = ('No overhead sessions start {bounds}; the date filter applies to session start, so {advice}. '
+               'Cached session starts range from {earliest} to {latest}.')
+NO_START_HINT = ('Overhead sessions are cached but none has a usable start timestamp, so a date filter cannot match them; '
                  'run without the date filter.')
 NOTE = ("Relative measures are usage-normalized. Token counts come from each provider's own tokenizer (Claude"
         ' 4.7+ counts about 30% more tokens for the same text), so compare percentages across providers rather than raw tokens.')
@@ -620,15 +620,17 @@ def _empty_reason(db, harness, since, until):
     parsed = [(m, t) for t in stamps for m in [_stored_moment(t)] if m is not None]
     if not parsed:
         return {'reason': 'no_start_timestamps', 'cached_sessions': len(stamps), 'hint': NO_START_HINT}
+    earliest = min(parsed, key=lambda p: p[0])[1]
+    latest = max(parsed, key=lambda p: p[0])[1]
     if since and until:
-        hint = WINDOW_HINT.format(bounds=f'in [{since}, {until})', advice='widen --since/--until')
+        bounds, advice = f'in [{since}, {until})', 'widen the window'
     elif until:
-        hint = WINDOW_HINT.format(bounds=f'before {until}', advice='try a later --until')
+        bounds, advice = f'before {until}', 'use a later end'
     else:
-        hint = WINDOW_HINT.format(bounds=f'on or after {since}', advice='try an earlier --since')
+        bounds, advice = f'on or after {since}', 'try an earlier --since'
     return {'reason': 'no_sessions_in_window', 'cached_sessions': len(stamps),
-            'cached_first_ts': {'earliest': min(parsed, key=lambda p: p[0])[1], 'latest': max(parsed, key=lambda p: p[0])[1]},
-            'hint': hint}
+            'cached_first_ts': {'earliest': earliest, 'latest': latest},
+            'hint': WINDOW_HINT.format(bounds=bounds, advice=advice, earliest=earliest, latest=latest)}
 
 
 def _n(value):

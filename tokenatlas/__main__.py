@@ -459,7 +459,7 @@ def _main(argv=None):
     overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes.',
         description='Reads a separate overhead cache in the history database, filled only by --refresh (a rescan of the session roots); '
                     'a normal refresh does not fill it. With no cache, or no session starting in the --since window, the result is empty: '
-                    'JSON gets "reason" (no_cached_data or no_sessions_in_window) and "hint" fields, text mode prints the hint.')
+                    'JSON gets "reason" (no_cached_data, no_start_timestamps or no_sessions_in_window) and "hint" fields, text mode prints the hint.')
     overhead.add_argument('--refresh',action='store_true',help='Rescan the default session roots first.')
     overhead.add_argument('--harness',choices=('claude','codex','pi','opencode'))
     overhead.add_argument('--since',help='Inclusive ISO timestamp (offset allowed; none means UTC) compared with the session start, not later activity.')
