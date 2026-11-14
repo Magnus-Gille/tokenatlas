@@ -1,5 +1,6 @@
 """python -m tokenatlas: local refresh, report, and doctor."""
 import argparse
+import gc
 import hashlib
 import json
 import os
@@ -360,8 +361,11 @@ def _statusline_dispatch(argv):
 def main(argv=None):
     """Run the CLI; the progress indicator it started (see progress.py) is closed on every exit, even an exception or Ctrl-C."""
     outer=progress.current()
+    collecting=gc.isenabled()
+    gc.disable()  # a command builds a few hundred thousand long-lived dicts and then only reads them: every full collection would rescan them all (TOKEN-189)
     try:return _main(argv)
     finally:
+        if collecting:gc.enable()
         if outer is progress.NOOP:progress.stop()
 
 

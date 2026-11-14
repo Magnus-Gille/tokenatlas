@@ -6,6 +6,7 @@ cannot delete history. Only token counters and attribution metadata are retained
 """
 from __future__ import annotations
 
+import gc
 import json
 import math
 import os
@@ -374,16 +375,29 @@ def _pack_raw(raw):
     return (_compact(slots) if slots else None), (_compact(extra) if extra else None)
 
 
+_scan_once = json.JSONDecoder().scan_once
+
+
+def _loads(text):
+    """json.loads for the compact JSON this module stores (read once per column per row, millions of times on a large history): the scanner
+    without the wrapper's whitespace and type handling. Anything it does not consume completely goes through json.loads."""
+    try:
+        value, end = _scan_once(text, 0)
+    except (StopIteration, ValueError):
+        return json.loads(text)
+    return value if end == len(text) else json.loads(text)
+
+
 def _unpack_raw(packed, extra):
     raw = {}
-    for (name, member), value in zip(_RAW_LAYOUT, json.loads(packed) if packed else ()):
+    for (name, member), value in zip(_RAW_LAYOUT, _loads(packed) if packed else ()):
         if value != _ABSENT:
             if member is None:
                 raw[name] = value
             else:
                 raw.setdefault(name, {})[member] = value
     if extra:
-        raw.update(json.loads(extra))
+        raw.update(_loads(extra))
     return raw
 
 
@@ -457,15 +471,15 @@ def _decode(row):
             'id_synthetic': bool(flags['id_synthetic']), 'ts': _ts_text(ts_us)}
     for name in _REFS[1:-7]:
         item[name] = refs[name]
-    item['environment'] = None if refs['environment'] is None else json.loads(refs['environment'])
+    item['environment'] = None if refs['environment'] is None else _loads(refs['environment'])
     item['environment_observed_at'] = refs['environment_observed_at']
-    item['tariff'] = None if refs['tariff'] is None else json.loads(refs['tariff'])
-    item['quota'] = None if refs['quota'] is None else json.loads(refs['quota'])
-    item['flags'] = None if refs['flags'] is None else json.loads(refs['flags'])
+    item['tariff'] = None if refs['tariff'] is None else _loads(refs['tariff'])
+    item['quota'] = None if refs['quota'] is None else _loads(refs['quota'])
+    item['flags'] = None if refs['flags'] is None else _loads(refs['flags'])
     item.update(tokens=tokens, raw_usage=_unpack_raw(packed, extra), duration_ms=None,
                 accounting_basis='request_top_level', billing_verified=False,
-                warnings=json.loads(refs['warnings']), complete=bool(flags['complete']),
-                confidence=json.loads(refs['confidence']),
+                warnings=_loads(refs['warnings']), complete=bool(flags['complete']),
+                confidence=_loads(refs['confidence']),
                 output_final=None if flags['output_final'] is None else bool(flags['output_final']))
     return item
 
@@ -918,15 +932,22 @@ class History:
                                            f' JOIN observations o ON o.id=s.observation {where}', params):
             paths.setdefault(observation, []).append(path)
         strings = {r[0]: r[1] for r in c.execute('SELECT id,value FROM strings')}
-        result = []
-        for row in c.execute(f'SELECT o.id,{",".join("o." + n for n in COLUMNS)} FROM observations o {where}', params):
-            item = _decode(tuple(strings[v] if i in _REF_INDEX and v is not None else v
-                                 for i, v in enumerate(row[1:])))
-            item['sources'] = sorted(paths.get(row[0], ()))
-            result.append(item)
-        if not include_limit_events:
-            result = [r for r in result if not is_limit_event(r)]
-        return sorted(result,key=lambda x:(x['ts'],x['provider'],x['id']))
+        strings[None] = None
+        lookup, first, last = strings.__getitem__, _REF_INDEX[0] + 1, _REF_INDEX[-1] + 2  # row[0] is the observation id; the reference columns are contiguous
+        collecting = gc.isenabled()
+        gc.disable()  # hundreds of thousands of small, long-lived dicts: each full collection would scan them all again for nothing
+        try:
+            result = []
+            for row in c.execute(f'SELECT o.id,{",".join("o." + n for n in COLUMNS)} FROM observations o {where}', params):
+                item = _decode((*row[1:first], *map(lookup, row[first:last]), *row[last:]))
+                item['sources'] = sorted(paths.get(row[0], ()))
+                result.append(item)
+            if not include_limit_events:
+                result = [r for r in result if not is_limit_event(r)]
+            return sorted(result,key=lambda x:(x['ts'],x['provider'],x['id']))
+        finally:
+            if collecting:
+                gc.enable()
 
     def doctor(self):
         count, first, last, incomplete, unlinked = self.connection.execute(

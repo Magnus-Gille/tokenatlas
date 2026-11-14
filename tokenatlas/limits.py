@@ -3,6 +3,7 @@
 A hit is a fact the logs state (a rejected Claude request, or a Codex observation whose rate_limits name a reached limit). What filled the
 window is only what these logs contain: usage on claude.ai, ChatGPT or other machines counts toward the same limit but is not seen. Costs are
 list prices in USD; a request without a complete USD price is counted as unpriced, never guessed."""
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta, timezone
 
 from tokenatlas import plan_metadata, prompts, why
@@ -234,7 +235,7 @@ def limit_hits(records, events, table, assigned=None):
             threads.setdefault(prompts._thread(r), []).append((prompts._t(r['ts']), tuple(assigned[id(r)][:3])))
     for found_turns in threads.values():
         found_turns.sort(key=lambda x: x[0])
-    pending = []
+    pending, window_index = [], None
     for hit in found:
         row = hit.pop('_row')
         pending.append((hit, row))
@@ -246,7 +247,8 @@ def limit_hits(records, events, table, assigned=None):
             before = [x for x in bound if x[0] <= at]
             hit['turn'] = (before[-1] if before else bound[0])[1]
             hit['_bound'] = True
-        hit['window'] = _fill(hit, records, assigned, table)
+        if window_index is None:window_index = _WindowIndex(records, table)
+        hit['window'] = _fill(hit, records, assigned, table, window_index)
     # A subagent whose first request was rejected has no usage to bind it: resolve it with the same assignment over usage plus those rejections,
     # in a side computation, so the usage assignments above (and the cards) are untouched.
     loose = [(hit, row) for hit, row in pending if row.get('thread_kind') == 'subagent' and not hit.get('_bound')]
@@ -260,7 +262,38 @@ def limit_hits(records, events, table, assigned=None):
     return found
 
 
-def _fill(hit, records, assigned, table):
+class _WindowIndex:
+    """Requests by (harness, canonical provider) in time order, built once for all hits: _fill used to rescan and re-parse the whole history
+    for every hit (hits x requests). Each lookup returns the requests in [start, end] in `records` order with their cost computed once, so
+    sums and tie-breaks are exactly those of the full scan."""
+    def __init__(self, records, table):
+        aliases = table.get('provider_aliases') or {}
+        groups = {}
+        for position, record in enumerate(records):
+            if record.get('id_synthetic'):
+                continue
+            groups.setdefault((record['harness'], aliases.get(record.get('provider'), record.get('provider'))), []).append((prompts._t(record['ts']), position))
+        self.records, self.table, self.cost, self.groups = records, table, {}, {}
+        for key, rows in groups.items():
+            rows.sort(key=lambda x: x[0])  # stable: equal times keep their order
+            self.groups[key] = ([t for t, _ in rows], [p for _, p in rows])
+
+    def between(self, harness, provider, start, end):
+        found = self.groups.get((harness, provider))
+        if not found:
+            return []
+        times, positions = found
+        chosen = sorted(positions[bisect_left(times, start):bisect_right(times, end)])
+        out = []
+        for position in chosen:
+            record = self.records[position]
+            if position not in self.cost:
+                self.cost[position] = prompts._cost(record, self.table)
+            out.append((record, self.cost[position]))
+        return out
+
+
+def _fill(hit, records, assigned, table, index=None):
     """What was seen in the window before a hit. Claude's 5-hour limit is a session block and its weekly limit resets at a fixed time, so the
     window is [resets_at - minutes, hit]. Codex windows are rolling ("rolling window duration" in its protocol) and the reset time moves,
     so the window is [hit - minutes, hit]."""
@@ -272,12 +305,11 @@ def _fill(hit, records, assigned, table):
     aliases = table.get('provider_aliases') or {}
     canon = lambda p: aliases.get(p, p)
     provider = canon(PROVIDER.get(hit['harness']))
+    if index is None:
+        index = _WindowIndex(records, table)
     turns, requests, priced, total, lower = {}, 0, 0, 0.0, False  # lower: some request is unpriced or incomplete, so totals are lower bounds
-    for record in records:
-        if record['harness'] != hit['harness'] or canon(record.get('provider')) != provider or record.get('id_synthetic') or not start <= prompts._t(record['ts']) <= at:
-            continue  # an ambiguous identity is in no total, as in the cost facts
+    for record, cost in index.between(hit['harness'], provider, start, at):  # an ambiguous identity is in no total, as in the cost facts
         requests += 1
-        cost = prompts._cost(record, table)
         short = cost is None or not record.get('complete', True)
         lower = lower or short
         found = assigned.get(id(record))
