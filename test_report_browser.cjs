@@ -183,8 +183,8 @@ async function ready(page, errors, what = 'report') {
       // the card is computed server-side: the filters above do not touch it
       const before=await page.locator('#ins-body').innerText();await page.selectOption('#harness',{index:1});assert.equal(await page.locator('#ins-body').innerText(),before);await page.selectOption('#harness',{index:0});
       // #185: the unpriced share beside the cost totals follows the selection (same rows as the totals)
-      const unpricedNote=async()=>page.evaluate(()=>{const sel=UsageReport.getSelected().filter(r=>!r.id_synthetic),n=sel.filter(r=>r.cost==null).length,el=document.querySelector('#usage-body .usage-unpriced'),vis=!document.querySelector('#usage').classList.contains('hidden');return{n,of:sel.length,vis,text:el&&el.textContent}});
-      for(const idx of [0,1]){await page.selectOption('#harness',{index:idx});const u=await unpricedNote();if(u.vis){if(u.n)assert.ok(u.text&&u.text.replace(/\D/g,'').startsWith(String(u.n)+String(u.of)),'unpriced note follows the filter: '+JSON.stringify(u));else assert.equal(u.text,null)}}
+      const unpricedNote=async()=>page.evaluate(()=>{const gl=document.querySelector('#glance-text .glance-unpriced');const sel=UsageReport.getSelected().filter(r=>!r.id_synthetic),n=sel.filter(r=>r.cost==null).length,el=document.querySelector('#usage-body .usage-unpriced'),vis=!document.querySelector('#usage').classList.contains('hidden');return{n,of:sel.length,vis,text:el&&el.textContent,glance:gl&&gl.textContent}});
+      for(const idx of [0,1]){await page.selectOption('#harness',{index:idx});const u=await unpricedNote();if(u.n)assert.ok(u.glance&&u.glance.replace(/\D/g,'').startsWith(String(u.n)+String(u.of)),'headline unpriced note follows the filter: '+JSON.stringify(u));else assert.equal(u.glance,null);if(u.vis){if(u.n)assert.ok(u.text&&u.text.replace(/\D/g,'').startsWith(String(u.n)+String(u.of)),'unpriced note follows the filter: '+JSON.stringify(u));else assert.equal(u.text,null)}}
       await page.selectOption('#harness',{index:0});
       assert.equal(await page.locator('#cost-facts [data-win="30d"]').getAttribute('aria-pressed'),'true');
     }
