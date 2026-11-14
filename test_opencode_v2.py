@@ -232,6 +232,18 @@ class CollectTests(unittest.TestCase):
         records, _ = self.collect(db.done())
         self.assertEqual({r.call_id: list(r.flags or []) for r in records}, {'a1': [why.INTERRUPTED], 'a2': []})
 
+    def test_unusable_legacy_abort_timing_lets_the_v2_abort_through(self):
+        db = Db(self.root / 'abort-timing.db')
+        db.session()
+        db.v2('u1', {'text': 'q', 'time': {'created': T0}}, kind='user')
+        db.v2('a1', v2_data(T0 + 10, T0 + 20))
+        db.legacy('a1', legacy_data(T0 + 10, T0 + 20, parent='u1'))
+        # The legacy abort's time is not a number (and wins over the row columns); the V2 copy has a valid one.
+        db.legacy('ab', {'role': 'assistant', 'parentID': 'u1', 'time': {'completed': 'garbled'}, 'error': {'name': 'MessageAbortedError'}}, created=T0 + 60)
+        db.v2('ab', v2_data(T0 + 60, T0 + 60, tok=False, error={'type': 'aborted', 'message': 'x'}))
+        records, _ = self.collect(db.done())
+        self.assertEqual({r.call_id: list(r.flags or []) for r in records}, {'a1': [why.INTERRUPTED]})
+
     def test_one_readable_generation_is_not_discarded_when_the_other_is_broken(self):
         db = Db(self.root / 'mixed.db', legacy=False)
         db.session()

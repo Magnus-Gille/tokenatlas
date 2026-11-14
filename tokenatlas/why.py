@@ -1442,12 +1442,13 @@ def collect_opencode(
         time_data = _mapping(data.get("time"))
         error = _mapping(data.get("error"))
         aborted = error.get("name") == "MessageAbortedError" or error.get("type") == "aborted"  # legacy name / V2 type
-        if aborted and not (row_id and row_id in abort_ids):  # one abort per message id: the legacy copy is read first and wins
-            abort_ids.add(row_id)
+        if aborted and not (row_id and row_id in abort_ids):  # one abort per message id: the legacy copy is read first and wins when usable
+            abort_at = _millisecond_timestamp(
+                time_data.get("completed") or time_data.get("created") or row["time_updated"] or row["time_created"])
+            if abort_at is not None and row_id:
+                abort_ids.add(row_id)  # claimed only once the event is usable, so a valid V2 copy can replace an unusable legacy one
             aborts.append((_meta_text(row["session_id"], default="unknown"), _meta_text(_first_text(data, "parentID", "parentId"), v2_turn.get(row["id"])),
-                           str(row["id"]) if row["id"] else None, _millisecond_timestamp(
-                               time_data.get("completed") or time_data.get("created")
-                               or row["time_updated"] or row["time_created"])))
+                           str(row["id"]) if row["id"] else None, abort_at))
         usage = data.get("tokens")
         if not isinstance(usage, dict):
             # A request still in flight, or one that failed (provider.auth, aborted) without usage, has nothing to count.
