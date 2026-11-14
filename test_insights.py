@@ -75,8 +75,9 @@ class Shape(unittest.TestCase):
 
     def test_only_unpriced_has_only_price_free_facts(self):
         res = cost_facts([ob('u', model='mystery', fresh=10, read=0)], TABLE)
-        self.assertEqual([f['id'] for f in res['facts']], ['context_size', 'credits', 'energy'])  # energy and credits need no USD price (the credit fact only counts the unrated model)
+        self.assertEqual([f['id'] for f in res['facts']], ['unpriced_coverage', 'context_size', 'credits', 'energy'])  # energy and credits need no USD price (the credit fact only counts the unrated model)
         self.assertEqual((res['requests'], res['priced_requests'], res['unpriced_requests']), (1, 0, 1))
+        self.assertEqual(res['unpriced_models'][0]['name'], 'mystery')
 
     def test_no_wording_of_advice(self):
         text = json.dumps(cost_facts(D, TABLE)) + json.dumps({k: v for k, v in insights._texts().items() if k.startswith('ins_')})
@@ -103,6 +104,53 @@ class F1ModelShare(unittest.TestCase):
         self.assertIsNone(v['other'])
         self.assertAlmostEqual(v['priced_cost'], 2.61, 9)
         self.assertEqual((v['requests'], v['priced_requests'], v['unpriced_requests'], v['unpriced_share']), (5, 4, 1, 0.2))
+        self.assertEqual(v['unpriced_models'][0]['name'], 'mystery')
+        self.assertEqual(v['unpriced_models'][0]['requests'], 1)
+
+    def test_unpriced_share_and_names_beside_every_total_follow_the_window(self):
+        rows = [ob('p1', '2026-09-03T10:00:00+00:00', model='gpt-a', fresh=1000, out=100, session='s', turn='t1'),
+                dict(ob('p2', '2026-09-03T11:00:00+00:00', model='gpt-a', fresh=1000, session='s', turn='t2'), flags=['interrupted']),
+                ob('u1', '2026-09-03T12:00:00+00:00', model='mystery', fresh=500, session='s', turn='t2'),
+                ob('u2', '2026-09-10T12:00:00+00:00', model='other-mystery', fresh=900, session='s', turn='t3')]
+        for lo, hi, want in (('2026-09-03T00:00:00+00:00', '2026-09-04T00:00:00+00:00', (3, 1, 'mystery')),  # filtered: u2 is outside
+                             (None, None, (4, 2, 'other-mystery'))):
+            res = cost_facts(rows, TABLE, lo and datetime.fromisoformat(lo), hi and datetime.fromisoformat(hi))
+            facts = by_id(res)
+            for fid in ('model_share', 'price_comparison', 'interrupted_turns', 'cost_parts'):
+                v = facts[fid]['values']
+                self.assertEqual((v['requests'], v['unpriced_requests']), want[:2], fid)
+                self.assertIn(want[2], [m['name'] for m in v['unpriced_models']], fid)
+            text = insights.render_text(res)
+            self.assertGreaterEqual(text.count('largest unpriced models'), 4)
+
+    def test_all_unpriced_window_still_names_its_models(self):
+        res = cost_facts([ob('u1', model='mystery', fresh=500), dict(ob('u2', model='mystery', fresh=1, session='s', turn='t'), flags=['interrupted'])], TABLE)
+        v = by_id(res)['unpriced_coverage']['values']
+        self.assertEqual((v['requests'], v['unpriced_requests'], v['unpriced_share']), (2, 2, 1.0))
+        self.assertEqual(v['unpriced_models'][0]['name'], 'mystery')
+
+    def test_unpriced_model_ranking_sums_all_token_classes(self):
+        rows = [ob('a', model='mystery-a', fresh=1000), ob('b', model='mystery-b', fresh=10, read=20, write=30, out=40),
+                ob('c', model='mystery-c', fresh=500, read=400)]
+        got = cost_facts(rows, TABLE)['unpriced_models']
+        self.assertEqual([(m['name'], m['tokens']) for m in got], [('mystery-a', 1000), ('mystery-c', 900), ('mystery-b', 100)])
+
+    def test_explicit_unpriced_model_is_flagged_in_insights(self):
+        table = dict(TABLE, unpriced_models=[dict(provider='openai', model='auto-review', reason='no public rate',
+                                                  source_url='https://example.test', retrieved_on='2026-09-01')])
+        res = cost_facts([ob('x', model='auto-review', fresh=5), ob('y', model='gpt-a', fresh=10)], table)
+        top = res['unpriced_models'][0]
+        self.assertEqual(top['name'], 'auto-review')
+        self.assertIn('explicitly unpriced', top['explicit_reason'])
+        self.assertIn('explicitly unpriced', insights.render_text(res))
+
+    def test_unpriced_model_ranking_does_not_double_count_reasoning(self):
+        first, second = ob('reasoning', model='mystery-a', out=100), ob('output', model='mystery-b', out=200)
+        first['tokens']['reasoning'] = 10_000
+        rows = [first, second]
+        result = cost_facts(rows, TABLE)
+        self.assertEqual(result['unpriced_models'][0]['name'], 'mystery-b')
+        self.assertEqual(result['unpriced_models'][0]['tokens'], 200)
 
     def test_top_five_plus_other(self):
         rows = [ob(f'r{n}', model=f'm{n}', out=n * 100000) for n in range(1, 8)]  # m<n> costs exactly $n

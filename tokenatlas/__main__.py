@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -380,7 +380,7 @@ def _main(argv=None):
     done=_statusline_dispatch(sys.argv[1:] if argv is None else argv)
     if done is not None:return done
     from tokenatlas import insights, limits, pricing, prompt_store, prompts, quota_share, sessions, subscriptions, why
-    from tokenatlas.history import History, summarize
+    from tokenatlas.history import History, is_lock_error, summarize
     from tokenatlas.report import build_report, coverage_key, read_report_state, render_report, report_state, write_report
     if Path(sys.argv[0]).name.lower() in ('energy-monitor','energy-monitor.exe','energy-monitor-script.py'):
         print('energy-monitor is deprecated; use tokenatlas',file=sys.stderr)
@@ -464,10 +464,13 @@ def _main(argv=None):
     facts.add_argument('--context-threshold',type=int,default=200000,help='Input-token threshold for context-volume facts; a presentation choice, not a waste detector.')
     facts.add_argument('--scenario-population',choices=('large_context_input','subagent_input'),help='Opt-in hypothetical input-reduction population; requires --reduction-percent.')
     facts.add_argument('--reduction-percent',type=float,help='Hypothetical input reduction, 0–100; no prediction of savings.')
-    overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes.')
-    overhead.add_argument('--refresh',action='store_true',help='Rescan the default session roots first.')
+    overhead=commands.add_parser('overhead',help='Fixed context overhead: floor tokens, instruction and skill sizes (needs a prior overhead --refresh).',
+                                 description='Fixed context overhead: floor tokens, instruction and skill sizes. Reads overhead rows stored in the history database; '
+                                             'request history from refresh/collect does not include them, and only --refresh scans the harness session logs and writes them. '
+                                             'An empty result carries a reason and reason_code explaining why.')
+    overhead.add_argument('--refresh',action='store_true',help='Scan the default harness session roots and store overhead rows before reporting (slow on large histories).')
     overhead.add_argument('--harness',choices=('claude','codex','pi','opencode'))
-    overhead.add_argument('--since',help='Inclusive ISO timestamp of the session start.')
+    overhead.add_argument('--since',help='Inclusive ISO timestamp of the session start, e.g. 2026-10-11T00:00:00+02:00 or 2026-10-11T00:00:00Z; a timestamp without an offset is read as UTC.')
     overhead.add_argument('--json',action='store_true')
     collect=commands.add_parser('collect',help='One scheduled run under a lock: refresh, top text if opted in, report, remote sync, report again.')
     collect.add_argument('--remote',action='append',default=[],metavar='TAG:HOST',help='Remote machine to sync (repeatable); else REMOTE_HOSTS_OVERRIDE or the remote-hosts file in the state directory.')
@@ -527,7 +530,8 @@ def _main(argv=None):
     provider_remove=provider_sub.add_parser('remove',help='Remove a local provider name.')
     provider_remove.add_argument('name')
     provider_sub.add_parser('show',help='Show configured local provider names.')
-    commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
+    doctor=commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
+    doctor.add_argument('--prices',type=Path,help='Override the price table used for coverage diagnostics.')
     args=parser.parse_args(argv)
     if args.command=='top' and args.plan is not None:
         args.plan=subscriptions._plan(args.plan)
@@ -662,7 +666,10 @@ def _main(argv=None):
             raise ValueError('history database does not exist; run refresh first')
         if args.command=='rate' and (args.unit or args.thread or args.outcome) and not (args.unit and args.thread and args.outcome):
             raise ValueError('rating needs --unit, --thread and --outcome')
-        with History(args.db) as history:
+        read_only = (args.command in ('report', 'insights', 'session', 'doctor')
+                     or args.command == 'top' and not args.keep_text and not args.forget_text
+                     or args.command == 'quota' and args.quota == 'show')
+        with History(args.db, read_only=read_only) as history:
             if args.command in ('session','rate'):
                 history.connection.execute('BEGIN')
                 price,retrieved=sessions.default_pricer(args.prices)
@@ -849,6 +856,10 @@ def _main(argv=None):
             elif args.command=='doctor':
                 history.connection.execute('BEGIN')
                 result=history.doctor()
+                now = datetime.now(timezone.utc)
+                result['pricing']=pricing.diagnostics(
+                    history.records(start=now - timedelta(days=30), end=now),
+                    pricing.load_prices(args.prices), now=now)
                 # Where each harness is read from now, and why; only the harness variables, never the whole environment.
                 result['claude_quota']=_quota_status(args.db)
                 result['roots']={h:dict(zip(('path','source'),(str(r),src))) for h in ('claude','codex','pi','opencode') for r,src in [why.harness_root(h)]}
@@ -914,6 +925,8 @@ def _main(argv=None):
         print(json.dumps(result,indent=2,sort_keys=True))
         return 0 if args.command!='refresh' or result['status']=='ok' else 2
     except (OSError,ValueError,sqlite3.Error,ZoneInfoNotFoundError) as exc:
+        if is_lock_error(exc):
+            parser.exit(75, f'database: {terminal_safe(exc)}\n')
         parser.exit(2,f'usage: {terminal_safe(exc)}\n')
 
 
