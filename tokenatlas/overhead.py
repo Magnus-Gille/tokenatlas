@@ -517,12 +517,17 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
     `records` (History.records) supplies each session's dominant model; without it the cost stays None.  It may be a
     callable, invoked only when the selection is non-empty (loading the full history is slow).
     """
-    ensure(db)
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {'overhead_sessions', 'overhead_items', 'overhead_skill_uses'} <= tables:
+        return {'chars_per_token': CHARS_PER_TOKEN, 'token_basis': 'estimate', 'harnesses': {},
+                'reason': 'No overhead tables are stored in this history database. Run `tokenatlas overhead --refresh` to collect overhead metadata.'}
     lo, hi = _moment(since), _moment(until)
     sessions = {}
+    overhead_columns = {row[1] for row in db.execute('PRAGMA table_info(overhead_sessions)')}
+    unidentified_expr = 'unidentified_skill_reads' if 'unidentified_skill_reads' in overhead_columns else '0'
     for h, s, sub, ts, floor, inp, write, read, calls, unidentified in db.execute(
             'SELECT harness, session, is_subagent, first_ts, floor_tokens, floor_input, floor_cache_write,'
-            ' floor_cache_read, calls, unidentified_skill_reads FROM overhead_sessions ORDER BY harness, session'):
+            f' floor_cache_read, calls, {unidentified_expr} FROM overhead_sessions ORDER BY harness, session'):
         when = _moment(ts)
         if harness not in (None, h) or (lo and (when is None or when < lo)) or (hi and (when is None or when >= hi)):
             continue
@@ -615,6 +620,8 @@ def _by_currency(values, fmt):
 
 def render(result):
     lines = [NOTE, '']
+    if result.get('reason') and not result['harnesses']:
+        lines += [result['reason'], '']
     rows = sorted(((h, r['relative']) for h, r in result['harnesses'].items()),
                   key=lambda i: (i[1]['fixed_share_of_input']['pct'] is None, i[1]['fixed_share_of_input']['pct'] or 0, i[0]))
     if rows:
@@ -669,6 +676,8 @@ def _stored_stats(db, harness):
 
     Newest is compared as parsed instants, since stored timestamp text is not guaranteed to sort chronologically."""
     total, newest = 0, None
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='overhead_sessions'").fetchone():
+        return total, newest  # read-only open of a history that never ran `overhead --refresh`
     for h, ts in db.execute('SELECT harness, first_ts FROM overhead_sessions'):
         if harness not in (None, h):
             continue
@@ -721,7 +730,7 @@ def run(args):
         raise ValueError('history database does not exist; run refresh or overhead --refresh first')
     roots = {h: why.harness_root(h)[0] for h in ('claude', 'codex', 'pi', 'opencode')}
     scanned, skipped = [], []
-    with History(args.db) as history:
+    with History(args.db, read_only=not args.refresh) as history:
         db = history.connection
         if args.refresh:
             for h in (args.harness,) if args.harness else HARNESSES:
@@ -733,7 +742,6 @@ def run(args):
                 else:
                     skipped.append(h)
         db.execute('BEGIN')
-        ensure(db)
         total, newest = _stored_stats(db, args.harness)
         with progress.step('Summarize overhead'):
             result = summarize(db, since=args.since, harness=args.harness, records=history.records)

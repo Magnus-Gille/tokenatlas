@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Fixed
+
+- Concurrent commands no longer fail with `usage: database is locked` (TOKEN-190). The history uses WAL mode, so long analytics commands and `refresh`/`collect` run side by side. Analytics commands (`report`, `insights`, `top` without `--keep-text`, `overhead`, `session`, `doctor`, `quota show`) are read-only and no longer migrate the schema: after an upgrade run `tokenatlas refresh` once. A lock between writers exits 75 with a `database:` prefix, and `collect` retries and logs the steps it skips.
+
 ## [1.25.0] - 2026-10-25
 
 ### Added

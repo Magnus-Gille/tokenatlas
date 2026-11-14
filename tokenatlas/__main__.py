@@ -372,7 +372,7 @@ def _main(argv=None):
     done=_statusline_dispatch(sys.argv[1:] if argv is None else argv)
     if done is not None:return done
     from tokenatlas import insights, limits, pricing, prompt_store, prompts, quota_share, sessions, subscriptions, why
-    from tokenatlas.history import History, summarize
+    from tokenatlas.history import History, is_lock_error, summarize
     from tokenatlas.report import build_report, coverage_key, read_report_state, render_report, report_state, write_report
     if Path(sys.argv[0]).name.lower() in ('energy-monitor','energy-monitor.exe','energy-monitor-script.py'):
         print('energy-monitor is deprecated; use tokenatlas',file=sys.stderr)
@@ -657,7 +657,10 @@ def _main(argv=None):
             raise ValueError('history database does not exist; run refresh first')
         if args.command=='rate' and (args.unit or args.thread or args.outcome) and not (args.unit and args.thread and args.outcome):
             raise ValueError('rating needs --unit, --thread and --outcome')
-        with History(args.db) as history:
+        read_only = (args.command in ('report', 'insights', 'session', 'doctor')
+                     or args.command == 'top' and not args.keep_text and not args.forget_text
+                     or args.command == 'quota' and args.quota == 'show')
+        with History(args.db, read_only=read_only) as history:
             if args.command in ('session','rate'):
                 history.connection.execute('BEGIN')
                 price,retrieved=sessions.default_pricer(args.prices)
@@ -904,6 +907,8 @@ def _main(argv=None):
         print(json.dumps(result,indent=2,sort_keys=True))
         return 0 if args.command!='refresh' or result['status']=='ok' else 2
     except (OSError,ValueError,sqlite3.Error,ZoneInfoNotFoundError) as exc:
+        if is_lock_error(exc):
+            parser.exit(75, f'database: {terminal_safe(exc)}\n')
         parser.exit(2,f'usage: {terminal_safe(exc)}\n')
 
 
