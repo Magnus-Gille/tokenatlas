@@ -42,7 +42,7 @@ the first test fails (3,728 price calls for 1,500 requests).
 
 ## What remains
 
-A changed run is still one full load plus several full passes in `top` and again in `report` (two processes, each loading the history).
+A changed run is still one full load plus several full passes in `top` and again in `report`. In `collect` both run in one process but each loads the history itself; a manual `tokenatlas top` and `tokenatlas report` are two processes.
 The remaining hot spots are `quota_share.snapshots_from_records` and `turn_shares`, `insights.cost_facts`, and building the report rows.
 A real incremental design (recompute only periods, turns and projects touched since the last revision) would need persisted derived
 state and is not part of this change.

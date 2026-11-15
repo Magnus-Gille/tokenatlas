@@ -379,15 +379,15 @@ def _pack_raw(raw):
     return (_compact(slots) if slots else None), (_compact(extra) if extra else None)
 
 
-_scan_once = json.JSONDecoder().scan_once
+_raw_decode = json.JSONDecoder().raw_decode
 
 
 def _loads(text):
-    """json.loads for the compact JSON this module stores (read once per column per row, millions of times on a large history): the scanner
-    without the wrapper's whitespace and type handling. Anything it does not consume completely goes through json.loads."""
+    """json.loads for the compact JSON this module stores (read once per column per row, millions of times on a large history): the documented
+    raw_decode scanner without the wrapper's whitespace and type handling. Anything it does not consume completely goes through json.loads."""
     try:
-        value, end = _scan_once(text, 0)
-    except (StopIteration, ValueError):
+        value, end = _raw_decode(text)
+    except ValueError:
         return json.loads(text)
     return value if end == len(text) else json.loads(text)
 
