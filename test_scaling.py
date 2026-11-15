@@ -44,6 +44,30 @@ def reference_fill(hit, records, assigned, table):
     return requests, priced, (total if priced else None), sorted(((k, v[0], v[1]) for k, v in turns.items() if v[2]), key=lambda kv: (-kv[1], kv[0]))[:limits.TOP]
 
 
+def reference_cost_seen(records, table, harness, start, end, plan=None, default_limit=False):
+    """budget.cost_seen as it was before TOKEN-189: a full scan in `records` order for every window."""
+    total, unpriced, excluded = 0.0, 0, 0
+    canon = budget._canon(table)
+    for r in records:
+        if not budget._provider_ok(r, harness, canon) or r.get('id_synthetic') or not start <= prompts._t(r['ts']) <= end:
+            continue
+        if default_limit and not budget.DEFAULT_LIMIT(harness, (r.get('quota') or {}).get('limit_id')):
+            continue
+        if harness in budget.PLANNED:
+            p = budget.plan_of(r)
+            if p is None:
+                excluded += 1
+                continue
+            if p != plan:
+                continue
+        c = prompts._cost(r, table)
+        if c is None:
+            unpriced += 1
+        else:
+            total += c
+    return total, unpriced, excluded
+
+
 class ScalingTest(unittest.TestCase):
     def test_hit_windows_match_a_full_scan_and_price_each_request_once(self):
         records, events = history()
@@ -64,13 +88,25 @@ class ScalingTest(unittest.TestCase):
     def test_cost_seen_index_matches_a_full_scan_and_prices_once(self):
         records, _ = history()
         windows = [(T0 + timedelta(minutes=60 * i), T0 + timedelta(minutes=60 * i + 300)) for i in range(150)]
-        expected = [budget.cost_seen(records, TABLE, 'claude', a, b) for a, b in windows]
+        expected = [reference_cost_seen(records, TABLE, 'claude', a, b) for a, b in windows]
         index = budget.SeenIndex(records, TABLE, 'claude')
         calls = []
         real = prompts._cost
         with patch.object(prompts, '_cost', lambda r, t: calls.append(1) or real(r, t)):
             self.assertEqual([budget.cost_seen(records, TABLE, 'claude', a, b, index=index) for a, b in windows], expected)
         self.assertLessEqual(len(calls), len(records))
+
+    def test_cost_seen_index_matches_the_old_scan_on_shuffled_records_and_exact_bounds(self):
+        import random
+        records, _ = history(requests=600)
+        random.Random(189).shuffle(records)  # input order differs from time order: sums must follow input order, as the old scan did
+        bounds = [(T0 + timedelta(minutes=10 * i), T0 + timedelta(minutes=10 * i + 290)) for i in range(0, 580, 7)]  # ends fall exactly on request times
+        for harness in ('claude', 'codex'):
+            index = budget.SeenIndex(records, TABLE, harness)
+            for a, b in bounds:
+                for default_limit in (False, True):
+                    self.assertEqual(budget.cost_seen(records, TABLE, harness, a, b, default_limit=default_limit, index=index),
+                                     reference_cost_seen(records, TABLE, harness, a, b, default_limit=default_limit), (harness, a, b, default_limit))
 
     def test_timestamps_are_parsed_once(self):
         prompts._t.cache_clear()
@@ -91,6 +127,12 @@ class ScalingTest(unittest.TestCase):
                 pass
             self.assertEqual(collect.history_size(db), 0)
             self.assertIsNone(collect.history_size(Path(d) / 'missing.sqlite3'))
+            self.assertFalse((Path(d) / 'missing.sqlite3').exists(), 'a read-only probe creates no file')
+            odd = Path(d) / 'hist#2026?x%41.sqlite3'  # URI-reserved characters must not drop mode=ro or retarget the open
+            with History(odd):
+                pass
+            self.assertEqual(collect.history_size(odd), 0)
+            self.assertEqual(sorted(p.name for p in Path(d).iterdir() if not p.name.startswith('history.sqlite3')), sorted(p.name for p in Path(d).iterdir() if p.name.startswith('hist#')))
             out = io.StringIO()
             with redirect_stdout(out):
                 collect._step('probe', lambda: 0, db)

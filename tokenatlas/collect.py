@@ -65,7 +65,7 @@ def _lock(fd):
 def history_size(db):
     """Request count of the history database (read-only, for the log), or None when it cannot be read."""
     try:
-        con=sqlite3.connect(f'file:{Path(db).expanduser().as_posix()}?mode=ro',uri=True)
+        con=sqlite3.connect(Path(db).expanduser().absolute().as_uri()+'?mode=ro',uri=True)  # as_uri escapes '#', '?' and '%' so mode=ro always applies
         try:return con.execute('SELECT count(*) FROM observations').fetchone()[0]
         finally:con.close()
     except sqlite3.Error:return None
