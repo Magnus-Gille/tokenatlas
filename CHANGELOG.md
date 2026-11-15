@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-11-15
+
+### Changed
+
+- `top` and `report` are faster on large histories (TOKEN-189, partial): on about 700,000 requests a changed `collect` run takes about 61 s for `top` and 103 s for `report`, down from 75 s and 135 s. The history loads with fewer allocations, limit and budget windows use a time index instead of a full scan per window, timestamps are parsed once, and the cyclic garbage collector is paused while a command runs (peak memory about 8 % higher). The embedded report payload uses gzip level 6, so its bytes differ while the decoded data is the same (#191).
+- `collect` logs the history size (`requests=`) beside each step's timing (#191).
+
 ## [1.26.0] - 2026-11-14
 
 ### Added
