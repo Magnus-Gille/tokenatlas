@@ -182,6 +182,36 @@ class RemoteSyncTest(unittest.TestCase):
     def test_ssh_connection_failure_on_probe_is_nonzero(self):
         proc, _ = self.run_script('a:h1', bodies_override={'ssh': 'exit 255'})
         self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn('history: ERROR cannot check a for tokenatlas (ssh exit 255)', proc.stderr)
+
+    TAILSCALE_CHECK = ('# Tailscale SSH requires an additional check.\\n'
+                       '# To authenticate, visit: https://login.tailscale.com/a/secret123\\n')
+
+    def test_tailscale_check_mode_names_reauthentication_without_the_url(self):
+        proc, _ = self.run_script('a:h1 b:h2', bodies_override={
+            'ssh': f'case "$*" in *h1*) printf "{self.TAILSCALE_CHECK}" >&2; exit 255;; esac; exit 0'})
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn('history: ERROR a: Tailscale SSH check needs re-authentication (run ssh h1 interactively)', proc.stderr)
+        self.assertNotIn('login.tailscale.com', proc.stderr + proc.stdout)
+        self.assertNotIn('secret123', proc.stderr + proc.stdout)
+        self.assertNotIn('ssh exit 255', proc.stderr)
+        self.assertIn('Syncing history from b (h2)', proc.stdout)
+        self.assertIn('history: OK', proc.stdout)
+
+    def test_other_probe_stderr_is_not_logged(self):
+        # Only the recognised Tailscale message changes the log line; arbitrary ssh output (which may carry hostnames
+        # or URLs) is still not copied into it.
+        proc, _ = self.run_script('a:h1', bodies_override={
+            'ssh': 'printf "ssh: connect to host h1 port 22: Connection refused https://example.invalid/x\\n" >&2; exit 255'})
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn('history: ERROR cannot check a for tokenatlas (ssh exit 255)', proc.stderr)
+        self.assertNotIn('example.invalid', proc.stderr + proc.stdout)
+
+    def test_probe_stdout_still_discarded_and_install_found(self):
+        proc, _ = self.run_script('a:h1', bodies_override={'ssh': 'echo /home/x/.local/bin/tokenatlas; exit 0'})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn('/home/x/.local/bin/tokenatlas', proc.stdout + proc.stderr)
+        self.assertIn('history: OK', proc.stdout)
 
     def test_remote_commands_prepend_user_bin_to_path(self):
         proc, log = self.run_script('a:h1')

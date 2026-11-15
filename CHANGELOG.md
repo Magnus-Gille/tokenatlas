@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Fixed
+
+- Remote sync names an expired Tailscale SSH check ("Tailscale SSH check needs re-authentication (run ssh <host> interactively)") instead of a bare `ssh exit 255`; the login URL is never logged (TOKEN-197).
+
 ## [1.26.1] - 2026-11-15
 
 ### Changed

@@ -85,11 +85,15 @@ sync_history() {
     # Non-interactive ssh has a minimal PATH too, so each remote call prepends ~/.local/bin.
     # Single quotes: the remote shell expands $HOME and ~, not this one.
     # Exit 1 from `command -v` means genuinely absent; anything else (255 = connection failure, ...) is an error.
-    local probe_rc=0
-    ssh "${SSH_OPTS[@]}" -- "$host" 'PATH="$HOME/.local/bin:$PATH"; command -v tokenatlas || command -v energy-monitor' >/dev/null 2>&1 || probe_rc=$?
+    # stderr is kept only to recognise Tailscale SSH check mode; it is never logged (it may carry a login URL).
+    local probe_rc=0 probe_err
+    probe_err=$(ssh "${SSH_OPTS[@]}" -- "$host" 'PATH="$HOME/.local/bin:$PATH"; command -v tokenatlas || command -v energy-monitor' 2>&1 >/dev/null) || probe_rc=$?
     if [[ $probe_rc -eq 1 ]]; then
         echo "  history: not installed on $tag"
         return 0
+    elif [[ $probe_rc -ne 0 && "$probe_err" == *"Tailscale SSH requires an additional check"* ]]; then
+        echo "  history: ERROR $tag: Tailscale SSH check needs re-authentication (run ssh $host interactively)" >&2
+        return 1
     elif [[ $probe_rc -ne 0 ]]; then
         echo "  history: ERROR cannot check $tag for tokenatlas (ssh exit $probe_rc)" >&2
         return 1
