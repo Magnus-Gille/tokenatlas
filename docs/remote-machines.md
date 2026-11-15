@@ -48,6 +48,10 @@ A stalled host must not block anything else, so every remote call is bounded:
 - Each host also has an overall limit, `TOKENATLAS_HOST_TIMEOUT` seconds (default 300). A host over the limit
   is killed with its child processes, reported as `<host>: ERROR (timeout after Ns)`, and the script moves
   on to the next host. It then exits 1, but returns promptly.
+- `BatchMode=yes` disables interactive prompts; the timeouts above bound any wait. A host using Tailscale SSH in
+  check mode is reported as `history: ERROR <tag>: Tailscale SSH check needs re-authentication (run ssh <host> interactively)`
+  once its periodic browser check has expired. Run `ssh <host>` in a terminal and complete the login, or change the
+  Tailscale ACL rule from `check` to `accept`. The login URL is never written to the log.
 
 Schedule `tokenatlas collect` instead of calling `remote_sync.sh` from cron. The sync script ships inside the
 package (the repository-root `remote_sync.sh` is a shim that runs it for checkout users). `collect` takes a kernel
