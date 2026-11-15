@@ -1,6 +1,7 @@
 """Scaling guards (TOKEN-189): a changed collect run must not rescan and re-price the whole history once per limit hit or reading.
 
 The guards count operations (price lookups, timestamp parses), never wall-clock time, so they cannot flake on a slow CI machine."""
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -99,14 +100,41 @@ class ScalingTest(unittest.TestCase):
     def test_cost_seen_index_matches_the_old_scan_on_shuffled_records_and_exact_bounds(self):
         import random
         records, _ = history(requests=600)
-        random.Random(189).shuffle(records)  # input order differs from time order: sums must follow input order, as the old scan did
+        random.Random(189).shuffle(records)  # input order differs from time order
         bounds = [(T0 + timedelta(minutes=10 * i), T0 + timedelta(minutes=10 * i + 290)) for i in range(0, 580, 7)]  # ends fall exactly on request times
-        for harness in ('claude', 'codex'):
-            index = budget.SeenIndex(records, TABLE, harness)
-            for a, b in bounds:
+        index = budget.SeenIndex(records, TABLE, 'claude')
+        for a, b in bounds:
+            for default_limit in (False, True):
+                self.assertEqual(budget.cost_seen(records, TABLE, 'claude', a, b, default_limit=default_limit, index=index),
+                                 reference_cost_seen(records, TABLE, 'claude', a, b, default_limit=default_limit), (a, b, default_limit))
+
+    def test_codex_plan_and_limit_filters_and_input_order_sums_match_the_old_scan(self):
+        import random
+        model = next(m['model'] for m in TABLE['models'] if m['provider'] == 'openai' and not m.get('free') and m.get('output'))
+        rng = random.Random(1890)
+        records = []
+        for i in range(400):
+            tokens = rng.choice((1, 7, 10 ** 9, 3 * 10 ** 7))  # mixed magnitudes: a float sum depends on its order
+            r = obs(f'c{i}', iso(5 * i), tokens, harness='codex', provider='openai', session=f's{i % 9}',
+                    plan=rng.choice(('plus', 'pro', None, 'unknown')))
+            r['model'] = model if i % 11 else 'not-a-priced-model'  # some unpriced requests
+            r['quota'] = {'limit_id': rng.choice((None, 'codex', 'codex_bengalfox')), 'plan_type': rng.choice((None, None, 'Plus'))}
+            records.append(r)
+        rng.shuffle(records)
+        index = budget.SeenIndex(records, TABLE, 'codex')
+        bounds = [(T0 + timedelta(minutes=5 * i), T0 + timedelta(minutes=5 * i + 300)) for i in range(0, 390, 13)]
+        order_matters = False
+        for a, b in bounds:
+            for plan in ('plus', 'pro', None):
                 for default_limit in (False, True):
-                    self.assertEqual(budget.cost_seen(records, TABLE, harness, a, b, default_limit=default_limit, index=index),
-                                     reference_cost_seen(records, TABLE, harness, a, b, default_limit=default_limit), (harness, a, b, default_limit))
+                    got = budget.cost_seen(records, TABLE, 'codex', a, b, plan=plan, default_limit=default_limit, index=index)
+                    want = reference_cost_seen(records, TABLE, 'codex', a, b, plan=plan, default_limit=default_limit)
+                    self.assertEqual(got, want, (a, b, plan, default_limit))
+                    kept = [r for r in records if a <= prompts._t(r['ts']) <= b and budget.plan_of(r) == plan and plan is not None
+                            and (not default_limit or budget.DEFAULT_LIMIT('codex', r['quota']['limit_id']))]
+                    costs = [c for c in (prompts._cost(r, TABLE) for r in sorted(kept, key=lambda r: r['ts'])) if c is not None]
+                    order_matters |= sum(costs, 0.0) != want[0]
+        self.assertTrue(order_matters, 'the fixture must make time-order and input-order sums differ somewhere, or it cannot catch a reordering')
 
     def test_timestamps_are_parsed_once(self):
         prompts._t.cache_clear()
@@ -128,11 +156,14 @@ class ScalingTest(unittest.TestCase):
             self.assertEqual(collect.history_size(db), 0)
             self.assertIsNone(collect.history_size(Path(d) / 'missing.sqlite3'))
             self.assertFalse((Path(d) / 'missing.sqlite3').exists(), 'a read-only probe creates no file')
-            odd = Path(d) / 'hist#2026?x%41.sqlite3'  # URI-reserved characters must not drop mode=ro or retarget the open
-            with History(odd):
-                pass
-            self.assertEqual(collect.history_size(odd), 0)
-            self.assertEqual(sorted(p.name for p in Path(d).iterdir() if not p.name.startswith('history.sqlite3')), sorted(p.name for p in Path(d).iterdir() if p.name.startswith('hist#')))
+            names = ['hist#2026%41.sqlite3'] + (['hist?x.sqlite3'] if os.name != 'nt' else [])  # '?' is not a valid Windows filename character
+            for name in names:  # URI-reserved characters must not drop mode=ro or retarget the open
+                odd = Path(d) / name
+                with History(odd):
+                    pass
+                self.assertEqual(collect.history_size(odd), 0, name)
+            created = {p.name for p in Path(d).iterdir()}
+            self.assertFalse({n for n in created if not (n.startswith('history.sqlite3') or any(n.startswith(x) for x in names))}, 'a probe opened another file')
             out = io.StringIO()
             with redirect_stdout(out):
                 collect._step('probe', lambda: 0, db)
