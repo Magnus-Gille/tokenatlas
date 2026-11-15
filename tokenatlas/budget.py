@@ -209,19 +209,34 @@ def reprice(data, table, records_fn=None):
     return dict(data, readings=out)
 
 
-def cost_seen(records, table, harness, start, end, plan=None, default_limit=False):
+class SeenIndex:
+    """One harness's identified, subscription-provider requests in time order with their cost computed once, so cost_seen over many windows
+    (one per hit or reading) bisects instead of rescanning and re-pricing the whole history each time."""
+    def __init__(self, records, table, harness):
+        canon = _canon(table)
+        rows = [(prompts._t(r['ts']), i) for i, r in enumerate(records) if _provider_ok(r, harness, canon) and not r.get('id_synthetic')]
+        rows.sort(key=lambda x: x[0])
+        self.records, self.table, self.cost = records, table, {}
+        self.times, self.positions = [t for t, _ in rows], [i for _, i in rows]
+
+    def between(self, start, end):
+        out = []
+        for i in sorted(self.positions[bisect_left(self.times, start):bisect_right(self.times, end)]):
+            if i not in self.cost:
+                self.cost[i] = prompts._cost(self.records[i], self.table)
+            out.append((self.records[i], self.cost[i]))
+        return out
+
+
+def cost_seen(records, table, harness, start, end, plan=None, default_limit=False, index=None):
     """(list-price USD, unpriced requests, excluded requests) of one harness's requests on its subscription provider in [start, end]; ambiguous (id_synthetic)
     requests are left out. For Codex only requests of `plan` count (a request on another plan is another account's usage and is ignored); a request without
     a quota snapshot has an unknown plan and is left out and counted as excluded. With `default_limit`, a request that ran under another limit id (a per-model
     limit) is left out too: it is not usage of the default limit's counter."""
     total, unpriced, excluded = 0.0, 0, 0
-    canon = _canon(table)
-    for r in records:
-        if not _provider_ok(r, harness, canon) or r.get('id_synthetic'):
-            continue
-        t = prompts._t(r['ts'])
-        if not start <= t <= end:
-            continue
+    if index is None:
+        index = SeenIndex(records, table, harness)
+    for r, c in index.between(start, end):  # in `records` order, so the sum is the full scan's
         if default_limit and not DEFAULT_LIMIT(harness, (r.get('quota') or {}).get('limit_id')):
             continue
         if harness in PLANNED:
@@ -231,7 +246,6 @@ def cost_seen(records, table, harness, start, end, plan=None, default_limit=Fals
                 continue
             if p != plan:
                 continue
-        c = prompts._cost(r, table)
         if c is None:
             unpriced += 1
         else:
@@ -417,7 +431,7 @@ def auto_points(records, hits, snapshots, table):
       usd = Claude cost after the anchor up to the reading / (rise / 100). Lower readings (a stale idle session) never move the anchor.
     A point whose window holds less than AUTO_MIN_COST, has an unpriced request, runs under another limit id (`other_limit`), has several Claude counters in the window instance (`ambiguous`), has an ambiguous or plan-less Codex request, or whose Codex plan has several
     accounts is skipped and counted in `skipped` by reason. Ambiguous (id_synthetic) requests and other providers are never in a cost."""
-    points, skipped = [], {}
+    points, skipped, seen = [], {}, {}
     skip = lambda why: skipped.__setitem__(why, skipped.get(why, 0) + 1)
     multi = multi_counter_plans(records) if any(r['harness'] in PLANNED and plan_of(r) for r in records) else frozenset()
     series = {}  # snapshot key (quota_share's window instance and counter split) -> its readings
@@ -455,7 +469,8 @@ def auto_points(records, hits, snapshots, table):
                 skip('ambiguous')
                 continue
         start, end = prompts._t(window['start']), prompts._t(window['end'])
-        cost, unpriced, excluded = cost_seen(records, table, harness, start, end, plan, default_limit=True)
+        if harness not in seen:seen[harness] = SeenIndex(records, table, harness)
+        cost, unpriced, excluded = cost_seen(records, table, harness, start, end, plan, default_limit=True, index=seen[harness])
         if unpriced or excluded:
             skip('unpriced')
         elif cost < AUTO_MIN_COST:

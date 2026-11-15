@@ -62,7 +62,16 @@ def _lock(fd):
     return True
 
 
-def _step(name,fn):
+def history_size(db):
+    """Request count of the history database (read-only, for the log), or None when it cannot be read."""
+    try:
+        con=sqlite3.connect(Path(db).expanduser().absolute().as_uri()+'?mode=ro',uri=True)  # as_uri escapes '#', '?' and '%' so mode=ro always applies
+        try:return con.execute('SELECT count(*) FROM observations').fetchone()[0]
+        finally:con.close()
+    except sqlite3.Error:return None
+
+
+def _step(name,fn,db=None):
     """Run fn() -> exit code (an exception is a failure); log one line with exit status and timing; return the code."""
     start=time.monotonic()
     with progress.step(name[:1].upper()+name[1:]) as shown:  # a terminal shows the step live; the log line below is unchanged
@@ -71,7 +80,8 @@ def _step(name,fn):
         except Exception as exc:
             log(f'{name}: {"database lock error" if _is_busy_error(exc) else type(exc).__name__}: {terminal_safe(exc)}');rc=1
         shown.failed=bool(rc)
-    log(f'{name} exit={rc} ({time.monotonic()-start:.1f}s)')
+    size=history_size(db) if db is not None else None
+    log(f'{name} exit={rc} ({time.monotonic()-start:.1f}s)'+('' if size is None else f' requests={size}'))
     return rc
 
 
@@ -191,7 +201,7 @@ def _run(args):
             return _retry_busy(write_refresh,'refresh')
         def report():  # at most one build an hour while only the data changes (an option or privacy change always rebuilds)
             return lambda:_retry_busy(lambda:_quiet(main,'--db',str(db),'report','--html',str(state/'report.html'),'--private','--if-changed','--max-age','1h','--lang',args.lang),'report')
-        failed=_step('refresh',refresh)!=0
+        failed=_step('refresh',refresh,db)!=0
         if prompt_store.store_path(db).exists():
             choice=_kept_choice(db)
             if choice is None:log(f'top: skipped: {prompt_store.store_path(db)} has no valid recorded k/by; choose one with tokenatlas top --keep-text -n N (or --forget-text)');failed=True
@@ -209,13 +219,13 @@ def _run(args):
                     log(f'top: skipped: revision check failed: {"database lock error" if _is_busy_error(exc) else type(exc).__name__}: {terminal_safe(exc)}')
                 else:
                     if up_to_date:log('top: skipped: history revision and stored choice are unchanged')
-                    else:failed|=_step('top',lambda:_retry_busy(lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice),'top'))!=0
-        if not args.no_report:failed|=_step('report',report())!=0
+                    else:failed|=_step('top',lambda:_retry_busy(lambda:_quiet(main,'--db',str(db),'top','--keep-text',*choice),'top'),db)!=0
+        if not args.no_report:failed|=_step('report',report(),db)!=0
         hosts=_hosts(args,state)
         if hosts:
             script=Path(args.remote_sync or os.environ.get('TOKENATLAS_REMOTE_SYNC') or PACKAGED_SYNC)
             if os.name=='nt':log('remote sync skipped: bash is not assumed on Windows')
             else:
-                failed|=_step('remote sync',lambda:_sync(script,hosts,args.sync_timeout,db,lock.fileno()))!=0
-                if not args.no_report:failed|=_step('report after sync',report())!=0  # partial imports show up even after a failed sync
+                failed|=_step('remote sync',lambda:_sync(script,hosts,args.sync_timeout,db,lock.fileno()),db)!=0
+                if not args.no_report:failed|=_step('report after sync',report(),db)!=0  # partial imports show up even after a failed sync
         return int(failed)
