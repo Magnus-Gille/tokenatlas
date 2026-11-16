@@ -99,6 +99,8 @@ class ReleaseArtifactTests(unittest.TestCase):
                 }},
             }
             (logs / "session.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+            # A file written moments ago is reread rather than checkpointed (TOKEN-173); date it as an older, settled log.
+            os.utime(logs / "session.jsonl", (1_788_429_600, 1_788_429_600))
             database = work / "state" / "history.sqlite3"
             base = [command, "--db", database]
 
