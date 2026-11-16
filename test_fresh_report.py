@@ -17,6 +17,11 @@ from unittest.mock import patch
 
 from tokenatlas import why, __main__ as cli
 from tokenatlas.history import History
+
+
+# Sources written by a test are only a moment old, so refresh would not checkpoint them yet (TOKEN-173). Tests about
+# skipping unchanged files run with a clock far past every source's mtime.
+settled_sources = patch.object(History, '_now_ns', new=lambda: 1 << 62)
 from tokenatlas import report as report_mod
 from test_history import write_claude
 
@@ -226,6 +231,7 @@ class RefreshErrors(Base):
 
 
 class Revision(Base):
+    @settled_sources
     def test_first_refresh_increments_and_noop_does_not(self):
         self.claude()
         with History(self.db) as h:
@@ -253,6 +259,7 @@ class Revision(Base):
             h.refresh('claude', why.CLAUDE_PROJECTS)
             self.assertGreater(h.revision, before)
 
+    @settled_sources
     def test_touched_file_updates_checkpoint_and_increments(self):
         path = self.claude()
         with History(self.db) as h:

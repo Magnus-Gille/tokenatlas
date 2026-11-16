@@ -16,6 +16,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,6 +31,10 @@ COLLECTOR_VERSION = 5
 STALE_PARSER_GRACE_US = 3600 * 10**6  # newest source usage may exceed the newest stored observation by this much before the parser is called stale
 DIAGNOSTIC_KEYS = ('malformed_lines', 'partial_lines', 'unparsed_usage_lines', 'schema_errors', 'stale_parser', 'orphan_rows', 'checks_skipped')  # orphan_rows and checks_skipped are informational: they never make an import partial
 # A checkpointed stale/schema state clears only when the source file changes or this revision is bumped.
+# A file changed this recently when its read finished is not checkpointed (it is reread next refresh): a same-size
+# rewrite inside one filesystem timestamp tick leaves the metadata fingerprint unchanged (TOKEN-173). Like git's
+# "racily clean" index entries. 2 s covers the coarsest common timestamps (FAT; HFS+ has 1 s).
+RACY_FINGERPRINT_NS = 2 * 10**9
 HARNESS_REVISION = {'pi': 3, 'codex': 7, 'claude': 3, 'opencode': 3}  # bump to force a re-read of one harness's files only (appended to its fingerprint)
 FIELDS = ('fresh_input', 'cache_read', 'cache_write', 'output')
 ALL_FIELDS = FIELDS + ('reasoning',)
@@ -733,6 +738,26 @@ class History:
             values.append(['revision', HARNESS_REVISION[harness]])
         return json.dumps(values)
 
+    @staticmethod
+    def _now_ns():
+        return time.time_ns()
+
+    @classmethod
+    def _racily_clean(cls, path, include_sqlite_sidecars=False):
+        """True when the file (or its WAL) was modified within RACY_FINGERPRINT_NS of now, so its fingerprint cannot be
+        trusted yet.  Only mtime counts: a rewrite of a settled file always moves mtime (and any utime also moves ctime)."""
+        paths = [Path(path)]
+        if include_sqlite_sidecars:
+            paths.append(Path(str(path) + '-wal'))
+        newest = None
+        for candidate in paths:
+            try:
+                s = candidate.stat()
+            except FileNotFoundError:
+                continue
+            newest = max(newest or 0, s.st_mtime_ns)
+        return newest is not None and newest > cls._now_ns() - RACY_FINGERPRINT_NS
+
     def refresh(self, harness, root):
         if harness not in ('claude', 'codex', 'pi', 'opencode'):
             raise ValueError('unsupported harness')
@@ -874,6 +899,8 @@ class History:
                         result[k] += diagnostics.get(k, 0)
                     # Never checkpoint an incomplete tail; try it again next refresh. Schema errors and stale parsers are checkpointed: they cannot self-heal without a source or code change, and either changes the fingerprint.
                     checkpoint = before if not diagnostics['partial_lines'] and not changed else None
+                    if checkpoint and self._racily_clean(path, harness == 'opencode'):
+                        checkpoint = None  # reread next refresh: a same-size rewrite in this tick would keep the fingerprint (TOKEN-173)
                     result['errors'] += [f'{path}: {n}' for n in notes]
                     stored = (str(root),checkpoint,json.dumps({**diagnostics, **({'notes': notes} if notes else {})}))
                     c.execute("UPDATE files SET root=?,fingerprint=?,diagnostics=?,origin='local' WHERE id=?", (*stored,file_id))
@@ -1034,7 +1061,10 @@ class History:
                 result.append(item)
         return sorted(result, key=lambda x: (x['ts'], x['provider'], x['id']))
 
-    def records(self, start=None, end=None, harness=None, project=None, session=None, turn=None, include_limit_events=False):
+    def records(self, start=None, end=None, harness=None, project=None, session=None, turn=None, include_limit_events=False,
+                sessions=None):
+        """Observations, oldest first.  `sessions` (an iterable of (harness, session) pairs) keeps only those sessions; the
+        rest are skipped before they are decoded, which is most of the cost on a large history (TOKEN-196)."""
         session_harness = None
         raw_session = session
         if isinstance(session, str):
@@ -1057,18 +1087,33 @@ class History:
                     return []
                 where.append(f'o.{column}=?'); params.append(found[0])
         where = ('WHERE ' + ' AND '.join(where)) if where else ''
-        paths = {}
-        for observation, path in c.execute('SELECT s.observation,f.path FROM sources s JOIN files f ON f.id=s.file'
-                                           f' JOIN observations o ON o.id=s.observation {where}', params):
-            paths.setdefault(observation, []).append(path)
         strings = {r[0]: r[1] for r in c.execute('SELECT id,value FROM strings')}
+        wanted = None
+        if sessions is not None:
+            ids = {v: k for k, v in strings.items()}
+            wanted = {(ids[h], ids[s]) for h, s in sessions if h in ids and s in ids}
+            if not wanted:
+                return []
+        paths = {}
+        if wanted is None:
+            for observation, path in c.execute('SELECT s.observation,f.path FROM sources s JOIN files f ON f.id=s.file'
+                                               f' JOIN observations o ON o.id=s.observation {where}', params):
+                paths.setdefault(observation, []).append(path)
+        else:
+            for observation, path, h, s in c.execute('SELECT s.observation,f.path,o.harness,o.session FROM sources s JOIN files f ON f.id=s.file'
+                                                     f' JOIN observations o ON o.id=s.observation {where}', params):
+                if (h, s) in wanted:
+                    paths.setdefault(observation, []).append(path)
         strings[None] = None
         lookup, first, last = strings.__getitem__, _REF_INDEX[0] + 1, _REF_INDEX[-1] + 2  # row[0] is the observation id; the reference columns are contiguous
         collecting = gc.isenabled()
         gc.disable()  # hundreds of thousands of small, long-lived dicts: each full collection would scan them all again for nothing
         try:
             result = []
+            harness_at, session_at = 1 + COLUMNS.index('harness'), 1 + COLUMNS.index('session')
             for row in c.execute(f'SELECT o.id,{",".join("o." + n for n in COLUMNS)} FROM observations o {where}', params):
+                if wanted is not None and (row[harness_at], row[session_at]) not in wanted:
+                    continue
                 item = _decode((*row[1:first], *map(lookup, row[first:last]), *row[last:]))
                 item['sources'] = sorted(paths.get(row[0], ()))
                 result.append(item)

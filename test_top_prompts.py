@@ -8,6 +8,11 @@ from pathlib import Path
 
 from tokenatlas import why
 from tokenatlas.history import COLLECTOR_VERSION, History, merge_observations
+
+
+# Sources written by a test are only a moment old, so refresh would not checkpoint them yet (TOKEN-173). Tests about
+# skipping unchanged files run with a clock far past every source's mtime.
+settled_sources = patch.object(History, '_now_ns', new=lambda: 1 << 62)
 from tokenatlas.prompts import assign_prompts as _assign, ident, top_prompts
 from test_fresh_report import Base
 from test_pricing import TABLE, CLAUDE
@@ -289,6 +294,7 @@ def pi_rows(extra_user=True):
 
 
 class PiAndFingerprint(Base):
+    @settled_sources
     def test_pi_turn_ids_and_noop_refresh(self):
         jl(why.PI_SESSIONS / 'proj/s.jsonl', pi_rows())
         with History(self.db) as h:
