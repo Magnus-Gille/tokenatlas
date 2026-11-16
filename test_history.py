@@ -18,6 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tokenatlas.history import History, _encode, _decode, _owned_by_current_user, normalize, summarize, merge_observations
+
+
+# Sources written by a test are only a moment old, so refresh would not checkpoint them yet (TOKEN-173). Tests about
+# skipping unchanged files run with a clock far past every source's mtime.
+settled_sources = patch.object(History, '_now_ns', new=lambda: 1 << 62)
 from tokenatlas.why import AttributionRecord
 from test_why_harnesses import create_opencode_db, pi_message, write_pi_session
 
@@ -382,6 +387,7 @@ class HistoryTests(unittest.TestCase):
         self.assertIsNone(total['co2e_grams'])
         json.dumps(total, allow_nan=False)
 
+    @settled_sources
     def test_claude_revision_changes_fingerprint_and_forces_one_reread(self):
         import tokenatlas.history as history
         self.assertEqual(history.HARNESS_REVISION.get('claude'), 3)
@@ -401,6 +407,7 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(h.refresh('claude',source.parent)['files_skipped'],0)
             self.assertEqual(h.refresh('claude',source.parent)['files_skipped'],1)
 
+    @settled_sources
     def test_codex_revision_changes_fingerprint_and_forces_one_reread(self):
         import tokenatlas.history as history
         from test_why_codex import _write_rollout,_meta,_context,_tokens,_tier
@@ -426,6 +433,7 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(h.refresh('codex',source.parent)['files_skipped'],1)
             self.assertEqual([r['tariff'] for r in h.records()],[{'service_tier':'fast'}])
 
+    @settled_sources
     def test_codex_revision_3_rereads_once_and_adds_quota(self):
         import tokenatlas.history as history
         from test_why_codex import _write_rollout,_meta,_context,_quota_call,_limits,_window
@@ -503,6 +511,7 @@ class HistoryTests(unittest.TestCase):
         self.assertFalse(item['complete'])
         self.assertEqual(item['raw_usage']['iterations'][1]['output_tokens'],40)
 
+    @settled_sources
     def test_import_is_idempotent_copies_and_retention_preserve_history(self):
         source=self.root/'claude/project/a.jsonl';write_claude(source)
         with History(self.db) as h:
@@ -631,6 +640,7 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(h.records()[0]['tokens']['cache_read'],20)
             self.assertTrue(h.records()[0]['complete'])
 
+    @settled_sources
     def test_malformed_diagnostics_survive_unchanged_refresh(self):
         source=self.root/'logs/a.jsonl';write_claude(source)
         with source.open('a') as f:f.write('bad json\n')
@@ -713,6 +723,7 @@ class HistoryTests(unittest.TestCase):
             h.refresh('codex',first.parent)
             self.assertEqual(len(h.records()),1)
 
+    @settled_sources
     def test_opencode_sqlite_refresh_is_idempotent_and_private(self):
         db = self.root/'opencode.db'
         connection=create_opencode_db(db)
@@ -752,6 +763,7 @@ class HistoryTests(unittest.TestCase):
         db.write_bytes(b'db changed')
         self.assertNotEqual(fp(),changed_wal)
 
+    @settled_sources
     def test_opencode_wal_refresh_with_shm_rebuild_is_ok_and_then_skipped(self):
         db=self.root/'wal-opencode.db'
         connection=create_opencode_db(db)
@@ -986,6 +998,68 @@ class HistoryReviewTests(unittest.TestCase):
             self.assertEqual(item['session'], 'sess-b')
             self.assertEqual(item['sources'], sorted([str(a), str(b)]))
             self.assertEqual(item['tokens']['output'], 5)
+
+    def test_same_size_rewrite_with_colliding_fingerprint_is_reread(self):
+        # TOKEN-173: a same-size rewrite inside one filesystem timestamp tick keeps every stat field, so the
+        # fingerprint collides. Forced here with a constant fingerprint and a clock pinned to the file's mtime.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        a, b = root / 'logs/a.jsonl', root / 'logs/b.jsonl'
+        def put(path, session, ts):
+            write_claude(path)
+            rows = [json.loads(x) for x in path.read_text().splitlines()]
+            rows[-1].update(sessionId=session, timestamp=ts)
+            path.write_text(''.join(json.dumps(x) + '\n' for x in rows))
+        put(a, 'sess-a', '2026-09-03T10:00:00Z')
+        put(b, 'sess-b', '2026-09-03T10:00:00Z')
+        now = max(p.stat().st_mtime_ns for p in (a, b))
+        collide = patch.object(History, 'fingerprint', new=staticmethod(lambda path, *_args: 'same:' + Path(path).name))
+        with History(root / 'state/history.sqlite3') as h, collide, patch.object(History, '_now_ns', new=lambda: now):
+            first = h.refresh('claude', a.parent)
+            self.assertEqual(first['files_parsed'], 2)
+            self.assertEqual(h.records()[0]['session'], 'sess-a')  # the first imported session wins the tie
+            put(b, 'sess-b', '2026-09-03T09:00:00Z')  # same size, same (forced) fingerprint
+            self.assertEqual(h.refresh('claude', a.parent)['files_parsed'], 2)
+            self.assertEqual(h.records()[0]['session'], 'sess-b')  # the earlier timestamp now wins
+        # Once the files have settled the checkpoint is kept, so an unchanged file is skipped again.
+        with History(root / 'state/history.sqlite3') as h, collide, patch.object(History, '_now_ns', new=lambda: now + 10**10):
+            self.assertEqual(h.refresh('claude', a.parent)['files_parsed'], 2)
+            self.assertEqual(h.refresh('claude', a.parent)['files_skipped'], 2)
+            self.assertEqual(h.records()[0]['session'], 'sess-b')
+
+    def test_racily_clean_counts_only_recent_modification(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / 'x.jsonl'
+        path.write_text('{}\n')
+        mtime = path.stat().st_mtime_ns
+        with patch.object(History, '_now_ns', new=lambda: mtime + 10**9):
+            self.assertTrue(History._racily_clean(path))
+        with patch.object(History, '_now_ns', new=lambda: mtime + 3 * 10**9):
+            self.assertFalse(History._racily_clean(path))
+            wal = Path(str(path) + '-wal')
+            wal.write_text('w')
+            os.utime(wal, ns=(mtime + 2 * 10**9, mtime + 2 * 10**9))
+            self.assertFalse(History._racily_clean(path))
+            self.assertTrue(History._racily_clean(path, include_sqlite_sidecars=True))
+        self.assertFalse(History._racily_clean(Path(tmp.name) / 'missing'))
+
+    def test_records_session_filter_matches_python_filter(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        samples = [normalize(record(str(i), session_id=f's{i % 3}', harness='claude' if i % 2 else 'pi',
+                                    provider='anthropic' if i % 2 else 'test'), 'm') for i in range(12)]
+        with History(Path(tmp.name) / 'h.sqlite3') as h:
+            for item in samples:
+                h._insert(h.connection, _encode(item))
+            everything = h.records()
+            wanted = {('claude', 's1'), ('pi', 's0'), ('pi', 'absent'), ('codex', 's1')}
+            self.assertEqual(h.records(sessions=wanted),
+                             [r for r in everything if (r['harness'], r['session']) in wanted])
+            self.assertEqual(len(h.records(sessions=wanted)), 4)
+            self.assertEqual(h.records(sessions=[('codex', 's1')]), [])
+            self.assertEqual(h.records(sessions=()), [])
 
     def test_hour_buckets_are_ordered_by_instant_across_dst_fall_back(self):
         rows = [normalize(record(str(i), timestamp=ts, raw_usage={

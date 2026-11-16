@@ -21,6 +21,15 @@ from tokenatlas import statusline
 ROOT = Path(__file__).resolve().parent
 PYTHON = sys.executable
 ENV = dict(os.environ, PYTHONPATH=str(ROOT))
+# Outer deadline for tests that start native Windows shells: a cold Windows PowerShell 5.1 (or Git Bash) on a hosted
+# runner can take most of 10 s by itself, and these tests start a shell, then Python, then the wrapped shell (TOKEN-195).
+# It only bounds a hang; a passing run still finishes in a few seconds.
+NATIVE_SHELL_TIMEOUT = 60
+
+
+def warm_up(argv):
+    """Start a native shell once so its cold start is not charged to the wrapper's own 5 s deadline."""
+    subprocess.run(argv, capture_output=True, timeout=NATIVE_SHELL_TIMEOUT)
 
 
 def run_cli(db, *args, input=b"", env=None, timeout=15):
@@ -581,8 +590,10 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         encoded = wrapped_command.rsplit("--wrap-shell-base64 ", 1)[1].split()[0]
         self.assertEqual(base64.b64decode(encoded).decode("utf-8"), source)
         self.assertEqual(statusline._command_state(wrapped_command), 'enabled')
+        warm_up(statusline._source_command('powershell', 'exit 0'))
         executed = subprocess.run(statusline._source_command('powershell', wrapped_command),
-                                  input=payload_bytes(), capture_output=True, cwd=ROOT, env=env, timeout=10)
+                                  input=payload_bytes(), capture_output=True, cwd=ROOT, env=env,
+                                  timeout=NATIVE_SHELL_TIMEOUT)
         self.assertEqual(executed.returncode, 0, executed.stderr)
         self.assertIn(b"quoted ' value|native-marker", executed.stdout)
 
@@ -605,9 +616,10 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         encoded = wrapped_command.rsplit("--wrap-shell-base64 ", 1)[1].split()[0]
         self.assertEqual(base64.b64decode(encoded).decode("utf-8"), source)
         self.assertEqual(statusline._command_state(wrapped_command), 'enabled')
+        warm_up(statusline._source_command('bash', 'exit 0'))
         executed = subprocess.run(statusline._source_command('bash', wrapped_command),
                                   input=payload_bytes(), capture_output=True, cwd=ROOT,
-                                  env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)), timeout=10)
+                                  env=dict(ENV, CLAUDE_CONFIG_DIR=str(config)), timeout=NATIVE_SHELL_TIMEOUT)
         self.assertEqual(executed.returncode, 0, executed.stderr)
         self.assertIn(b"quoted_value", executed.stdout)
         self.assertIn(b"second", executed.stdout)
@@ -760,7 +772,7 @@ class StatuslineWrapperSubprocessTests(unittest.TestCase):
         result = subprocess.run([str(python), '-m', 'tokenatlas', '--db', str(self.db),
                                  'statusline', '--no-record-quota', '--wrap', '--', PYTHON, '-c',
                                  'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.exit(23)'],
-                                input=b'\x00raw\xff', capture_output=True, cwd=ROOT, env=ENV, timeout=10)
+                                input=b'\x00raw\xff', capture_output=True, cwd=ROOT, env=ENV, timeout=NATIVE_SHELL_TIMEOUT)
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertEqual(result.stdout, b'\x00raw\xff')
 

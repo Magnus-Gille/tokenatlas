@@ -109,7 +109,9 @@ harness revisions were bumped so existing histories are re-read once to fill it.
 Only changed source files are reparsed (whole file, to retain session context).
 OpenCode is read through a query-only SQLite connection; its database, WAL, and SHM
 metadata form the checkpoint fingerprint. Other file fingerprints include inode,
-size, modification and change times. Source
+size, modification and change times. A file modified less than 2 seconds before its read finished is not
+checkpointed and is reread on the next refresh: a same-size rewrite within one filesystem timestamp tick would
+keep every one of those fields, so its fingerprint cannot be trusted yet (like git's "racily clean" entries). Source
 checkpoints and merged observations commit atomically under SQLite's writer
 lock. The same provider/harness/request key is merged with maximum observed
 counters, so streaming updates cannot regress. Codex events without an ordinal

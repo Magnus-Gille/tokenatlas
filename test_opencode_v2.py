@@ -11,8 +11,15 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from unittest.mock import patch
+
 from tokenatlas import report, why
 from tokenatlas.history import History
+
+
+# Sources written by a test are only a moment old, so refresh would not checkpoint them yet (TOKEN-173). Tests about
+# skipping unchanged files run with a clock far past every source's mtime.
+settled_sources = patch.object(History, '_now_ns', new=lambda: 1 << 62)
 
 START = datetime(1970, 1, 1, tzinfo=timezone.utc)
 END = datetime(9999, 1, 1, tzinfo=timezone.utc)
@@ -325,6 +332,7 @@ class HistoryTests(unittest.TestCase):
         build(db)
         return self.refresh(db.done())
 
+    @settled_sources
     def test_unknown_newer_message_table_marks_the_import_stale_and_not_ok(self):
         def build(db):
             db.legacy('old', legacy_data(T0, T0 + 5))
@@ -372,6 +380,7 @@ class HistoryTests(unittest.TestCase):
         result, _, _ = self._stale_case(build)
         self.assertEqual(result['stale_parser'], 0)
 
+    @settled_sources
     def test_schema_error_is_reported_partial_but_checkpointed(self):
         path = self.root / 'half.db'
         c = sqlite3.connect(path)

@@ -32,6 +32,8 @@ no history records, or an unpriced model, contributes no cost and is counted as 
 their parent's dominant model. `calls` counts distinct priced requests: Claude `requestId` (else message id),
 Codex distinct cumulative token totals, Pi `responseId` (else entry id), OpenCode assistant messages with tokens.
 This absolute total depends on usage (`recurring re-read cost (total, depends on usage)`). Cache writes on the first call are not included, and a cache miss or expiry mid-session would raise the real bill.
+Only the history records of the selected sessions are loaded (by `--since` and `--harness`), and none when no session
+is selected, so a narrow selection stays quick on a large history.
 
 ## Relative, usage-normalized comparison
 
