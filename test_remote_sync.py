@@ -45,7 +45,10 @@ STUB = '#!/bin/bash\necho "{name} $*" >> "$STUB_LOG"\n{body}\n'
 @unittest.skipIf(os.name == 'nt', 'remote_sync.sh targets macOS/Linux hosts')
 class RemoteSyncTest(unittest.TestCase):
     def run_script(self, hosts, bodies_override=None, mv_fails_first=False, rm_fails=False, extra_env=None, em_in_home_bin=False, remote_only=None, bash_args=()):
-        tmp = tempfile.TemporaryDirectory()
+        # The prefix holds the host names on purpose: scp gets a local temp path, so a stub that matches a host
+        # anywhere in "$*" (rather than the "host:path" argument) fails every time instead of when the random
+        # temp name happens to contain it (TOKEN-195).
+        tmp = tempfile.TemporaryDirectory(prefix='remote-sync-h1-h2-')
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         (root / 'bin').mkdir()
@@ -98,7 +101,7 @@ class RemoteSyncTest(unittest.TestCase):
 
     def test_hostile_scp_diagnostic_is_escaped(self):
         proc, _ = self.run_script('a:h1 b:h2', bodies_override={
-            'scp': f'case "$*" in *h1*) printf "{self.HOSTILE}" >&2; exit 1;; esac; touch "${{@: -1}}"'})
+            'scp': f'case "$*" in *" h1:"*) printf "{self.HOSTILE}" >&2; exit 1;; esac; touch "${{@: -1}}"'})
         self.assertEqual(proc.returncode, 1)
         self.assert_terminal_safe(proc.stderr)
         self.assertIn('scp failed for a: ', proc.stderr)
@@ -116,7 +119,7 @@ class RemoteSyncTest(unittest.TestCase):
         for label, kwargs in (('POSIXLY_CORRECT', {'extra_env': {'POSIXLY_CORRECT': '1'}}),
                               ('xpg_echo', {'bash_args': ('-O', 'xpg_echo')})):
             for name, body in (('ssh', f'case "$*" in *h1*snapshot*) printf "{self.HOSTILE}" >&2; exit 3;; esac; exit 0'),
-                               ('scp', f'case "$*" in *h1*) printf "{self.HOSTILE}" >&2; exit 1;; esac; touch "${{@: -1}}"'),
+                               ('scp', f'case "$*" in *" h1:"*) printf "{self.HOSTILE}" >&2; exit 1;; esac; touch "${{@: -1}}"'),
                                ('tokenatlas', f'case "$*" in *"--label a"*) printf "{self.HOSTILE}" >&2; exit 1;; esac; exit 0')):
                 with self.subTest(mode=label, stub=name):
                     proc, _ = self.run_script('a:h1 b:h2', bodies_override={name: body}, **kwargs)
