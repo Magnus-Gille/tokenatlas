@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Changed
+
+- The report is shorter and answers first (TOKEN-188): the top shows tokens and cost by tool and by project, the three costliest turns and the share without a price; long lists show the ten largest with "show all"; there is one total with one note on what is incomplete; quota readings older than a day move below the fold and are marked stale; details sit in collapsed sections. Rows are merged per turn and local hour in the embedded data (the page expands them again), which takes a 700,000-request history from about 30 MB to about 4 MB.
+- Projects are resolved to their git repository (TOKEN-187): worktrees and subdirectories roll up to the repository with the branch or worktree as second level, Cowork `outputs`, `agent-<id>` and short scratch directories are grouped as Cowork, Subagents and Other, and the same repository on another machine or path is one project (matched by its git remote). `--project` accepts a project label, a repository or a saved directory. `insights` lists projects (pseudonyms unless `--private`).
+- `collect` loads the history once for `top` and `report` and prices each request once (TOKEN-189, partial): top + report on 700,000 requests takes about 145 s instead of about 176 s in the test container. The 90 s goal is not met yet; see docs/performance.md.
+
 ## [1.26.2] - 2026-11-16
 
 ### Fixed
