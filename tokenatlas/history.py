@@ -656,6 +656,36 @@ class History:
         row = self.connection.execute("SELECT value FROM meta WHERE key='revision_token'").fetchone()
         return row[0] if row else None
 
+    def project_roots(self):
+        """{machine: {directory: git facts}} recorded at refresh and brought along by snapshot imports (projects.py, TOKEN-187)."""
+        from tokenatlas import projects
+        row = self.connection.execute('SELECT value FROM meta WHERE key=?', (projects.META_KEY,)).fetchone()
+        return projects.load(row[0]) if row else {}
+
+    def update_project_roots(self, locate=None):
+        """Record git facts for this machine's saved directories that exist now and have none yet; returns how many were added.
+        Reads repository files only (projects.locate); a directory that is gone keeps whatever was recorded while it existed."""
+        from tokenatlas import projects
+        locate = locate or projects.locate
+        c = self.connection
+        machine = c.execute('SELECT id FROM strings WHERE value=?', (self.machine,)).fetchone()
+        if not machine:
+            return 0
+        roots = self.project_roots()
+        own = roots.get(self.machine, {})
+        added = {}
+        for (path,) in c.execute('SELECT DISTINCT s.value FROM (SELECT DISTINCT project_id FROM observations WHERE machine=?) o '
+                                 'JOIN strings s ON s.id=o.project_id', (machine[0],)):
+            if path in own or not isinstance(path, str) or not os.path.isabs(path):
+                continue
+            facts = locate(path)
+            if facts:
+                added[path] = facts
+        if added:
+            roots = projects.merge(roots, {self.machine: added})
+            c.execute('INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (projects.META_KEY, projects.dump(roots)))
+        return len(added)
+
     @staticmethod
     def _bump(c):
         c.execute("INSERT INTO meta VALUES ('revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1")
@@ -990,6 +1020,7 @@ class History:
                 raise ValueError('snapshot machine id is not a tokenatlas machine id (m-<32 hex>)')
             with History(copy) as source:  # migrates v1 and adds the tariff, quota and flags columns on the copy only
                 machine, items = source.machine, source.records(include_limit_events=True)
+                project_roots = source.project_roots()
             if not is_machine_id(machine):  # opening the copy writes; re-check the id actually used for prefixing
                 raise ValueError('snapshot machine id is not a tokenatlas machine id (m-<32 hex>)')
         result = dict(harness='import', root=label, source_machine=machine, observations_seen=len(items),
@@ -1015,6 +1046,14 @@ class History:
                 for path in sources:
                     dirty |= c.execute('INSERT OR IGNORE INTO sources VALUES (?,?)',
                                        (observation, self._file_id(c, item['harness'], path))).rowcount > 0
+            if project_roots:  # the other machine's git facts (TOKEN-187); this machine's own facts are never replaced
+                from tokenatlas import projects
+                current = self.project_roots()
+                merged_roots = projects.merge(current, {m: e for m, e in project_roots.items() if m != self.machine})
+                if merged_roots != current:
+                    c.execute('INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                              (projects.META_KEY, projects.dump(merged_roots)))
+                    dirty = True
             labels = c.execute("SELECT value FROM meta WHERE key='machine_labels'").fetchone()
             labels = {**(json.loads(labels[0]) if labels else {}), machine: label}
             c.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('machine_labels', json.dumps(labels, sort_keys=True)))

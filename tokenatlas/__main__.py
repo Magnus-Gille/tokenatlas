@@ -135,6 +135,7 @@ def refresh_all(history):
             entry={'harness':name,'status':'error','errors':[f'{type(exc).__name__}: {exc}']}
         entries.append(entry)
         worst=max(worst,entry['status'],key=rank)
+    with progress.step('Record project roots'):history.update_project_roots()  # git facts for new directories, while they exist (TOKEN-187)
     statusline.refresh_cache(history)
     return {'status':worst,'harnesses':entries}
 
@@ -274,10 +275,24 @@ def _select_records(records, start=None, end=None, harness=None, project=None, s
             and all(value is None or r.get(key) == value for key, value in filters.items())]
 
 
+def _resolved(history, records):
+    """Records with their project resolved (projects.py, TOKEN-187): one project per repository, buckets for Cowork, subagent and scratch
+    directories. The resolver is kept on the history object so a --project value can be mapped to the project id (_project_arg)."""
+    from tokenatlas import projects
+    history.project_resolver = projects.apply(records, history.project_roots())
+    return records
+
+
+def _project_arg(history, value):
+    """The project id a --project value names: a project id, a saved directory or a project label (projects.canonical)."""
+    from tokenatlas import projects
+    return projects.canonical(value, getattr(history, 'project_resolver', None))
+
+
 def _plan_history(history):
     """Resolve dated subscription metadata over requests and quota events together."""
     from tokenatlas import subscriptions
-    return subscriptions.annotate_with_events(history.records(), history.limit_events())
+    return subscriptions.annotate_with_events(_resolved(history, history.records()), history.limit_events())
 
 
 def _hits(history,records,events=None,assigned=None):
@@ -419,7 +434,7 @@ def _main(argv=None):
     report.add_argument('--granularity',choices=('day','hour','minute'),default='day')
     report.add_argument('--timezone',default=DEFAULT_TIMEZONE)
     report.add_argument('--harness',choices=('claude','codex','pi','opencode'))
-    report.add_argument('--project',help='Exact full project identity, not basename.')
+    report.add_argument('--project',help='A project: its id, a saved directory or its label (worktrees and subdirectories roll up to their repository).')
     report.add_argument('--session')
     report.add_argument('--turn')
     report.add_argument('--model',help='Exact model ID.')
@@ -450,7 +465,7 @@ def _main(argv=None):
     top.add_argument('--start',help='Inclusive ISO timestamp; offset required.')
     top.add_argument('--end',help='Exclusive ISO timestamp; offset required.')
     top.add_argument('--harness',choices=('claude','codex','pi','opencode'))
-    top.add_argument('--project',help='Exact full project identity, not basename.')
+    top.add_argument('--project',help='A project: its id, a saved directory or its label (worktrees and subdirectories roll up to their repository).')
     top.add_argument('--plan',help='Canonical subscription plan label to include (case-insensitive; use unknown for missing metadata).')
     top.add_argument('--prices',type=Path,help='Override the price table.')
     top.add_argument('--json',action='store_true')
@@ -464,6 +479,7 @@ def _main(argv=None):
     facts.add_argument('--prices',type=Path,help='Override the price table.')
     facts.add_argument('--json',action='store_true')
     facts.add_argument('--timezone',default='UTC',help='Timezone label for token-efficiency evidence (ISO boundaries retain their explicit offsets).')
+    facts.add_argument('--top-projects',type=int,default=20,help='Number of projects listed by cost (0 = all).')
     facts.add_argument('--top-turns',type=int,default=50,help='Number of linked work turns in token-concentration facts (1–10000).')
     facts.add_argument('--context-threshold',type=int,default=200000,help='Input-token threshold for context-volume facts; a presentation choice, not a waste detector.')
     facts.add_argument('--scenario-population',choices=('large_context_input','subagent_input'),help='Opt-in hypothetical input-reduction population; requires --reduction-percent.')
@@ -757,6 +773,7 @@ def _main(argv=None):
                     with progress.step('Refresh claude') as shown:
                         results=[history.refresh('claude',root) for root in [roots['claude'],*cowork]]
                         result=_with_problems(results[0] if len(results)==1 else aggregate(results),problems);shown.failed=result['status']!='ok'
+                with progress.step('Record project roots'):history.update_project_roots()
                 with progress.step('Update statusline cache'):statusline.refresh_cache(history)
             elif args.command=='top':
                 from tokenatlas import budget, insights
@@ -769,6 +786,7 @@ def _main(argv=None):
                 table=pricing.load_prices(args.prices)
                 with progress.step('Read history'):everything,events=_plan_history(history)  # resolve inheritance on the whole history before filters choose contributing rows
                 assigned=prompts.assign_prompts(everything)
+                args.project=_project_arg(history,args.project)
                 filtered=any(x is not None for x in (start,end,args.harness,args.project,args.plan))
                 selected=_select_records(everything,start,end,args.harness,args.project) if filtered else everything
                 if args.plan is not None:
@@ -810,6 +828,9 @@ def _main(argv=None):
                 with progress.step('Limit hits'):hits=limits.limit_hits(everything,events,table,assigned=assigned)
                 with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,assigned=assigned,events=events,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
                 with progress.step('Cost facts'):result=insights.cost_facts(everything,table,start,end,hits=hits,quota=shares,memo=memo)
+                from tokenatlas import projects
+                in_window=[r for r in everything if (start is None or prompts._t(r['ts'])>=start) and (end is None or prompts._t(r['ts'])<end)]
+                result['projects']=projects.summary(in_window,insights.memo_cost(table,memo),limit=args.top_projects)  # resolved projects with the directories behind them (TOKEN-187)
                 selected_indices=[index for index, record in enumerate(everything)
                                   if (start is None or prompts._t(record['ts']) >= start)
                                   and (end is None or prompts._t(record['ts']) < end)]
@@ -840,6 +861,11 @@ def _main(argv=None):
                 done()
                 if not args.json:
                     print(insights.render_text(result))
+                    if result['projects']:
+                        print('\nProjects by list price (worktrees and subdirectories roll up to their repository)')
+                        for p in result['projects']:
+                            cost='n/a' if p['cost'] is None else ('' if p['cost_complete'] else '≥')+f"${p['cost']:,.2f}"
+                            print(f"  {terminal_safe(str(p['label']))}: {cost}; {p['requests']:,} requests; {len(p['directories'])} director{'y' if len(p['directories'])==1 else 'ies'}")
                     print(_render_plan_facts(result['subscriptions']))
                     evidence=result['token_efficiency']
                     print('\nToken efficiency (known tokens; not a measure of waste)')
@@ -896,10 +922,12 @@ def _main(argv=None):
                     filters={key:getattr(args,key) for key in ('model','effort','provider','agent')}
                     if args.html:
                         universe,events=_plan_history(history)
+                        args.project=_project_arg(history,args.project)
                         records=_select_records(universe,start,end,args.harness,args.project,args.session,args.turn,**filters)
                     else:
-                        records=history.records(start,end,args.harness,args.project,args.session,args.turn)
-                        records=[row for row in records if all(value is None or row.get(key) == value for key,value in filters.items())]
+                        records=_resolved(history,history.records(start,end,args.harness,None,args.session,args.turn))
+                        args.project=_project_arg(history,args.project)
+                        records=[row for row in records if (args.project is None or row.get('project_id')==args.project) and all(value is None or row.get(key) == value for key,value in filters.items())]
                         universe=records
                 # The HTML path prints only a short receipt, so skip the (costly) JSON summary there.
                 if args.html:result={}
