@@ -49,6 +49,10 @@ def _path(text):
     return PureWindowsPath(text) if re.match(r'^[A-Za-z]:[\\/]', text) or '\\' in text and '/' not in text else PurePosixPath(text)
 
 
+def _parent(text):
+    return str(text).replace('\\', '/').rstrip('/').rpartition('/')[0]
+
+
 def _name(text):
     return _path(text).name or str(text)
 
@@ -273,6 +277,9 @@ class Resolver:
         self.by_name = {}
         for pid, name in self.names.items():
             self.by_name.setdefault(name.lower(), set()).add(pid)
+        self.parents = {}  # (machine, directory holding a repository) -> ids of the repositories in it: where a sibling worktree may sit
+        for (machine, root), pid in self.root_ids.items():
+            self.parents.setdefault((machine, _parent(root)), set()).add(pid)
         for machine, cwd in pairs:
             self.resolve(machine, cwd)
         self._label()
@@ -329,7 +336,7 @@ class Resolver:
         for at in range(len(name) - 1, 0, -1):
             if name[at] in '-_.':
                 candidate = self._unique(name[:at])
-                if candidate:
+                if candidate and candidate in self.parents.get((machine, _parent(cwd)), ()):  # next to that repository, not just named like it
                     return candidate, name
         return None
 

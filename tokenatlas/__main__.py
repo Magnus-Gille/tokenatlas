@@ -934,11 +934,12 @@ def _main(argv=None):
                             return 0
                 with progress.step('Read history'):
                     filters={key:getattr(args,key) for key in ('model','effort','provider','agent')}
-                    if args.html:
+                    if args.html or args.project is not None:  # a --project value is mapped over the whole history: its directories may sit outside the selected period
                         universe,events=_plan_history(history)
                         args.project=_project_arg(history,args.project)
                         narrowed=any(x is not None for x in (start,end,args.harness,args.project,args.session,args.turn,*filters.values()))
                         records=_select_records(universe,start,end,args.harness,args.project,args.session,args.turn,**filters) if narrowed else universe
+                        if not args.html:universe=records
                     else:
                         records=_resolved(history,history.records(start,end,args.harness,None,args.session,args.turn))
                         args.project=_project_arg(history,args.project)

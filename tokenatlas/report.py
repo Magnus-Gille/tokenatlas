@@ -228,7 +228,7 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
     return dict(source_keys=clients, local_rows=local_rows, cloud_references=cloud_references, plans=plans, groups=list(groups.values()))
 
 
-HOUR_MS = 3600 * 1000
+MERGE_MS = 60 * 1000  # requests merge within one local minute: the page's finest time grain, so every chart and bucket stays exact
 
 
 def _shallow(report):
@@ -252,12 +252,12 @@ def _shallow(report):
 
 
 def compact_rows(report):
-    """Merge the requests of one turn in one local hour that agree on every field the page filters, prices or lists them by (TOKEN-188).
+    """Merge the requests of one turn in one local minute that agree on every field the page filters, prices or lists them by (TOKEN-188).
 
     The page carries one row per group with `n` (requests) and `span` (ms from its first to its last request); its `inflate` gives each
     group back n rows that share the group's token sums (whole tokens, the remainder on the first rows) and spread its time span, before
-    anything else reads the data. Totals, costs, counts, filters, the day and hour series and every per-turn figure are therefore exact;
-    within one turn-hour the per-request split is an even one, and request ids are not carried. Every row-index list in the payload
+    anything else reads the data. Totals, costs, counts, filters, the day, hour and minute series and every per-turn figure are therefore exact;
+    within one turn-minute the per-request split is an even one, and request ids are not carried. Every row-index list in the payload
     (`usage.local_rows`, plan and work rows, environment rows) is rewritten to group indexes; membership is part of the merge key, so a
     group is always wholly in or out of a list."""
     report = _shallow(report)
@@ -301,7 +301,7 @@ def compact_rows(report):
     for i in range(n):
         off = offsets[c['idx']['off'][i]]
         key = (i,) if i in own else (
-            c['idx']['off'][i], (ms[i] + off * 60000) // HOUR_MS, tuple(column[i] for column in per_row),
+            c['idx']['off'][i], (ms[i] + off * 60000) // MERGE_MS, tuple(column[i] for column in per_row),
             tuple(tokens[f][i] is None for f in fields), tuple(member[i]))
         g = groups.get(key)
         if g is None:

@@ -702,13 +702,13 @@ if __name__ == '__main__':
 
 
 class CompactRowsTests(unittest.TestCase):
-    """TOKEN-188: the page gets one row per turn, local hour and filter values; inflate gives the requests back with exact totals."""
+    """TOKEN-188: the page gets one row per turn, local minute and filter values; inflate gives the requests back with exact totals."""
 
     def records(self):
         out = []
         for i in range(240):
-            turn, minute = i // 12, i % 60
-            out.append(observation(f'o{i}', ts=f'2026-10-{1 + i // 120:02d}T{(i // 30) % 24:02d}:{minute:02d}:00+00:00',
+            turn, minute = i // 12, (i // 12) % 60  # a turn's 12 requests fall within one minute, 4 s apart
+            out.append(observation(f'o{i}', ts=f'2026-10-{1 + i // 120:02d}T{(i // 30) % 24:02d}:{minute:02d}:{i % 12 * 4:02d}+00:00',
                                    session=f's{i // 60}', turn_id=f't{turn}', model=('claude-opus-4-5', 'claude-sonnet-4-5')[turn % 2],
                                    project_id=f'/w/p{turn % 3}', project_label=f'p{turn % 3}',
                                    tokens=dict(fresh_input=i, cache_read=1000 + 7 * i, cache_write=i % 5, output=11 * i % 97, reasoning=None if turn % 4 else 2),

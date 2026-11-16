@@ -94,7 +94,7 @@ expand=function(D){
   for(let i=0;i<rows.length;i++)rows[i].environment=values.get(i)||null;
   return rows;
 };
-// The data carries one row per group of requests (one turn, one local hour, the same filter values; report.compact_rows): `requests`
+// The data carries one row per group of requests (one turn, one local minute, the same filter values; report.compact_rows): `requests`
 // says how many and `span` their time span in ms. inflate gives each group back its rows before anything reads the data: the group's
 // token sums are split evenly in whole tokens (remainder on the first rows) and its rows spread over the span, so every total and
 // count is exact. Row-index lists in the data are group indexes and become row indexes here.

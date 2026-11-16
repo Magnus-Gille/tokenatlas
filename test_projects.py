@@ -128,6 +128,12 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(out['/Users/me/repos/other'][0], out['/home/me/repos/other'][0])
         self.assertEqual(out['/home/me/repos/other'][1:], ('other', None))
 
+    def test_a_sibling_name_match_needs_the_same_parent_directory(self):
+        out = self.resolve([(self.MAC, '/clients/app-mobile'), (self.PI, '/home/me/work/app-t9'), (self.MAC, '/Users/me/repos/app-t9')])
+        self.assertEqual(out['/clients/app-mobile'], ('/clients/app-mobile', 'app-mobile', None))
+        self.assertEqual(out['/home/me/work/app-t9'][0], '/home/me/work/app-t9')
+        self.assertEqual(out['/Users/me/repos/app-t9'][0], 'git:github.com/me/app')
+
     def test_buckets(self):
         out = self.resolve([(self.MAC, '/Users/me/Library/Application Support/Claude/local-agent-mode-sessions/a/b/outputs'),
                             (self.MAC, '/sessions/eager-hopper/mnt/outputs'),
