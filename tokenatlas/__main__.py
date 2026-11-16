@@ -480,6 +480,7 @@ def _main(argv=None):
     facts.add_argument('--json',action='store_true')
     facts.add_argument('--timezone',default='UTC',help='Timezone label for token-efficiency evidence (ISO boundaries retain their explicit offsets).')
     facts.add_argument('--top-projects',type=int,default=20,help='Number of projects listed by cost (0 = all).')
+    facts.add_argument('--private',action='store_true',help='Name projects and their directories; by default projects are pseudonyms (Project 001, ...) without paths.')
     facts.add_argument('--top-turns',type=int,default=50,help='Number of linked work turns in token-concentration facts (1–10000).')
     facts.add_argument('--context-threshold',type=int,default=200000,help='Input-token threshold for context-volume facts; a presentation choice, not a waste detector.')
     facts.add_argument('--scenario-population',choices=('large_context_input','subagent_input'),help='Opt-in hypothetical input-reduction population; requires --reduction-percent.')
@@ -830,7 +831,7 @@ def _main(argv=None):
                 with progress.step('Cost facts'):result=insights.cost_facts(everything,table,start,end,hits=hits,quota=shares,memo=memo)
                 from tokenatlas import projects
                 in_window=[r for r in everything if (start is None or prompts._t(r['ts'])>=start) and (end is None or prompts._t(r['ts'])<end)]
-                result['projects']=projects.summary(in_window,insights.memo_cost(table,memo),limit=args.top_projects)  # resolved projects with the directories behind them (TOKEN-187)
+                result['projects']=projects.summary(in_window,insights.memo_cost(table,memo),limit=args.top_projects,redact=not args.private)  # resolved projects with the directories behind them (TOKEN-187)
                 selected_indices=[index for index, record in enumerate(everything)
                                   if (start is None or prompts._t(record['ts']) >= start)
                                   and (end is None or prompts._t(record['ts']) < end)]
@@ -865,7 +866,7 @@ def _main(argv=None):
                         print('\nProjects by list price (worktrees and subdirectories roll up to their repository)')
                         for p in result['projects']:
                             cost='n/a' if p['cost'] is None else ('' if p['cost_complete'] else '≥')+f"${p['cost']:,.2f}"
-                            print(f"  {terminal_safe(str(p['label']))}: {cost}; {p['requests']:,} requests; {len(p['directories'])} director{'y' if len(p['directories'])==1 else 'ies'}")
+                            print(f"  {terminal_safe(str(p['label']))}: {cost}; {p['requests']:,} requests; {p['directory_count']} director{'y' if p['directory_count']==1 else 'ies'}")
                     print(_render_plan_facts(result['subscriptions']))
                     evidence=result['token_efficiency']
                     print('\nToken efficiency (known tokens; not a measure of waste)')

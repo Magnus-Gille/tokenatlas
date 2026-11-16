@@ -409,10 +409,11 @@ def canonical(wanted, resolver):
     return getattr(resolver, 'aliases', {}).get(wanted, wanted)
 
 
-def summary(records, cost_of, limit=None):
+def summary(records, cost_of, limit=None, redact=False):
     """Projects by list-price cost: [{project, label, directories, requests, tokens, cost, cost_complete, second_level}], costliest first.
     `directories` lists the saved directories that rolled up into the project; `second_level` the worktrees, subdirectories or bucket
-    members with their request counts (largest first, at most 10)."""
+    members with their request counts (largest first, at most 10). With `redact` the project is a pseudonym (Project 001 in cost order)
+    and no name or path is kept: only counts."""
     groups = {}
     for r in records:
         pid = r.get('project_id')
@@ -437,4 +438,9 @@ def summary(records, cost_of, limit=None):
                         cost=g['cost'] if g['priced'] else None, cost_complete=g['priced'] == g['requests'],
                         second_level=[dict(name=k, requests=v) for k, v in sorted(g['second'].items(), key=lambda kv: (-kv[1], kv[0]))[:10]]))
     out.sort(key=lambda p: (p['cost'] is None, -(p['cost'] or 0), -p['tokens'], str(p['project'])))
+    for i, p in enumerate(out, 1):
+        p['directory_count'] = len(p['directories'])
+        if redact:
+            p.update(project=f'Project {i:03d}', label=f'Project {i:03d}', directories=[],
+                     second_level=[dict(name=None, requests=s['requests']) for s in p['second_level']])
     return out[:limit] if limit else out

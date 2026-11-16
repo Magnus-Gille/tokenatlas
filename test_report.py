@@ -11,14 +11,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tokenatlas.history import ALL_FIELDS
-from tokenatlas.report import WARNING_SEPARATOR, build_report, render_report, write_report as _write_report
+from tokenatlas.report import WARNING_SEPARATOR, build_report, inflate_rows, render_report, write_report as _write_report
 write_report = _write_report
 
 
 def decode_html(html):
     """Payload embedded in the report page: base64 -> gunzip -> JSON."""
     match = re.search(r'<script id="report-data" type="application/octet-stream\+base64">([A-Za-z0-9+/=]*)</script>', html)
-    return json.loads(gzip.decompress(base64.b64decode(match.group(1))).decode('ascii'))
+    return inflate_rows(json.loads(gzip.decompress(base64.b64decode(match.group(1))).decode('ascii')))
 
 
 def page_text(html):
@@ -350,12 +350,11 @@ class PayloadV2Tests(unittest.TestCase):
                 self.assertEqual((g['complete'], g['id_synthetic']), (r['complete'], r['id_synthetic']))
                 self.assertEqual(g['warnings'], r['warnings'])
                 self.assertEqual(g['effort'], r['effort'])
+                self.assertIsNone(g['id'])  # request ids are not carried (TOKEN-188: rows are merged per turn and hour)
                 if redact:
                     self.assertNotIn(r['session'], g['session'])
-                    self.assertNotIn(r['id'], g['id'])
                 else:
-                    self.assertEqual((g['session'], g['id'], g['project_label']),
-                                     (f"claude:{r['session']}", r['id'], 'app'))
+                    self.assertEqual((g['session'], g['project_label']), (f"claude:{r['session']}", 'app'))
             self.assertIn('2026-10-25T02:00:00+02:00', {g['hour'] for g in got})
             self.assertIn('2026-10-25T02:00:00+01:00', {g['hour'] for g in got})
 
@@ -700,3 +699,55 @@ class I18nPlurals(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CompactRowsTests(unittest.TestCase):
+    """TOKEN-188: the page gets one row per turn, local hour and filter values; inflate gives the requests back with exact totals."""
+
+    def records(self):
+        out = []
+        for i in range(240):
+            turn, minute = i // 12, i % 60
+            out.append(observation(f'o{i}', ts=f'2026-10-{1 + i // 120:02d}T{(i // 30) % 24:02d}:{minute:02d}:00+00:00',
+                                   session=f's{i // 60}', turn_id=f't{turn}', model=('claude-opus-4-5', 'claude-sonnet-4-5')[turn % 2],
+                                   project_id=f'/w/p{turn % 3}', project_label=f'p{turn % 3}',
+                                   tokens=dict(fresh_input=i, cache_read=1000 + 7 * i, cache_write=i % 5, output=11 * i % 97, reasoning=None if turn % 4 else 2),
+                                   complete=i % 17 != 0, warnings=['missing_token_fields'] if i % 17 == 0 else []))
+        return out
+
+    def test_compaction_keeps_every_total_and_membership(self):
+        from tokenatlas.report import compact_rows
+        for redact in (False, True):
+            report = build_report(self.records(), {}, redact=redact)
+            compacted = compact_rows(report)
+            self.assertLess(compacted['columns']['n'], report['columns']['n'] / 3)
+            self.assertEqual(sum(compacted['columns']['requests']), report['columns']['n'])
+            self.assertEqual(report['columns']['n'], 240, 'the caller\'s payload is left as it was')
+            back = expand(decode_html(render_report(report)))
+            before = expand(json.loads(json.dumps(report)))
+            self.assertEqual(len(back), len(before))
+            for field in ALL_FIELDS:
+                total = lambda rows: sum(r['tokens'][field] or 0 for r in rows)
+                self.assertEqual(total(back), total(before), field)
+                self.assertEqual(sum(r['tokens'][field] is None for r in back), sum(r['tokens'][field] is None for r in before), field)
+            cost = lambda rows: sum(r['cost'] or 0 for r in rows)
+            self.assertAlmostEqual(cost(back), cost(before), places=6)
+            key = lambda r: (r['date'], r['hour'], r['session'], r['turn_id'], r['model'], r['project_label'], r['complete'], r['prompt'], tuple(r['warnings']))
+            from collections import Counter
+            self.assertEqual(Counter(map(key, back)), Counter(map(key, before)))
+            if not redact:
+                html = decode_html(render_report(report))
+                for g_back, g_before in zip(html['usage']['groups'], report['usage']['groups']):
+                    self.assertEqual(len(g_back['rows']), len(g_before['rows']))
+                    self.assertEqual([len(t['rows']) for t in g_back['turns']], [len(t['rows']) for t in g_before['turns']])
+                    self.assertEqual(Counter(back[i]['prompt'] for i in g_back['rows']), Counter(before[i]['prompt'] for i in g_before['rows']))
+                self.assertEqual(Counter(back[i]['harness'] for p in html['usage']['plans'] for i in p['rows']),
+                                 Counter(before[i]['harness'] for p in report['usage']['plans'] for i in p['rows']))
+
+    def test_berget_rows_with_an_environment_are_never_merged(self):
+        env = {'co2e_grams': 1.5, 'energy_kwh': 0.01, 'source': 'provider_reported_estimate'}
+        rows = [observation(f'b{i}', provider='berget', harness='opencode', model='m', ts=f'2026-10-01T10:0{i}:00+00:00', environment=dict(env, co2e_grams=float(i)))
+                for i in range(3)]
+        out = decode_html(render_report(build_report(rows, {}, redact=False)))
+        got = expand(out)
+        self.assertEqual(sorted(r['environment']['co2e_grams'] for r in got), [0.0, 1.0, 2.0])

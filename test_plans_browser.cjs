@@ -65,7 +65,7 @@ async function main() {
   await page.selectOption('#plan', 'business');
   await page.locator('.session summary').first().click();
   await page.locator('.turn summary').first().click();
-  const planCell = page.locator('td[title="business"]').first();
+  const planCell = page.locator('#session-list td[title="business"]').first();
   assert.match(await planCell.innerText(), /Business/);
   assert.equal(await planCell.getAttribute('title'), 'business');
   assert.equal(await page.locator('#plan-facts .plan-facts-table tr').count(), 2);

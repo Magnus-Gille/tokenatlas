@@ -205,7 +205,8 @@ async function ready(page, errors, what = 'report') {
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'mobile overflow');
     const texts=await page.evaluate(()=>['total-label','total','total-note','cache','cache-note','output','reasoning','selection','quality'].map(id=>[id,document.getElementById(id).textContent]));
     const Tx=Object.fromEntries(texts);assert.match(Tx['total-label'],T.totalRe);assert.match(Tx['total-note'],T.note);assert.match(Tx['cache-note'],T.cache);assert.match(Tx.output,/./);assert.match(Tx.selection,T.selection);assert.ok(T.reasoning.test(Tx.reasoning),Tx.reasoning);
-    const cards=await page.evaluate(()=>[...document.querySelectorAll('.kpis .kpi')].map(k=>({label:k.querySelector('.label').textContent,title:k.querySelector('.value').title,text:k.querySelector('.value').textContent})));
+    // TOKEN-188: the one total sits in the answer at the top; the KPI row keeps the four token classes.
+    const cards=await page.evaluate(()=>[document.querySelector('#answer .answer-total'),...document.querySelectorAll('.kpis .kpi')].map(k=>({label:k.querySelector('.label').textContent,title:k.querySelector('.value').title,text:k.querySelector('.value').textContent})));
     assert.deepEqual(cards.map(c=>c.label.replace(T.atLeast,'')),[T.total,'Input','Cache write','Cache read','Output']);
     const exact=t=>{const m=/^([\d\s,.  ]+) tokens/.exec(t);assert.ok(m,'title '+t);return Number(m[1].replace(/\D/g,''))};
     const parts=cards.slice(1).map(c=>c.text===T.unknown?0:exact(c.title));
@@ -283,7 +284,7 @@ async function ready(page, errors, what = 'report') {
           assert.deepEqual(dialogs,[]);assert.deepEqual(r2.errors,[]);await r2.context.close();
         }
         // Limit windows at 390 px: each window is a small card inside the Limits card, with no sideways scrolling; reset, peak, hit and list price are visible.
-        {const qn=await newPage({locale:T.locale,viewport:{width:390,height:900}},withQuota(fixture));await qn.page.locator('#quota-windows').scrollIntoViewIfNeeded();
+        {const qn=await newPage({locale:T.locale,viewport:{width:390,height:900}},withQuota(fixture));await qn.page.locator('#quota-windows-more > summary').click();await qn.page.locator('#quota-windows').scrollIntoViewIfNeeded();
           const m=await qn.page.evaluate(()=>{const box=document.getElementById('quota-windows'),w=box.querySelector('.table-wrap'),W=window.innerWidth,B=box.getBoundingClientRect();
             const cells=[...box.querySelectorAll('#qw-table td')].filter(c=>c.offsetParent!==null);return {wrap:w.scrollWidth<=w.clientWidth+1,box:box.scrollWidth<=box.clientWidth+1,doc:document.documentElement.scrollWidth<=W+1,
               inside:cells.every(c=>{const r=c.getBoundingClientRect();return r.left>=B.left-1&&r.right<=B.right+1&&r.width>0}),head:[...box.querySelectorAll('#qw-table th')].every(h=>h.offsetParent===null),

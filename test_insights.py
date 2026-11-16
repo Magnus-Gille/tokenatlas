@@ -676,6 +676,12 @@ class Cli(Base):
         self.assertEqual(res['window'], {'start': None, 'end': None})
         for private in ('secret', '/work/app', 'sess.jsonl', 'r-r1', 'u1'):
             self.assertNotIn(private, out)
+        self.assertEqual([(p['label'], p['directory_count'], p['directories']) for p in res['projects']], [('Project 001', 1, [])])
+
+    def test_json_private_names_projects(self):
+        code, out, err = self.insights('--json', '--private')
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(p['label'], p['directories']) for p in json.loads(out)['projects']], [('app', ['/work/app'])])
 
     def test_text(self):
         code, out, err = self.insights()
