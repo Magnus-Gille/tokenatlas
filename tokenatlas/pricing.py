@@ -9,6 +9,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tokenatlas import shared
+
 PACKAGED = Path(__file__).with_name('prices.json')
 PRICE_KEYS = ('input', 'cache_write_5m', 'cache_write_1h', 'cache_write', 'cache_read', 'output')
 _TOP_KEYS = ('schema', 'retrieved_on', 'unit', 'provider_aliases', 'local_providers', 'models')
@@ -75,6 +77,17 @@ def load_prices(path=None):
 
 
 def _find(table, provider, model):
+    memo = shared.memo('find')
+    if memo is None:
+        return _find_uncached(table, provider, model)
+    key = (id(table), provider, model)
+    hit = memo.get(key)
+    if hit is None or hit[0] is not table:  # the table is kept alive by the entry, so its id stays unique
+        hit = memo[key] = (table, _find_uncached(table, provider, model))
+    return hit[1]
+
+
+def _find_uncached(table, provider, model):
     provider = (table.get('provider_aliases') or {}).get(provider, provider)
     for entry in table.get('models', ()):
         if entry['provider'] == provider and (entry['model'] == model or model in (entry.get('aliases') or ())):
@@ -270,7 +283,22 @@ def _parts(r):
 
 def price_observation(obs, table, long_context=True, modifiers=True, tier=None):
     """tier, when a dict, receives {'long': bool, 'has_long': bool, 'modifier': label or None}: the long-context / speed / service-tier price
-    set used, and whether the model has a long-context tier at all."""
+    set used, and whether the model has a long-context tier at all. Inside shared.scope() the default pricing of a request is computed
+    once per request object and table (TOKEN-189); each call gets its own copy."""
+    memo = shared.memo('price') if long_context is True and modifiers is True else None
+    if memo is not None:
+        hit = memo.get(id(obs))
+        if hit is None or hit[0] is not obs or hit[1] is not table:
+            found = {}
+            hit = memo[id(obs)] = (obs, table, _price_observation(obs, table, True, True, found), found)
+        if tier is not None:
+            tier.update(hit[3])
+        res = hit[2]
+        return {**res, 'parts': dict(res['parts']), 'assumptions': list(res['assumptions'])}
+    return _price_observation(obs, table, long_context, modifiers, tier)
+
+
+def _price_observation(obs, table, long_context, modifiers, tier):
     early, r = _rates(obs, table, long_context, modifiers)
     if early:
         return early
@@ -290,6 +318,17 @@ def price_vector(obs, table):
     """(unit prices, cw1h) or (None, 0) when price_observation's cost is None. Unit prices are USD per token,
     [input, cache_write_5m, cache_write_1h, cache_read, output], multiplier applied; cost =
     fresh*in + (write-cw1h)*cw5m + cw1h*cw1h + read*cr + out*out, where cw1h is the 1-hour write tokens when the 5m/1h split is known."""
+    memo = shared.memo('price_vector')
+    if memo is None:
+        return _price_vector(obs, table)
+    hit = memo.get(id(obs))
+    if hit is None or hit[0] is not obs or hit[1] is not table:
+        hit = memo[id(obs)] = (obs, table, _price_vector(obs, table))
+    unit, hour = hit[2]
+    return (None if unit is None else list(unit)), hour
+
+
+def _price_vector(obs, table):
     early, r = _rates(obs, table)
     if early:
         return ([0.0] * 5, 0) if early['status'] == 'free' and early.get('currency') in (None, 'USD') else (None, 0)

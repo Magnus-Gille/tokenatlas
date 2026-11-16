@@ -184,13 +184,13 @@ def run(args):
 
 
 def _run(args):
-    from tokenatlas import prompt_store
+    from tokenatlas import prompt_store, shared
     from tokenatlas.__main__ import main,refresh_all
     from tokenatlas.history import History
     db=args.db.expanduser();state=db.parent
     try:state.mkdir(parents=True,exist_ok=True);lock=open(state/'collect.lock','a+')
     except OSError as exc:log(f'cannot open lock in {state}: {exc}');return 1
-    with lock:
+    with lock,shared.scope():  # top and report read one loaded history while it is unchanged (TOKEN-189)
         if not _lock(lock.fileno()):log('already running');return 0
         for name in ('SIGTERM','SIGINT','SIGHUP'):
             if hasattr(signal,name):signal.signal(getattr(signal,name),_on_signal)

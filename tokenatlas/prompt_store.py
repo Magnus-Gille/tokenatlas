@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tokenatlas import __version__, prompt_text, prompts, provenance, turn_context
+from tokenatlas import __version__, prompt_text, prompts, provenance, shared, turn_context
 
 FILE = 'top-prompts.json'
 SELECTION_VERSION = 1
@@ -177,7 +177,7 @@ def visible_all(path,records,table,ranked=None,assigned=None,ranked_choice=None)
     Contexts that are blank are left out."""
     entries,k,by=load_meta(path)
     if not entries or not valid_choice(k,by):return {},{}
-    ranked = ranked if ranked is not None and ranked_choice == (k, by) else prompts.top_prompts(records,table,k,by,assigned=assigned)
+    ranked = ranked if ranked is not None and ranked_choice == (k, by) else shared.call(prompts.top_prompts,records,table,k,by,assigned=assigned)  # collect's top step ranked these already (TOKEN-189)
     top={(p['harness'],p['session'],p['turn_id']) for p in ranked['prompts'][:k]}
     return ({key:e['text'] for key,e in entries.items() if key in top},
             {key:e['context'] for key,e in entries.items() if key in top and not _blank(e.get('context'))})

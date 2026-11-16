@@ -14,7 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tokenatlas import __version__
-from tokenatlas import progress, statusline, usage_profiles
+from tokenatlas import progress, shared, statusline, usage_profiles
 from tokenatlas.terminal import terminal_safe
 from tokenatlas.resume import resume_command,shell_command as _shell_command
 # The heavy modules (history, report, insights, pricing, why, ...) are imported where they are used, so `tokenatlas statusline`, which Claude Code
@@ -290,16 +290,27 @@ def _project_arg(history, value):
 
 
 def _plan_history(history):
-    """Resolve dated subscription metadata over requests and quota events together."""
-    from tokenatlas import subscriptions
-    return subscriptions.annotate_with_events(_resolved(history, history.records()), history.limit_events())
+    """Resolve dated subscription metadata over requests and quota events together. Within one shared scope (shared.py) an unchanged
+    history is loaded once: collect's top and report steps read the same records. Callers treat them as read-only."""
+    from tokenatlas import projects, subscriptions
+    row=history.connection.execute('SELECT value FROM meta WHERE key=?',(projects.META_KEY,)).fetchone()
+    key=(str(history.path),history.revision,history.revision_token,row[0] if row else None)
+    def load():
+        records=_resolved(history,history.records())
+        records.sort(key=lambda r:(r['ts'],r['harness'],r['id']))  # the report's row order (build_report), so the report can reuse what top derived from this list
+        return (*subscriptions.annotate_with_events(records,history.limit_events()),history.project_resolver)
+    records,events,resolver=shared.history(key,load)
+    history.project_resolver=resolver
+    return records,events
 
 
 def _hits(history,records,events=None,assigned=None):
     """Limit hits over the whole history's records (a report's filters never shrink the window a hit is explained from)."""
     from tokenatlas import limits, pricing, subscriptions
-    records, events = subscriptions.annotate_with_events(records, history.limit_events() if events is None else events)
-    return limits.limit_hits(records,events,pricing.load_prices(),assigned=assigned)  # no shortcut: a full window with no reached type is a hit too
+    annotated, seen = subscriptions.annotate_with_events(records, history.limit_events() if events is None else events)
+    if events is not None and all(a is b for a, b in zip(annotated, records)) and all(a is b for a, b in zip(seen, events)):
+        annotated, seen = records, events  # already annotated: the same objects, so top's hits are reused within a shared scope
+    return shared.call(limits.limit_hits,annotated,seen,shared.call(pricing.load_prices,None),assigned=assigned)  # no shortcut: a full window with no reached type is a hit too
 
 
 def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=None,events=None):
@@ -309,10 +320,11 @@ def _auto_budgets(history,db,table,records=None,hits=None,snapshots=None,keep=No
         if records is None:records, events=_plan_history(history)
         else:
             from tokenatlas import subscriptions
-            records, events=subscriptions.annotate_with_events(records,history.limit_events() if events is None else events)
+            annotated, seen=subscriptions.annotate_with_events(records,history.limit_events() if events is None else events)
+            if not (events is not None and all(a is b for a,b in zip(annotated,records)) and all(a is b for a,b in zip(seen,events))):records, events=annotated, seen  # else the same objects: shared results stay reusable
         if hits is None:hits=_hits(history,records,events)
         if snapshots is None:snapshots=quota_share.snapshots_from_records(records,events=events,claude=_claude_quota(db))
-        return budget.auto_budgets(records,hits,snapshots,table,*(() if keep is None else (keep,)))
+        return shared.call(budget.auto_budgets,records,hits,snapshots,table,*(() if keep is None else (keep,)))
 
 
 def _over_cap(history,db,auto,manual):
@@ -386,7 +398,8 @@ def main(argv=None):
     outer=progress.current()
     collecting=gc.isenabled()
     gc.disable()  # a command builds a few hundred thousand long-lived dicts and then only reads them: every full collection would rescan them all (TOKEN-189)
-    try:return _main(argv)
+    try:
+        with shared.scope():return _main(argv)  # one command prices and loads once; collect keeps one scope over its steps
     finally:
         if collecting:gc.enable()
         if outer is progress.NOOP:progress.stop()
@@ -784,9 +797,9 @@ def _main(argv=None):
                     prompt_store.forget(store)
                     done()
                     print(json.dumps({'forgotten':str(store)}));return 0
-                table=pricing.load_prices(args.prices)
+                table=shared.call(pricing.load_prices,args.prices)
                 with progress.step('Read history'):everything,events=_plan_history(history)  # resolve inheritance on the whole history before filters choose contributing rows
-                assigned=prompts.assign_prompts(everything)
+                assigned=shared.call(prompts.assign_prompts,everything)
                 args.project=_project_arg(history,args.project)
                 filtered=any(x is not None for x in (start,end,args.harness,args.project,args.plan))
                 selected=_select_records(everything,start,end,args.harness,args.project) if filtered else everything
@@ -794,10 +807,10 @@ def _main(argv=None):
                     selected=[r for r in selected if r.get('plan')==args.plan]
                 keep={prompts.ident(r) for r in selected} if filtered else None
                 with progress.step('Rank turns'):
-                    global_ranked=prompts.top_prompts(everything,table,args.limit,args.by,assigned=assigned)
+                    global_ranked=shared.call(prompts.top_prompts,everything,table,args.limit,args.by,assigned=assigned)
                     result=global_ranked if not filtered else prompts.top_prompts(everything,table,args.limit,args.by,keep,assigned=assigned)
                 kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths(),ranked=global_ranked,assigned=assigned,revision=history.revision,history_token=history.revision_token,prices=budget.table_id(table)) if args.keep_text else None
-                with progress.step('Limit hits'):hits=limits.limit_hits(everything,events,table,assigned=assigned)  # windows come from the whole history; the CLI filters then pick the hits
+                with progress.step('Limit hits'):hits=shared.call(limits.limit_hits,everything,events,table,assigned=assigned)  # windows come from the whole history; the CLI filters then pick the hits
                 all_hits=hits
                 if filtered:hits=limits.scope_hits(hits,selected,args.harness,start,end,args.project,universe=everything,assigned=assigned)
                 limits.mark_turns(result['prompts'],hits)
@@ -823,10 +836,10 @@ def _main(argv=None):
                 from tokenatlas import efficiency
                 now=datetime.now(ZoneInfo('UTC'))
                 history.connection.execute('BEGIN')
-                table=pricing.load_prices(args.prices);memo={}
+                table=shared.call(pricing.load_prices,args.prices);memo={}
                 with progress.step('Read history'):everything,events=_plan_history(history)
-                assigned=prompts.assign_prompts(everything)
-                with progress.step('Limit hits'):hits=limits.limit_hits(everything,events,table,assigned=assigned)
+                assigned=shared.call(prompts.assign_prompts,everything)
+                with progress.step('Limit hits'):hits=shared.call(limits.limit_hits,everything,events,table,assigned=assigned)
                 with progress.step('Quota shares'):shares=quota_share.turn_shares(everything,quota_share.snapshots_from_records(everything,assigned=assigned,events=events,claude=_claude_quota(args.db)),table,insights.memo_cost(table,memo))
                 with progress.step('Cost facts'):result=insights.cost_facts(everything,table,start,end,hits=hits,quota=shares,memo=memo)
                 from tokenatlas import projects
@@ -924,7 +937,8 @@ def _main(argv=None):
                     if args.html:
                         universe,events=_plan_history(history)
                         args.project=_project_arg(history,args.project)
-                        records=_select_records(universe,start,end,args.harness,args.project,args.session,args.turn,**filters)
+                        narrowed=any(x is not None for x in (start,end,args.harness,args.project,args.session,args.turn,*filters.values()))
+                        records=_select_records(universe,start,end,args.harness,args.project,args.session,args.turn,**filters) if narrowed else universe
                     else:
                         records=_resolved(history,history.records(start,end,args.harness,None,args.session,args.turn))
                         args.project=_project_arg(history,args.project)
@@ -939,9 +953,9 @@ def _main(argv=None):
                 if args.records:result['records']=records
                 if args.html:
                     filtered=any(getattr(args,key) is not None for key in ('start','end','harness','project','session','turn','model','effort','provider','agent'))
-                    assigned=prompts.assign_prompts(records)
-                    whole_assigned=prompts.assign_prompts(universe) if filtered else assigned
-                    table=pricing.load_prices()
+                    assigned=shared.call(prompts.assign_prompts,records) if not filtered else prompts.assign_prompts(records)
+                    whole_assigned=shared.call(prompts.assign_prompts,universe) if filtered else assigned
+                    table=shared.call(pricing.load_prices,None)
                     texts,ctx=_visible(history,args.db,universe,assigned=whole_assigned,table=table) if args.private else (None,None)
                     budgets=_budgets(args.db,table,lambda:universe)
                     with progress.step('Limit hits'):hits_all=_hits(history,universe,events,whole_assigned)

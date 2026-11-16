@@ -13,7 +13,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from tokenatlas import __version__, progress
+from tokenatlas import __version__, progress, shared
 from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share, quota_status, usage_profiles
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
@@ -497,6 +497,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     table = table or pricing.load_prices()
     credit_table = credit_table or credit_rates.packaged()
     zone = ZoneInfo(timezone_name)
+    given, given_assigned = records, assigned
     original_records = list(records or ())
     original_assigned = None if assigned is None else {_record_key(record): value for record, value in zip(original_records, assigned)}
     records, annotated_universe, quota_events = _annotate_records(original_records, universe, quota_events or ())
@@ -506,6 +507,10 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     records = sorted(records, key=lambda r: (r['ts'], r['harness'], r['id']))
     if assignment_by_row is not None:assigned = [assignment_by_row[_record_key(r)] for r in records]
     del assignment_by_row
+    if isinstance(given, list) and len(given) == len(records) and all(a is b for a, b in zip(records, given)):
+        records = given  # the caller's own list, already annotated and in order: results shared with collect's top step stay reusable (TOKEN-189)
+        if given_assigned is not None:
+            assigned = given_assigned
     is_public_model = public_model_checker(pricing.load_prices(), credit_rates.packaged()) if redact else None  # the packaged tables, never a caller-supplied one: they decide what is public
     aliases = {}
     def alias(kind, value):
@@ -602,7 +607,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                 fact['label'] = safe
     # one captured `now` is the exclusive end of the 30-day window: later-dated observations are not 'the last 30 days'
     with progress.step('Quota shares and cost insights'):
-        snapshots = quota_share.snapshots_from_records(whole, whole_assigned, quota_events or (), claude=claude_quota) if quota else []  # one per window per request that carries a quota
+        snapshots = shared.call(quota_share.snapshots_from_records, whole, whole_assigned, quota_events or (), claude=claude_quota) if quota else []  # one per window per request that carries a quota
         if quota:
             status_rows = quota_status.collect(whole, quota_events or (), claude=claude_quota, now=now, snapshots=snapshots)
         else:
@@ -720,7 +725,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
             report.update(_quota_payload(shares or {}, quota_share.windows(snapshots, last=4, records=whole, cost_of=cost_of, hits=limit_hits if all_hits is None else all_hits), shown, metadata, lambda name: alias('limit', name) if redact else name))  # a limit id is pseudonymized whatever it looks like
     with progress.step('Automatic budgets and calibration'):
         if not redact:  # a shared report has no calibrated share, manual or automatic: with the turn costs it would give the budget (the plan size) away
-            auto, _ = budget.auto_budgets(whole, all_hits if all_hits is not None else limit_hits, snapshots, table)  # computed here from the history, never stored (#116)
+            auto, _ = shared.call(budget.auto_budgets, whole, all_hits if all_hits is not None else limit_hits, snapshots, table)  # computed here from the history, never stored (#116)
             merged = budget.combine({(b['harness'], b['minutes'], b.get('plan')): b for b in budgets or ()}, auto)
             if merged:
                 report.update(_calibration_payload(budget.public(merged), whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
