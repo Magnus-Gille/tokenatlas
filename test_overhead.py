@@ -415,6 +415,21 @@ class SummaryTests(unittest.TestCase):
         self.assertIn('EUR 1.00, USD 2.00', text)
         self.assertRegex(text, r'EUR \d+\.\d%, USD \d+\.\d%')
 
+    def test_records_loader_gets_only_the_selected_sessions(self):
+        # TOKEN-196: the history loader is asked for the selected sessions only (a Claude subagent by its parent).
+        rows = [sess('a', 1_000_000, 4), dict(sess('a/agent-x1', 500, 2), is_subagent=True), sess('old', 10, 2, ts='2026-08-01T00:00:00Z')]
+        records = [{'harness': 'claude', 'session': 'a', 'provider': 'p', 'model': 'm-x'}] * 2
+        asked = []
+        def loader(sessions):
+            asked.append(set(sessions))
+            return [r for r in records if (r['harness'], r['session']) in sessions]
+        got = overhead.summarize(self.db(rows), since='2026-09-01T00:00:00Z', records=loader, prices=PRICES)
+        self.assertEqual(asked, [{('claude', 'a'), ('claude', 'a/agent-x1')}])
+        same = overhead.summarize(self.db(rows), since='2026-09-01T00:00:00Z', records=records, prices=PRICES)
+        self.assertEqual(got, same)
+        self.assertEqual(overhead.summarize(self.db(rows), since='2027-01-01T00:00:00Z', records=loader)['harnesses'], {})
+        self.assertEqual(len(asked), 1)  # nothing selected: the history is not loaded at all
+
     def test_filters_and_missing_components(self):
         rows = [sess('old', 10, 1, ts='2026-08-01T00:00:00Z'), sess('new', 20, 1, ts='2026-09-10T00:00:00Z')]
         con = self.db(rows)

@@ -515,7 +515,8 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
     """Per-harness floor distribution, estimated component tokens, residual, skill uses and recurring cost.
 
     `records` (History.records) supplies each session's dominant model; without it the cost stays None.  It may be a
-    callable, invoked only when the selection is non-empty (loading the full history is slow).
+    callable taking `sessions=` (the (harness, history session) pairs selected here), invoked only when the selection
+    is non-empty, so only those sessions are loaded: loading the full history is slow (TOKEN-196).
     """
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not {'overhead_sessions', 'overhead_items', 'overhead_skill_uses'} <= tables:
@@ -541,7 +542,9 @@ def summarize(db, since=None, until=None, harness=None, records=None, prices=Non
             sessions[(h, s)]['skills'].append((name, chars, source))
     table, tariffs = None, {}
     if callable(records):
-        records = records() if sessions else None
+        # History keys a Claude subagent by its parent session; the full overhead key is kept too, for any other harness.
+        wanted = {(h, key) for h, s in sessions for key in (s, s.split('/')[0])}
+        records = records(sessions=wanted) if sessions else None
     if records is not None:
         from tokenatlas import pricing
         table = prices if prices is not None else pricing.load_prices()

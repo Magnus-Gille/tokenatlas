@@ -578,7 +578,7 @@ def _main(argv=None):
                     data=usage_profiles.save(args.db,data)
         except (OSError,ValueError) as exc:parser.exit(2,f'usage: {terminal_safe(exc)}\n')
         print(json.dumps(data,indent=2,sort_keys=True));return 0
-    slow=args.command in ('refresh','open','report','top','insights','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead' and args.refresh
+    slow=args.command in ('refresh','open','report','top','insights','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead'
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout
     try:
