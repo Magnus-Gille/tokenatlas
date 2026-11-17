@@ -4,11 +4,18 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-11-17
+
 ### Added
 
 - Agent-facing `--json` receipts across reporting/configuration commands, including doctor, refresh, report, collect, rate, snapshot, import, open/show and upgrade. CLI JSON has a versioned `tokenatlas.<command>/1` schema. Existing `top` and `insights` field names are retained and documented in `docs/agents.md`; renaming/removing these fields requires a schema-version change and a breaking-change entry here.
 - Actionable examples and option/default descriptions in command help, linked agent documentation, and a reproducible ten-task synthetic CLI smoke/evaluation harness (independent model evaluation still required).
 - Headless `open --no-browser`, `show --print-path` and `TOKENATLAS_NO_BROWSER=1`; JSON mode returns a path receipt instead of a bare path.
+- Saved report layouts and opening filters: `tokenatlas view` stores section order, presets (`subscription`, `api-cost`, `minimal`, `full`) and opening filters in a versioned local `view.json`; `report`, `open` and scheduled `collect` apply it, shared reports drop private defaults, and "Show everything and clear filters" restores the full report (TOKEN-120).
+
+### Changed
+
+- **Breaking (CLI contract):** commands now exit with 1 internal, 2 usage, 3 not found, 4 no data (and 75 for a locked database). `refresh` exits 3 when every requested source root is absent and 1 for other source problems or partial imports (it exited 2 before); an empty filtered `report`, `top` or `insights` exits 4; `collect` logs go to stderr so `--json` output stays clean. `--json` errors are one JSON object on stderr (`error.code`: `internal`, `usage`, `not_found`, `no_data`, `locked`).
 
 ## [1.27.0] - 2026-11-17
 
