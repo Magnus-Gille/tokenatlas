@@ -331,7 +331,7 @@ class RootsTests(DecoderCase):
         self.home()
         shutil.rmtree(Path(os.environ["CODEX_HOME"]))
         code, out, _ = run("--db", str(self.root / "h.sqlite3"), "refresh", "--harness", "codex")
-        self.assertEqual((code, json.loads(out)["status"]), (2, "missing"))
+        self.assertEqual((code, json.loads(out)["status"]), (3, "missing"))  # an absent root is not_found (exit 3) in the agent CLI contract
 
 
 class UnreadableTests(DecoderCase):

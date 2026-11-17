@@ -729,7 +729,7 @@ def run(args):
     """`overhead` command: optional rescan of the default roots, then the report; returns the exit status."""
     from tokenatlas import why
     from tokenatlas.cli_contract import NotFound, emit, iso_date
-    if args.since:args.since=iso_date(args.since,'since').isoformat()
+    since=iso_date(args.since,'since').isoformat() if args.since else None  # args.since keeps the user's text for messages
     from tokenatlas.history import History
     if not args.refresh and not args.db.expanduser().is_file():
         raise NotFound('history database does not exist; run refresh or overhead --refresh first')
@@ -749,7 +749,7 @@ def run(args):
         db.execute('BEGIN')
         total, newest = _stored_stats(db, args.harness)
         with progress.step('Summarize overhead'):
-            result = summarize(db, since=args.since, harness=args.harness, records=history.records)
+            result = summarize(db, since=since, harness=args.harness, records=history.records)
         db.rollback()
     progress.finish()
     if not result['harnesses']:

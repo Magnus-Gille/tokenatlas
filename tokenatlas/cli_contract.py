@@ -42,7 +42,8 @@ def error(command, exc, json_mode):
         print(json.dumps(payload(command, {'ok': False, 'error': {'code': code, 'message': message, 'hint': hint, **({'details': exc.details} if hasattr(exc,'details') else {})}})), file=sys.stderr)
     else:
         from tokenatlas.terminal import terminal_safe
-        print(f'{code}: {terminal_safe(message)}\nHint: {hint}', file=sys.stderr)
+        text = terminal_safe(message) if status == 75 else f'{code}: {terminal_safe(message)}'  # a lock keeps the plain 'database: ...' prefix
+        print(f'{text}\nHint: {hint}', file=sys.stderr)
     return status
 
 
