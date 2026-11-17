@@ -10,6 +10,8 @@ All notable changes to this project are documented in this file. The project fol
 - Actionable examples and option/default descriptions in command help, linked agent documentation, and a reproducible ten-task synthetic CLI smoke/evaluation harness (independent model evaluation still required).
 - Headless `open --no-browser`, `show --print-path` and `TOKENATLAS_NO_BROWSER=1`; JSON mode returns a path receipt instead of a bare path.
 
+## [1.27.0] - 2026-11-17
+
 ### Changed
 
 - The report is shorter and answers first (TOKEN-188): the top shows tokens and cost by tool and by project, the three costliest turns and the share without a price; long lists show the ten largest with "show all"; there is one total with one note on what is incomplete; quota readings older than a day move below the fold and are marked stale; details sit in collapsed sections. Requests are merged per turn and local minute in the embedded data (the page expands them again; every chart grain stays exact), which takes a synthetic 700,000-request history from about 30 MB to about 10 MB.
