@@ -176,7 +176,7 @@ tokenatlas view reset                   # everything, original order, no saved d
 `set --sections` replaces the selection **in the given order**. Use `--sections ''`
 for no sections. `hide` preserves the remaining order; `show` appends in argument order.
 Presets replace the entire view, including filters and display options: `subscription`
-puts limit hits and quota windows first; `api-cost` puts cost facts and turns first;
+puts subscriptions, limit hits and quota windows first; `api-cost` puts the answer panel, cost facts and turns first;
 `minimal` shows glance, KPIs and turns; `full` restores all sections in the original order.
 `--top` controls the costliest-turn count (1–10000, default 10). `--money-first` moves
 cost to the first turn column; `--no-money-first` restores the original column order.
@@ -185,6 +185,7 @@ Stable section ids, in the default order:
 
 | Id | Report content |
 | --- | --- |
+| `answer` | Answer panel (total, tools, projects, costliest turns) |
 | `glance` | At a glance |
 | `glossary` | Terms (initially collapsed) |
 | `kpis` | Token KPIs |
@@ -193,11 +194,13 @@ Stable section ids, in the default order:
 | `turns` | Costliest turns |
 | `limits` | Limit hits and quota calibration |
 | `quota-windows` | Quota windows |
+| `subscriptions` | Subscriptions view |
 | `facts` | Cost facts |
 | `plan-facts` | Plan facts |
 | `usage` | Clients and local inference |
 | `work` | Work context |
 | `energy` | Energy estimate |
+| `environment` | Environmental estimate |
 | `charts` | Timeline and ranking |
 | `cache` | Cache comparisons |
 | `sessions` | Sessions |

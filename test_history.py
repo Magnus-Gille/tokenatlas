@@ -1661,6 +1661,19 @@ class ConcurrentCliTests(unittest.TestCase):
                 self.assertNotIn('locked', done.stderr)
             writer.rollback()
 
+    def test_quota_show_completes_while_a_writer_holds_begin_immediate(self):
+        """TOKEN-203: quota show opens the history read-only, so an active writer does not block it."""
+        with closing(sqlite3.connect(self.db, isolation_level=None)) as writer:
+            writer.execute('PRAGMA cache_size=10')
+            writer.execute('PRAGMA cache_spill=1')
+            writer.execute('BEGIN IMMEDIATE')
+            for _ in range(300):
+                writer.execute('INSERT INTO strings(value) VALUES (hex(randomblob(3000)))')
+            done = self.run_cli('quota', 'show', '--json')
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn('locked', done.stderr)
+            writer.rollback()
+
     def test_lock_error_is_reported_under_database_with_exit_75(self):
         from tokenatlas.__main__ import main
         err = io.StringIO()

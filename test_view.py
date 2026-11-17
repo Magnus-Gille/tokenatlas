@@ -42,7 +42,7 @@ class ViewCLI(Base):
         self.assertEqual(self.current()['top'], 20)
         for preset in ('subscription', 'api-cost', 'minimal', 'full'):
             self.assertEqual(self.view('preset', preset)[0], 0)
-        self.assertEqual(self.current()['sections'][0], 'glance')
+        self.assertEqual(self.current()['sections'][0], 'answer')
         self.assertEqual(self.view('set', '--sections', '')[0], 0)
         self.assertEqual(self.current()['sections'], [])
 
@@ -56,7 +56,7 @@ class ViewCLI(Base):
         code, out, err = self.view('--json')
         self.assertEqual(code, 0, err)
         self.assertIn('warning:', err)
-        self.assertEqual(json.loads(out)['sections'][0], 'glance')
+        self.assertEqual(json.loads(out)['sections'][0], 'answer')
         warning = io.StringIO()
         with contextlib.redirect_stderr(warning):
             data = report.build_report([], {})

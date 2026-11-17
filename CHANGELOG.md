@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Fixed
+
+- Saved report views now cover the answer panel, the subscriptions view and the environment block as sections (`answer`, `subscriptions`, `environment`), so `view set --sections ''` and `view preset minimal` hide them. Answer-panel turn and project links only appear when their target is in the page (TOKEN-202).
+- `quota show` opens the history database read-only, so it no longer takes a write lock or migrates the schema and finishes while `collect` is writing (TOKEN-203).
+
 ### Added
 
 - Agent-facing `--json` receipts across reporting/configuration commands, including doctor, refresh, report, collect, rate, snapshot, import, open/show and upgrade. CLI JSON has a versioned `tokenatlas.<command>/1` schema. Existing `top` and `insights` field names are retained and documented in `docs/agents.md`; renaming/removing these fields requires a schema-version change and a breaking-change entry here.
