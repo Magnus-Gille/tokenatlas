@@ -676,7 +676,7 @@ def _main(argv=None):
                 if not isinstance(entry,dict) or set(entry)!={field.name for field in fields(cls)}:
                     raise ValueError(f'calculator {name} needs every documented field and no extras')
                 values[name]=cls(**entry)
-            print(json.dumps({'usage':{'emissions':calculate_emissions(**values)}},indent=2,sort_keys=True))
+            emit('calculate-emissions',{'usage':{'emissions':calculate_emissions(**values)}})
             return 0
         if args.command=='overhead':
             from tokenatlas import overhead as _overhead

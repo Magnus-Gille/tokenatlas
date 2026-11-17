@@ -97,6 +97,8 @@ EXAMPLES = {
     'view export': 'tokenatlas view export > my-view.json',
     'view import': 'tokenatlas view import my-view.json',
     'doctor': 'tokenatlas doctor --json',
+    'import-emissions': 'tokenatlas import-emissions /tmp/berget-emissions.jsonl --json',
+    'calculate-emissions': 'tokenatlas calculate-emissions /tmp/emissions-input.json',
 }
 
 # Descriptions for options which predate the agent-facing help contract.
