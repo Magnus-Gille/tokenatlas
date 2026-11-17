@@ -1654,7 +1654,7 @@ class ConcurrentCliTests(unittest.TestCase):
             writer.execute('BEGIN IMMEDIATE')
             for _ in range(300):  # enough dirty pages to spill: under a rollback journal this takes the exclusive lock
                 writer.execute('INSERT INTO strings(value) VALUES (hex(randomblob(3000)))')
-            for argv in (('insights', '--days', '30', '--json'), ('top', '--json'), ('overhead', '--json'),
+            for argv in (('insights', '--json'), ('top', '--json'), ('overhead', '--json'),
                          ('report', '--html', str(self.root / 'r.html'), '--private')):
                 done = self.run_cli(*argv)
                 self.assertEqual(done.returncode, 0, f'{argv}: {done.stderr}')
@@ -1665,9 +1665,9 @@ class ConcurrentCliTests(unittest.TestCase):
         from tokenatlas.__main__ import main
         err = io.StringIO()
         with patch('tokenatlas.history.History.__enter__', side_effect=sqlite3.OperationalError('database is locked')), \
-                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as raised:
-            main(['--db', str(self.db), 'insights', '--json'])
-        self.assertEqual(raised.exception.code, 75)
+                contextlib.redirect_stderr(err):
+            code = main(['--db', str(self.db), 'insights'])
+        self.assertEqual(code, 75)
         self.assertTrue(err.getvalue().startswith('database: database is locked'), err.getvalue())
         self.assertNotIn('usage:', err.getvalue())
 

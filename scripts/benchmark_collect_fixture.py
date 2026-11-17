@@ -132,7 +132,7 @@ def measure_collect(path):
                 raise RuntimeError('benchmark isolation failed: observation count changed')
             if name=='unchanged_collect':
                 result[name]['report_unchanged'] = before == report.stat().st_mtime_ns
-                result[name]['top_skipped'] = 'top: skipped: history revision' in out.getvalue()
+                result[name]['top_skipped'] = 'top: skipped: history revision' in err.getvalue()
                 path.with_name('unchanged-collect.log').write_text(out.getvalue()+err.getvalue(), encoding='utf-8')
     return result
 

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from tokenatlas.cli_contract import EXAMPLES, Parser, CLIError, NotFound, NoData, configure_json, emit, error, iso_date
 from tokenatlas import __version__
 from tokenatlas import progress, shared, statusline, usage_profiles
 from tokenatlas.terminal import terminal_safe
@@ -43,8 +44,8 @@ def parse_duration(text):
 def _open_in_browser(path):
     where=f'could not open a browser; the report is at {path}'
     try:opened=webbrowser.open(Path(path).resolve().as_uri())
-    except webbrowser.Error as exc:raise ValueError(f'{where} ({exc})') from exc
-    if not opened:raise ValueError(where)
+    except webbrowser.Error as exc:raise CLIError(f'{where} ({exc})',1) from exc
+    if not opened:raise CLIError(where,1)
 
 
 def _ago(seconds):
@@ -56,13 +57,17 @@ def _ago(seconds):
     return f'{seconds} s'
 
 
-def _show(path):
+def _show(path, print_path=False, json_mode=False):
     """Open an existing report as it is: the history is not opened, nothing is refreshed or rebuilt."""
-    if not path.is_file():raise ValueError(f'no report at {path.absolute()}; build one with: tokenatlas open')
+    if not path.is_file():raise NotFound(f'no report at {path.absolute()}; build one with: tokenatlas open')
     age=max(0.0,time.time()-path.stat().st_mtime)  # a file dated in the future reads as just built
+    if print_path or os.environ.get('TOKENATLAS_NO_BROWSER')=='1':
+        if json_mode:emit('show', {'html':str(path.absolute()), 'shown':False, 'age_seconds':int(age)})
+        else:print(path.absolute())
+        return 0
     _open_in_browser(path)
     print(f'Report: {path.absolute()} (built {_ago(age)} ago; tokenatlas open refreshes it)',file=sys.stderr)
-    print(json.dumps({'html':str(path.absolute()),'shown':True,'age_seconds':int(age)},indent=2,sort_keys=True))
+    emit('show', {'html':str(path.absolute()),'shown':True,'age_seconds':int(age)})
     return 0
 
 
@@ -398,8 +403,15 @@ def main(argv=None):
     outer=progress.current()
     collecting=gc.isenabled()
     gc.disable()  # a command builds a few hundred thousand long-lived dicts and then only reads them: every full collection would rescan them all (TOKEN-189)
+    raw=list(sys.argv[1:] if argv is None else argv)
+    rest=raw[2:] if raw[:1]==['--db'] else raw[1:] if raw[:1] and raw[0].startswith('--db=') else raw
+    command=rest[0] if rest and rest[0] in EXAMPLES else 'cli'
     try:
-        with shared.scope():return _main(argv)  # one command prices and loads once; collect keeps one scope over its steps
+        with shared.scope():return _main(raw)  # one command prices and loads once; collect keeps one scope over its steps
+    except ZoneInfoNotFoundError as exc:
+        return error(command,CLIError(f'Unknown IANA timezone: {exc}'), '--json' in raw)
+    except Exception as exc:
+        return error(getattr(exc, 'command', None) or command, exc, '--json' in raw)
     finally:
         if collecting:gc.enable()
         if outer is progress.NOOP:progress.stop()
@@ -416,22 +428,26 @@ def _main(argv=None):
     from tokenatlas.report import build_report, coverage_key, read_report_state, render_report, report_state, write_report
     if Path(sys.argv[0]).name.lower() in ('energy-monitor','energy-monitor.exe','energy-monitor-script.py'):
         print('energy-monitor is deprecated; use tokenatlas',file=sys.stderr)
-    parser=argparse.ArgumentParser(prog='tokenatlas',description='Local observed token history. Analytics are offline; only the explicit upgrade command contacts PyPI.')
+    parser=Parser(prog='tokenatlas',description='Local observed token history. Analytics are offline; only the explicit upgrade command contacts PyPI.')
     parser.add_argument('--version',action='version',version=f'%(prog)s {__version__}')
     parser.add_argument('--db',type=Path,help='History database; default $XDG_STATE_HOME/tokenatlas/history.sqlite3.')
     commands=parser.add_subparsers(dest='command',required=True)
+    from tokenatlas import view
+    view.add_parser(commands)
     refresh=commands.add_parser('refresh',help='Import changed files; preserve retained observations.')
     which=refresh.add_mutually_exclusive_group(required=True)
-    which.add_argument('--harness',choices=('claude','codex','pi','opencode'))
+    which.add_argument('--harness',choices=('claude','codex','pi','opencode'),help='Harness to import; required unless --all is given.')
     which.add_argument('--all',action='store_true',help='Refresh every harness from its default roots; missing ones are reported as absent.')
-    refresh.add_argument('--root',type=Path,help='Override the harness session directory (with --harness).')
+    refresh.add_argument('--root',type=Path,help='Override the harness session directory (with --harness); default the harness configured root.')
     opener=commands.add_parser('open',help='Refresh, build the report (private by default) and open it in the browser.')
     opener.add_argument('--html',type=Path,help=f'Report path; default: report.html next to the database ({_state_base()/"tokenatlas"/"report.html"}).')  # no migration side effect
     opener.add_argument('--shared',action='store_true',help='Pseudonymize the report instead of keeping project labels.')
-    opener.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='Report language; auto follows the browser (Swedish for sv, otherwise English).')
+    opener.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='Report language; auto uses the saved view language, then the browser (Swedish for sv, otherwise English).')
+    opener.add_argument('--no-browser',action='store_true',help='Print only the report path instead of launching a browser (also TOKENATLAS_NO_BROWSER=1). Omit --json for a plain path; --json returns a structured receipt instead.')
     opener.add_argument('--no-refresh',action='store_true',help='Use the saved history as it is.')
     shower=commands.add_parser('show',help='Open the latest report in the browser at once: no refresh, no rebuild (tokenatlas open refreshes it).')
     shower.add_argument('--html',type=Path,help=f'Report path; default: report.html next to the database ({_state_base()/"tokenatlas"/"report.html"}).')
+    shower.add_argument('--print-path',action='store_true',help='Print only the existing report path without launching a browser (also TOKENATLAS_NO_BROWSER=1). Omit --json for a plain path; --json returns a structured receipt instead.')
     snapshot=commands.add_parser('snapshot',help='Write a consistent private copy of the history database.')
     snapshot.add_argument('out',type=Path)
     importer=commands.add_parser('import',help="Merge another machine's snapshot into this database.")
@@ -442,8 +458,8 @@ def _main(argv=None):
     calculator=commands.add_parser('calculate-emissions',help='Calculate Berget-compatible emissions offline from explicit model, hardware, grid and request inputs.')
     calculator.add_argument('path',type=Path,help='JSON file with explicit model, hardware, grid and request objects.')
     report=commands.add_parser('report',help='Report saved observations without rereading source logs.')
-    report.add_argument('--start',help='Inclusive ISO timestamp; offset required.')
-    report.add_argument('--end',help='Exclusive ISO timestamp; offset required.')
+    report.add_argument('--start',help='Inclusive ISO 8601 date/time; no offset uses the command timezone (UTC for top/insights).')
+    report.add_argument('--end',help='Exclusive ISO 8601 date/time; no offset uses the command timezone (UTC for top/insights).')
     report.add_argument('--granularity',choices=('day','hour','minute'),default='day')
     report.add_argument('--timezone',default=DEFAULT_TIMEZONE)
     report.add_argument('--harness',choices=('claude','codex','pi','opencode'))
@@ -458,14 +474,14 @@ def _main(argv=None):
     report.add_argument('--private',action='store_true',help='Keep project labels and session IDs in HTML; default HTML uses pseudonyms.')
     report.add_argument('--if-changed',action='store_true',help='With --html: skip when the history revision matches the existing report.')
     report.add_argument('--max-age',help='With --html: skip when the existing report is younger than this (90s, 30m, 1h, 2d).')
-    report.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='With --html: report language; auto follows the browser (Swedish for sv, otherwise English).')
+    report.add_argument('--lang',choices=('auto','sv','en'),default='auto',help='With --html: report language; auto uses the saved view language, then the browser (Swedish for sv, otherwise English).')
     report.add_argument('--records',action='store_true',help='Include per-observation counters and source-file references. Reports contain private local paths.')
     for name,text in (('session','Show the session tree, per-model totals and outcomes for one root session.'),
                       ('rate','List threads of a session, or record an outcome rating for a unit.')):
         sub=commands.add_parser(name,help=text)
         sub.add_argument('id',help='Root session id, or harness:id when ambiguous.')
         sub.add_argument('--outcomes',type=Path,help='Outcomes JSONL; default outcomes.jsonl next to the database.')
-        sub.add_argument('--prices',type=Path,help='Override the price table.')
+        sub.add_argument('--prices',type=Path,help='Price table JSON; default the packaged price table.')
         if name=='session':
             sub.add_argument('--json',action='store_true')
             sub.add_argument('--no-infer',action='store_true',help='Do not link headless children by time and cwd.')
@@ -475,21 +491,21 @@ def _main(argv=None):
     top=commands.add_parser('top',help='Rank the most expensive turns: an initiating input plus everything it caused, including follow-up inputs and subagent work.')
     top.add_argument('-n','--limit',type=int,default=10)
     top.add_argument('--by',choices=('cost','tokens'),default='cost')
-    top.add_argument('--start',help='Inclusive ISO timestamp; offset required.')
-    top.add_argument('--end',help='Exclusive ISO timestamp; offset required.')
+    top.add_argument('--start',help='Inclusive ISO 8601 date/time; no offset uses the command timezone (UTC for top/insights).')
+    top.add_argument('--end',help='Exclusive ISO 8601 date/time; no offset uses the command timezone (UTC for top/insights).')
     top.add_argument('--harness',choices=('claude','codex','pi','opencode'))
     top.add_argument('--project',help='A project: its id, a saved directory or its label (worktrees and subdirectories roll up to their repository).')
     top.add_argument('--plan',help='Canonical subscription plan label to include (case-insensitive; use unknown for missing metadata).')
-    top.add_argument('--prices',type=Path,help='Override the price table.')
+    top.add_argument('--prices',type=Path,help='Price table JSON; default the packaged price table.')
     top.add_argument('--json',action='store_true')
     top.add_argument('--keep-text',action='store_true',help='Store the text and context of the current global top -n turns in top-prompts.json next to the history (0600).')
     top.add_argument('--forget-text',action='store_true',help='Delete the stored prompt text.')
     top.add_argument('--with-text',action='store_true',help='With --json: include stored text and turn context.')
     facts=commands.add_parser('insights',help='Cost facts: deterministic list-price statements computed from the saved observations (no language model, no interpretation).')
     facts.add_argument('--days',type=int,help='Only the last N days (default: all history).')
-    facts.add_argument('--start',help='Inclusive ISO timestamp; offset required.')
-    facts.add_argument('--end',help='Exclusive ISO timestamp; offset required.')
-    facts.add_argument('--prices',type=Path,help='Override the price table.')
+    facts.add_argument('--start',help='Inclusive ISO 8601 date/time; no offset uses the command timezone (UTC for top/insights).')
+    facts.add_argument('--end',help='Exclusive ISO 8601 date/time; no offset uses the command timezone (UTC for top/insights).')
+    facts.add_argument('--prices',type=Path,help='Price table JSON; default the packaged price table.')
     facts.add_argument('--json',action='store_true')
     facts.add_argument('--timezone',default='UTC',help='Timezone label for token-efficiency evidence (ISO boundaries retain their explicit offsets).')
     facts.add_argument('--top-projects',type=int,default=20,help='Number of projects listed by cost (0 = all).')
@@ -566,6 +582,8 @@ def _main(argv=None):
     provider_sub.add_parser('show',help='Show configured local provider names.')
     doctor=commands.add_parser('doctor',help='Show source availability, import errors and known coverage limits.')
     doctor.add_argument('--prices',type=Path,help='Override the price table used for coverage diagnostics.')
+    parser.set_defaults(json=False)
+    configure_json(parser)
     args=parser.parse_args(argv)
     if args.command=='top' and args.plan is not None:
         args.plan=subscriptions._plan(args.plan)
@@ -580,11 +598,12 @@ def _main(argv=None):
             from tokenatlas import schedule as _schedule
             return _schedule.run(args)
         except (OSError,ValueError) as exc:
-            parser.exit(2,f'usage: {terminal_safe(exc)}\n')
+            raise
     if args.command=='show':  # before default_db(): show never touches the history, not even its one-time directory move
-        try:return _show(Path(args.html or (args.db.expanduser().parent if args.db else _state_base()/'tokenatlas')/'report.html').expanduser())
-        except (OSError,ValueError) as exc:parser.exit(2,f'usage: {terminal_safe(exc)}\n')
+        try:return _show(Path(args.html or (args.db.expanduser().parent if args.db else _state_base()/'tokenatlas')/'report.html').expanduser(),args.print_path,args.json)
+        except (OSError,ValueError) as exc:raise
     if args.db is None:args.db=default_db()
+    if args.command=='view':return view.run(args)
     if args.command in ('plan','profile'):
         from tokenatlas import usage_profiles
         try:
@@ -606,8 +625,8 @@ def _main(argv=None):
                 elif args.provider_action=='remove':
                     data['local_providers']=[x for x in data.get('local_providers',[]) if x.lower()!=args.name.strip().lower()]
                     data=usage_profiles.save(args.db,data)
-        except (OSError,ValueError) as exc:parser.exit(2,f'usage: {terminal_safe(exc)}\n')
-        print(json.dumps(data,indent=2,sort_keys=True));return 0
+        except (OSError,ValueError) as exc:raise
+        emit(args.command,data);return 0
     slow=args.command in ('refresh','open','report','top','insights','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead'
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout
@@ -631,9 +650,7 @@ def _main(argv=None):
             for name in ('start','end'):
                 value=getattr(args,name)
                 if value:
-                    parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
-                    if parsed.tzinfo is None:
-                        raise ValueError(f'--{name} needs a timezone offset')
+                    parsed=iso_date(value,name,getattr(args,'timezone','UTC'))
                     if name=='start':start=parsed
                     else:end=parsed
             if start and end and start>=end:raise ValueError('--start must precede --end')
@@ -659,7 +676,7 @@ def _main(argv=None):
                 if not isinstance(entry,dict) or set(entry)!={field.name for field in fields(cls)}:
                     raise ValueError(f'calculator {name} needs every documented field and no extras')
                 values[name]=cls(**entry)
-            print(json.dumps({'usage':{'emissions':calculate_emissions(**values)}},indent=2,sort_keys=True))
+            emit('calculate-emissions',{'usage':{'emissions':calculate_emissions(**values)}})
             return 0
         if args.command=='overhead':
             from tokenatlas import overhead as _overhead
@@ -692,14 +709,15 @@ def _main(argv=None):
                             return budget.over_cap(auto,manual,records,table,{k for k,v in shares.items() if v['label'] in ('observed','estimate','range')})
                         return budget.run(args,args.db,cached_records,lambda:cache['table'] if 'table' in cache else pricing.load_prices(),_printing(done),automatic,over_cap) or 0
                 return budget.run(args,args.db,None,pricing.load_prices,_printing(done)) or 0
-            if not args.db.expanduser().is_file():raise ValueError('history database does not exist; run refresh first')
+            if not args.db.expanduser().is_file():raise NotFound('history database does not exist; run refresh first')
             with History(args.db) as history:
                 history.connection.execute('BEGIN')
                 return budget.run(args,args.db,lambda:_plan_history(history)[0],pricing.load_prices,_printing(done)) or 0
         if args.command not in ('refresh','import','open') and not args.db.expanduser().is_file():
-            raise ValueError('history database does not exist; run refresh first')
+            raise NotFound('history database does not exist; run refresh first')
         if args.command=='rate' and (args.unit or args.thread or args.outcome) and not (args.unit and args.thread and args.outcome):
             raise ValueError('rating needs --unit, --thread and --outcome')
+        if args.command=='import' and not args.snapshot.expanduser().is_file():raise NotFound(f'snapshot not found: {args.snapshot}')
         read_only = (args.command in ('report', 'insights', 'session', 'doctor')
                      or args.command == 'top' and not args.keep_text and not args.forget_text
                      or args.command == 'quota' and args.quota == 'show')
@@ -716,10 +734,13 @@ def _main(argv=None):
                     eff=sessions.efficiency(result,rated) if rated else None
                     if args.json:
                         result['efficiency']=eff;result['prices_retrieved']=retrieved
-                        print(json.dumps(result,indent=2,sort_keys=True))
+                        emit(args.command,result)
                     else:print(sessions.render(result,eff,retrieved))
                 elif not args.unit:
                     threads=[n for n in sessions.iter_nodes(result['root']) if n is not result['root']]
+                    if args.json:
+                        emit('rate',{'root_session':result['root']['id'],'threads':[dict(key=sessions.thread_key(n),models=n['models'],tokens=sessions._tokens(n),cost=n['cost']) for n in threads]})
+                        return 0
                     if not threads:
                         print('no rateable threads: the root thread is coordination, not a unit of work',file=sys.stderr)
                     for node in threads:
@@ -728,12 +749,12 @@ def _main(argv=None):
                 else:
                     keys={sessions.thread_key(n) for n in sessions.iter_nodes(result['root']) if n is not result['root']}
                     for key in args.thread:
-                        if key not in keys:raise ValueError(f'unknown thread {key!r}; run rate {args.id} to list threads')
+                        if key not in keys:raise NotFound(f'unknown thread {key!r}; run rate {args.id} to list threads')
                     line={'v':1,'root_session':result['root']['id'],'unit':args.unit,
                           'threads':[sessions._thread_of_key(k) for k in args.thread],'outcome':args.outcome,
                           'note':args.note,'ts':datetime.now(ZoneInfo('UTC')).strftime('%Y-%m-%dT%H:%M:%SZ')}
                     sessions.append_outcome(path,line)
-                    print(json.dumps(line,sort_keys=True))
+                    emit('rate',line)
                 return 0
             if args.command=='open':
                 path=_output_path(path,args.db)  # the database may have just been created under a case alias
@@ -746,6 +767,8 @@ def _main(argv=None):
                     profile=_usage_profile(args.db)
                     spec=_spec('redacted' if args.shared else 'local',DEFAULT_TIMEZONE,'day',{},args.lang)
                     spec['usage_profile']=profile
+                    saved_view=view.load(args.db)
+                    spec['view']=view.for_report(saved_view,redact=args.shared)
                     budget_token=_budget_token(args.db)
                     if budget_token:spec['budget_token']=budget_token
                     if not args.shared:spec['dest']=str(path.absolute())  # a private report names its file: a moved copy is rebuilt, never reused
@@ -761,13 +784,17 @@ def _main(argv=None):
                     texts,ctx=_visible(history,args.db,records,assigned=assigned,table=table) if not args.shared else (None,None)
                     budgets=_budgets(args.db,table,lambda:records)
                     with progress.step('Limit hits'):hits_all=_hits(history,records,events,assigned)  # one read of the limit events serves the hits and the quota windows
-                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned,profile=profile)
+                    payload=build_report(records,source_status,DEFAULT_TIMEZONE,redact=args.shared,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=None if args.shared else _counts(ctx),limit_hits=hits_all,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=assigned,profile=profile,view=saved_view)
                     payload['initial_granularity']='day'
                     if not args.shared:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db,always=True))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
                     result={'html':str(path.resolve()),'observations':len(records),'privacy':payload['privacy']}
-                with progress.step('Open browser'):_open_in_browser(path)
+                no_browser=args.no_browser or os.environ.get('TOKENATLAS_NO_BROWSER')=='1'
+                if not no_browser:
+                    with progress.step('Open browser'):_open_in_browser(path)
                 done()
+                if no_browser and not args.json:
+                    print(path.absolute());return 0
                 print(f'Report: {path.absolute()} (reopen any time with: {_reopen(path,args.db,always=True)})',file=sys.stderr)
             elif args.command=='refresh' and args.all:
                 result=refresh_all(history)
@@ -796,7 +823,7 @@ def _main(argv=None):
                 if args.forget_text:
                     prompt_store.forget(store)
                     done()
-                    print(json.dumps({'forgotten':str(store)}));return 0
+                    emit('top',{'forgotten':str(store)});return 0
                 table=shared.call(pricing.load_prices,args.prices)
                 with progress.step('Read history'):everything,events=_plan_history(history)  # resolve inheritance on the whole history before filters choose contributing rows
                 assigned=shared.call(prompts.assign_prompts,everything)
@@ -810,6 +837,7 @@ def _main(argv=None):
                     global_ranked=shared.call(prompts.top_prompts,everything,table,args.limit,args.by,assigned=assigned)
                     result=global_ranked if not filtered else prompts.top_prompts(everything,table,args.limit,args.by,keep,assigned=assigned)
                 kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths(),ranked=global_ranked,assigned=assigned,revision=history.revision,history_token=history.revision_token,prices=budget.table_id(table)) if args.keep_text else None
+                if not selected:raise NoData()  # after the store refresh: the stored text follows the global ranking, not the filters
                 with progress.step('Limit hits'):hits=shared.call(limits.limit_hits,everything,events,table,assigned=assigned)  # windows come from the whole history; the CLI filters then pick the hits
                 all_hits=hits
                 if filtered:hits=limits.scope_hits(hits,selected,args.harness,start,end,args.project,universe=everything,assigned=assigned)
@@ -849,6 +877,7 @@ def _main(argv=None):
                                   if (start is None or prompts._t(record['ts']) >= start)
                                   and (end is None or prompts._t(record['ts']) < end)]
                 selected=[everything[index] for index in selected_indices]
+                if not selected:raise NoData()
                 selected_assigned=[assigned[index] for index in selected_indices]
                 result['subscriptions']=subscriptions.plan_facts(selected,table,assigned=selected_assigned)
                 # Bind evidence to retained collection state, not export time.
@@ -916,6 +945,8 @@ def _main(argv=None):
                         profile=_usage_profile(args.db)
                         spec=_spec('local' if args.private else 'redacted',args.timezone,args.granularity,vars(args),args.lang)
                         spec['usage_profile']=profile
+                        saved_view=view.load(args.db)
+                        spec['view']=view.for_report(saved_view,redact=not args.private)
                         budget_token=_budget_token(args.db)
                         if budget_token:spec['budget_token']=budget_token
                         if args.private:spec['dest']=str(path.absolute())  # as in open: a private report names its file
@@ -929,11 +960,12 @@ def _main(argv=None):
                                 'too recent' if max_age is not None and found is not None and found[0]==state[0] and 0<=age<max_age else None)
                         if reason:
                             done()
-                            print(json.dumps({'html':str(path.resolve()),'skipped':True,'reason':reason}))
+                            emit('report',{'html':str(path.resolve()),'skipped':True,'reason':reason})
                             print(f'Report: {path.absolute()} (unchanged)',file=sys.stderr)
                             return 0
                 with progress.step('Read history'):
                     filters={key:getattr(args,key) for key in ('model','effort','provider','agent')}
+                    events=[]
                     if args.html or args.project is not None:  # a --project value is mapped over the whole history: its directories may sit outside the selected period
                         universe,events=_plan_history(history)
                         args.project=_project_arg(history,args.project)
@@ -945,6 +977,15 @@ def _main(argv=None):
                         args.project=_project_arg(history,args.project)
                         records=[row for row in records if (args.project is None or row.get('project_id')==args.project) and all(value is None or row.get(key) == value for key,value in filters.items())]
                         universe=records
+                if args.html:
+                    filtered=any(getattr(args,key) is not None for key in ('start','end','harness','project','session','turn','model','effort','provider','agent'))
+                    assigned=shared.call(prompts.assign_prompts,records) if not filtered else prompts.assign_prompts(records)
+                    whole_assigned=shared.call(prompts.assign_prompts,universe) if filtered else assigned
+                    table=shared.call(pricing.load_prices,None)
+                    with progress.step('Limit hits'):hits_all=_hits(history,universe,events,whole_assigned)
+                    scoped=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe,assigned=whole_assigned)
+                if not records and any(getattr(args,key) is not None for key in FILTERS):
+                    if not args.html or not scoped:raise NoData()
                 # The HTML path prints only a short receipt, so skip the (costly) JSON summary there.
                 if args.html:result={}
                 else:
@@ -953,15 +994,9 @@ def _main(argv=None):
                 result['source_status']=source_status
                 if args.records:result['records']=records
                 if args.html:
-                    filtered=any(getattr(args,key) is not None for key in ('start','end','harness','project','session','turn','model','effort','provider','agent'))
-                    assigned=shared.call(prompts.assign_prompts,records) if not filtered else prompts.assign_prompts(records)
-                    whole_assigned=shared.call(prompts.assign_prompts,universe) if filtered else assigned
-                    table=shared.call(pricing.load_prices,None)
                     texts,ctx=_visible(history,args.db,universe,assigned=whole_assigned,table=table) if args.private else (None,None)
                     budgets=_budgets(args.db,table,lambda:universe)
-                    with progress.step('Limit hits'):hits_all=_hits(history,universe,events,whole_assigned)
-                    scoped=limits.scope_hits(hits_all,records,args.harness,start,end,args.project,args.session,args.turn,args.model,args.effort,args.provider,args.agent,universe,assigned=whole_assigned)
-                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile)
+                    payload=build_report(records,source_status,args.timezone,redact=not args.private,prompt_texts=texts,table=table,lang=args.lang,prompt_context=ctx,prompt_inputs=_counts(ctx) if args.private else None,limit_hits=scoped,universe=universe if filtered else None,all_hits=hits_all,quota_events=events,claude_quota=_claude_quota(args.db),budgets=budgets,assigned=assigned,whole_assigned=whole_assigned,profile=profile,view=saved_view)
                     payload['initial_granularity']=args.granularity
                     if args.private:payload.update(saved_at=str(path.absolute()),reopen=_reopen(path,args.db))  # private only: a shared report never carries a local path
                     with progress.step('Render and write report'):write_report(path,render_report(payload,state=state))
@@ -970,12 +1005,23 @@ def _main(argv=None):
                     result={'html':str(path.resolve()),'observations':len(records),
                             'privacy':payload['privacy'],'billing_verified':False,'coverage_complete':False}
         done()
-        print(json.dumps(result,indent=2,sort_keys=True))
-        return 0 if args.command!='refresh' or result['status']=='ok' else 2
+        if args.command=='refresh' and result['status']!='ok':
+            entries=result.get('harnesses',result.get('roots',[result]))
+            sources=[source for entry in entries for source in entry.get('roots',[entry])]
+            missing=[source for source in sources if source.get('status')=='missing']
+            only_absent=missing and all(source.get('root') and not Path(source['root']).exists() for source in missing)
+            status=3 if result.get('status')=='missing' and only_absent and all(source.get('status') in ('ok','absent','missing') for source in sources) else 1
+            exc=CLIError('Some sources could not be refreshed.',status,'Inspect source statuses; run tokenatlas doctor --json.')
+            exc.details=result
+            if args.json:raise exc
+            emit(args.command,result)
+            return error('refresh',exc,False)
+        emit(args.command,result)
+        return 0
     except (OSError,ValueError,sqlite3.Error,ZoneInfoNotFoundError) as exc:
         if is_lock_error(exc):
-            parser.exit(75, f'database: {terminal_safe(exc)}\n')
-        parser.exit(2,f'usage: {terminal_safe(exc)}\n')
+            raise CLIError(f'database: {exc}',75,'Another tokenatlas process holds the database; retry shortly.') from exc
+        raise
 
 
 if __name__=='__main__':raise SystemExit(main())

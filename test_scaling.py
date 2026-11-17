@@ -145,7 +145,7 @@ class ScalingTest(unittest.TestCase):
 
     def test_collect_logs_the_history_size_next_to_the_timing(self):
         import io, re, tempfile
-        from contextlib import redirect_stdout
+        from contextlib import redirect_stderr
         from pathlib import Path
         from tokenatlas import collect
         from tokenatlas.history import History
@@ -165,7 +165,7 @@ class ScalingTest(unittest.TestCase):
             created = {p.name for p in Path(d).iterdir()}
             self.assertFalse({n for n in created if not (n.startswith('history.sqlite3') or any(n.startswith(x) for x in names))}, 'a probe opened another file')
             out = io.StringIO()
-            with redirect_stdout(out):
+            with redirect_stderr(out):  # collect logs to stderr so it never contaminates JSON
                 collect._step('probe', lambda: 0, db)
             self.assertRegex(out.getvalue(), r'probe exit=0 \(\d+\.\ds\) requests=0')
 

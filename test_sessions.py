@@ -401,15 +401,15 @@ class CliTests(unittest.TestCase):
         self.assertFalse(outcomes.exists())
         printed = self.run_main('rate', 'S', '--unit', 'u1', '--thread', 'claude:agent:a1', '--outcome', 'pass', '--note', 'ok')
         saved = json.loads(outcomes.read_text())
-        self.assertEqual(json.loads(printed), saved)
+        self.assertEqual(json.loads(printed), dict(saved,schema='tokenatlas.rate/1'))
         self.assertEqual((saved['v'], saved['root_session'], saved['outcome'], saved['note']), (1, 'S', 'pass', 'ok'))
         self.assertEqual(saved['threads'], [{'harness': 'claude', 'agent_id': 'a1'}])
         if os.name != 'nt':  # Windows has no POSIX permission bits
             self.assertEqual(stat.S_IMODE(outcomes.stat().st_mode), 0o600)
         self.assertIn('pass', self.run_main('session', 'S'))
-        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
-            main(['--db', str(self.db), 'rate', 'S', '--unit', 'u2', '--thread', 'claude:agent:zzz', '--outcome', 'pass'])
-        self.assertEqual(cm.exception.code, 2)
+        with redirect_stdout(io.StringIO()):
+            code=main(['--db', str(self.db), 'rate', 'S', '--unit', 'u2', '--thread', 'claude:agent:zzz', '--outcome', 'pass'])
+        self.assertEqual(code, 3)
         self.assertEqual(len(outcomes.read_text().splitlines()), 1)
 
 

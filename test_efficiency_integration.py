@@ -121,7 +121,7 @@ class EfficiencyCLI(Base):
         path = self.claude()
         with path.open('a') as stream:stream.write('{malformed\n')
         with patch('tokenatlas.history.utcnow', return_value='2026-09-04T12:00:00Z'):
-            self.assertEqual(self.run_cli('refresh', '--harness', 'claude')[0], 2)
+            self.assertEqual(self.run_cli('refresh', '--harness', 'claude')[0], 1)
         code, out, err = self.run_cli('insights', '--json')
         self.assertEqual(code, 0, err)
         evidence = json.loads(out)['token_efficiency']

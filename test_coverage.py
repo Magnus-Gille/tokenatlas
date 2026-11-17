@@ -94,7 +94,7 @@ class CoworkTests(unittest.TestCase):
         bad.write_text(bad.read_text() + '{"broken\n')
         code, out, _ = run('--db', str(self.db), 'refresh', '--harness', 'claude')
         result = json.loads(out)
-        self.assertEqual((code, result['status']), (2, 'partial'))
+        self.assertEqual((code, result['status']), (1, 'partial'))
         self.assertEqual([r['status'] for r in result['roots']], ['ok', 'partial'])
         self.assertEqual(result['malformed_lines'], 1)
 
@@ -102,7 +102,7 @@ class CoworkTests(unittest.TestCase):
         self.session()
         code, out, _ = run('--db', str(self.db), 'refresh', '--harness', 'claude')
         result = json.loads(out)
-        self.assertEqual((code, result['status']), (2, 'missing'))
+        self.assertEqual((code, result['status']), (3, 'missing'))
         self.assertEqual([r['status'] for r in result['roots']], ['missing', 'ok'])
 
     def test_absent_cowork_base_is_skipped_and_single_root_output_unchanged(self):
