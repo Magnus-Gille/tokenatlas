@@ -13,7 +13,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from tokenatlas import __version__, progress
+from tokenatlas import __version__, progress, shared
 from tokenatlas import budget, credits as credit_rates, energy, insights, limits, pricing, prompts, quota_share, quota_status, usage_profiles
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
@@ -228,6 +228,205 @@ def _usage_payload(records, rows, assigned, shown, prompt_texts, prompt_context,
     return dict(source_keys=clients, local_rows=local_rows, cloud_references=cloud_references, plans=plans, groups=list(groups.values()))
 
 
+MERGE_MS = 60 * 1000  # requests merge within one local minute: the page's finest time grain, so every chart and bucket stays exact
+
+
+def _shallow(report):
+    """A copy of the report whose containers compact_rows rewrites are new objects (the caller's payload is left as it was)."""
+    out = dict(report)
+    c = out['columns'] = dict(report['columns'])
+    c['idx'], c['tokens'] = dict(c['idx']), dict(c['tokens'])
+    if isinstance(c.get('environment'), dict):
+        c['environment'] = dict(c['environment'])
+    if isinstance(report.get('usage'), dict):
+        u = out['usage'] = dict(report['usage'])
+        u['plans'] = [dict(p) for p in u.get('plans') or ()]
+        u['groups'] = [dict(g, turns=[dict(t) for t in g.get('turns') or ()]) for g in u.get('groups') or ()]
+    if isinstance(report.get('analytics_metadata'), dict):
+        m = out['analytics_metadata'] = dict(report['analytics_metadata'])
+        if isinstance(m.get('request_meta'), dict):
+            m['request_meta'] = dict(m['request_meta'], idx=dict(m['request_meta'].get('idx') or {}))
+        if isinstance(m.get('efficiency'), dict):
+            m['efficiency'] = dict(m['efficiency'])
+    return out
+
+
+def compact_rows(report):
+    """Merge the requests of one turn in one local minute that agree on every field the page filters, prices or lists them by (TOKEN-188).
+
+    The page carries one row per group with `n` (requests) and `span` (ms from its first to its last request); its `inflate` gives each
+    group back n rows that share the group's token sums (whole tokens, the remainder on the first rows) and spread its time span, before
+    anything else reads the data. Totals, costs, counts, filters, the day, hour and minute series and every per-turn figure are therefore exact;
+    within one turn-minute the per-request split is an even one, and request ids are not carried. Every row-index list in the payload
+    (`usage.local_rows`, plan and work rows, environment rows) is rewritten to group indexes; membership is part of the merge key, so a
+    group is always wholly in or out of a list."""
+    report = _shallow(report)
+    c = report['columns']
+    n = c['n']
+    if not n:
+        c.update(requests=[], span=[], id=[], id_prefix=None)
+        return report
+    usage = report.get('usage') or {}
+    meta = report.get('analytics_metadata') or {}
+    request_meta = (meta.get('request_meta') or {}).get('idx') or {}
+    efficiency = meta.get('efficiency') or {}
+    lists = []  # (holder dict, key) of every row-index list
+    if isinstance(usage.get('local_rows'), list):
+        lists.append((usage, 'local_rows'))
+    for plan in usage.get('plans') or ():
+        lists.append((plan, 'rows'))
+    for group in usage.get('groups') or ():
+        lists.append((group, 'rows'))
+        for turn in group.get('turns') or ():
+            lists.append((turn, 'rows'))
+    member = [[] for _ in range(n)]
+    for number, (holder, key) in enumerate(lists):
+        for i in holder[key]:
+            member[i].append(number)
+    environment = c.get('environment') or {}
+    own = set(environment.get('rows') or ())  # a Berget estimate is per request: never merged
+    ms, now = [], 0
+    for delta in c['ts']:
+        now += delta
+        ms.append(now)
+    offsets = c['dict']['off']
+    ROW_COLUMNS = [k for k in ('prompt', 'price', 'credit', 'complete', 'interrupted', 'id_synthetic') if isinstance(c.get(k), list)]
+    per_row = [c['idx'][k] for k in c['idx'] if k != 'off'] + [c[k] for k in ROW_COLUMNS]
+    per_row += [v for v in request_meta.values() if isinstance(v, list)] + [v for v in efficiency.values() if isinstance(v, list) and len(v) == n]
+    if isinstance(usage.get('source_keys'), list):
+        per_row.append(usage['source_keys'])
+    tokens = c['tokens']
+    fields = list(tokens)
+    groups, order, of = {}, [], [0] * n
+    for i in range(n):
+        off = offsets[c['idx']['off'][i]]
+        key = (i,) if i in own else (
+            c['idx']['off'][i], (ms[i] + off * 60000) // MERGE_MS, tuple(column[i] for column in per_row),
+            tuple(tokens[f][i] is None for f in fields), tuple(member[i]))
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = len(order)
+            order.append(i)
+        of[i] = g
+    count = len(order)
+    sizes, first, last = [0] * count, [None] * count, [0] * count
+    sums = {f: [None if tokens[f][i] is None else 0 for i in order] for f in fields}
+    cw1h, zeros = [0] * count, [0] * n
+    for i in range(n):
+        g = of[i]
+        sizes[g] += 1
+        if first[g] is None:
+            first[g] = ms[i]
+        last[g] = ms[i]
+        for f in fields:
+            v = tokens[f][i]
+            if v is not None:
+                sums[f][g] += v
+        cw1h[g] += (c.get('cw1h') or zeros)[i] or 0
+    pick = lambda column: [column[i] for i in order]
+    starts = first
+    c['ts'] = [b - a for a, b in zip([0] + starts, starts)]
+    c['span'] = [b - a for a, b in zip(first, last)]
+    c['n'] = count  # rows in the arrays; the page's inflate turns them back into sum(requests) rows
+    c['requests'] = sizes
+    c['id'] = []
+    c['id_prefix'] = None
+    for k in list(c['idx']):
+        c['idx'][k] = pick(c['idx'][k])
+    for k in ROW_COLUMNS:
+        c[k] = pick(c[k])
+    c['cw1h'] = cw1h
+    c['tokens'] = sums
+    for k, v in list(request_meta.items()):
+        if isinstance(v, list):
+            request_meta[k] = pick(v)
+    for k, v in list(efficiency.items()):
+        if isinstance(v, list) and len(v) == n:
+            efficiency[k] = pick(v)
+    if isinstance(usage.get('source_keys'), list):
+        usage['source_keys'] = pick(usage['source_keys'])
+    for holder, key in lists:
+        seen, out = set(), []
+        for i in holder[key]:
+            if of[i] not in seen:
+                seen.add(of[i])
+                out.append(of[i])
+        holder[key] = out
+    if environment.get('rows'):
+        environment['rows'] = [of[i] for i in environment['rows']]
+    return report
+
+
+def inflate_rows(report):
+    """Python twin of the page's inflate(): a compacted payload (compact_rows) back to one row per request, in place; returns it."""
+    c = report.get('columns') or {}
+    if not isinstance(c.get('requests'), list):
+        return report
+    if len(c['requests']) != c['n']:  # rebuilt row by row (a per-request payload): nothing to inflate
+        c.pop('requests', None)
+        c.pop('span', None)
+        return report
+    counts, groups = c['requests'], c['n']
+    start, total = [], 0
+    for size in counts:
+        start.append(total)
+        total += size
+    rep = lambda a: [a[j] for j in range(groups) for _ in range(counts[j])] if isinstance(a, list) else a
+    def split(a):
+        if not isinstance(a, list):
+            return a
+        out = []
+        for j in range(groups):
+            v, m = a[j], counts[j]
+            if v is None:
+                out.extend([None] * m)
+            else:
+                base, rest = divmod(v, m)
+                out.extend(base + (1 if k < rest else 0) for k in range(m))
+        return out
+    rows = lambda a: [k for j in a for k in range(start[j], start[j] + counts[j])] if isinstance(a, list) else a
+    ts, prev, ms = [], 0, 0
+    for j in range(groups):
+        ms += c['ts'][j]
+        m, span = counts[j], (c.get('span') or [0] * groups)[j] or 0
+        for k in range(m):
+            at = ms + (round(span * k / (m - 1)) if m > 1 else 0)
+            ts.append(at - prev)
+            prev = at
+    for k in list(c['idx']):
+        c['idx'][k] = rep(c['idx'][k])
+    for k in list(c['tokens']):
+        c['tokens'][k] = split(c['tokens'][k])
+    for k in ('prompt', 'price', 'credit', 'complete', 'interrupted', 'id_synthetic'):
+        if k in c:
+            c[k] = rep(c[k])
+    c['cw1h'], c['ts'], c['id'], c['id_prefix'] = split(c['cw1h']), ts, [None] * total, None
+    if isinstance(c.get('environment'), dict) and isinstance(c['environment'].get('rows'), list):
+        c['environment']['rows'] = [start[j] for j in c['environment']['rows']]
+    usage = report.get('usage')
+    if isinstance(usage, dict):
+        usage['source_keys'] = rep(usage.get('source_keys'))
+        usage['local_rows'] = rows(usage.get('local_rows'))
+        for plan in usage.get('plans') or ():
+            plan['rows'] = rows(plan['rows'])
+        for group in usage.get('groups') or ():
+            group['rows'] = rows(group['rows'])
+            for turn in group.get('turns') or ():
+                turn['rows'] = rows(turn['rows'])
+    meta = report.get('analytics_metadata')
+    if isinstance(meta, dict):
+        idx = (meta.get('request_meta') or {}).get('idx') or {}
+        for k in list(idx):
+            idx[k] = rep(idx[k])
+        for k, v in list((meta.get('efficiency') or {}).items()):
+            if isinstance(v, list) and len(v) == groups:
+                meta['efficiency'][k] = rep(v)
+    c['n'] = total
+    c.pop('requests', None)
+    c.pop('span', None)
+    return report
+
+
 _ENV_NUMERIC = ('co2e_grams', 'energy_kwh')
 _ENV_COMPONENTS = ('operational', 'embodied')
 
@@ -298,6 +497,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     table = table or pricing.load_prices()
     credit_table = credit_table or credit_rates.packaged()
     zone = ZoneInfo(timezone_name)
+    given, given_assigned = records, assigned
     original_records = list(records or ())
     original_assigned = None if assigned is None else {_record_key(record): value for record, value in zip(original_records, assigned)}
     records, annotated_universe, quota_events = _annotate_records(original_records, universe, quota_events or ())
@@ -307,6 +507,10 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     records = sorted(records, key=lambda r: (r['ts'], r['harness'], r['id']))
     if assignment_by_row is not None:assigned = [assignment_by_row[_record_key(r)] for r in records]
     del assignment_by_row
+    if isinstance(given, list) and len(given) == len(records) and all(a is b for a, b in zip(records, given)):
+        records = given  # the caller's own list, already annotated and in order: results shared with collect's top step stay reusable (TOKEN-189)
+        if given_assigned is not None:
+            assigned = given_assigned
     is_public_model = public_model_checker(pricing.load_prices(), credit_rates.packaged()) if redact else None  # the packaged tables, never a caller-supplied one: they decide what is public
     aliases = {}
     def alias(kind, value):
@@ -317,8 +521,12 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
             table[value] = (f'\x01{CODES[kind]}{len(table) + 1:03d}' if kind in CODES
                             else f'{kind} {len(table) + 1:03d}')
         return table[value]
-    projects = sorted({r.get('project_id') for r in records if r.get('project_id')})
-    labels = {key: Path(key).name.lstrip('\x01') or PROJECT for key in projects}
+    named = {}
+    for r in records:  # the resolved project's label (projects.py) when the records carry one, else the directory's name
+        if r.get('project_id') and r['project_id'] not in named:
+            named[r['project_id']] = r.get('project_label') if 'project_path' in r and r.get('project_label') else None
+    projects = sorted(named)
+    labels = {key: (named[key] or Path(key).name).lstrip('\x01') or PROJECT for key in projects}
     counts, seen = Counter(labels.values()), Counter()
     for key in projects:
         label = labels[key]
@@ -399,7 +607,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
                 fact['label'] = safe
     # one captured `now` is the exclusive end of the 30-day window: later-dated observations are not 'the last 30 days'
     with progress.step('Quota shares and cost insights'):
-        snapshots = quota_share.snapshots_from_records(whole, whole_assigned, quota_events or (), claude=claude_quota) if quota else []  # one per window per request that carries a quota
+        snapshots = shared.call(quota_share.snapshots_from_records, whole, whole_assigned, quota_events or (), claude=claude_quota) if quota else []  # one per window per request that carries a quota
         if quota:
             status_rows = quota_status.collect(whole, quota_events or (), claude=claude_quota, now=now, snapshots=snapshots)
         else:
@@ -517,7 +725,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
             report.update(_quota_payload(shares or {}, quota_share.windows(snapshots, last=4, records=whole, cost_of=cost_of, hits=limit_hits if all_hits is None else all_hits), shown, metadata, lambda name: alias('limit', name) if redact else name))  # a limit id is pseudonymized whatever it looks like
     with progress.step('Automatic budgets and calibration'):
         if not redact:  # a shared report has no calibrated share, manual or automatic: with the turn costs it would give the budget (the plan size) away
-            auto, _ = budget.auto_budgets(whole, all_hits if all_hits is not None else limit_hits, snapshots, table)  # computed here from the history, never stored (#116)
+            auto, _ = shared.call(budget.auto_budgets, whole, all_hits if all_hits is not None else limit_hits, snapshots, table)  # computed here from the history, never stored (#116)
             merged = budget.combine({(b['harness'], b['minutes'], b.get('plan')): b for b in budgets or ()}, auto)
             if merged:
                 report.update(_calibration_payload(budget.public(merged), whole, whole_assigned, cost_of, report.get('quota_shares', {}), shown, table))
@@ -639,7 +847,7 @@ def render_report(report, template=None, state=None):
         template = Path(__file__).with_name('report_template.html').read_text(encoding='utf-8')
     if template.count('__USAGE_DATA__') != 1:
         raise ValueError('report template must contain exactly one data placeholder')
-    html = template.replace('__USAGE_DATA__', pack(report))
+    html = template.replace('__USAGE_DATA__', pack(compact_rows(report)))
     if '__EFFICIENCY_JS__' in html:
         html = html.replace('__EFFICIENCY_JS__', Path(__file__).with_name('efficiency.js').read_text(encoding='utf-8'), 1)
     if '__I18N__' in html:

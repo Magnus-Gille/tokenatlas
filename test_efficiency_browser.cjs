@@ -60,6 +60,7 @@ if (process.argv[2]) {
           r.efficiency_project_id===UsageReport.data.columns.dict.project_id[UsageReport.data.columns.idx.project_id[i]])),true,
           'expanded rows must preserve privacy-safe role metadata and canonical project aliases');
         await page.locator('[data-lang='+lang+']').click();
+        if(!(await page.locator('#eff-more').evaluate(d=>d.open)))await page.locator('#eff-more > summary').click();  // TOKEN-188: folded by default
         assert.equal(await page.locator('#eff-cards article').count(),4);
         assert.equal(await page.locator('#eff-percent').inputValue(),'');
         assert.equal(await page.evaluate(()=>UsageReport.efficiencyScenario),null);

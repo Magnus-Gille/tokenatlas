@@ -43,6 +43,7 @@ function withAnalyticsFixture(html) {
       }
       return dictionaries[key].get(value);
     };
+    delete c.requests; delete c.span; // a per-request payload (no merged rows): the page's inflate leaves it as it is
     for (const key of dictKeys) c.idx[key] = [];
     c.idx.off = [];
     c.ts = [];
@@ -173,6 +174,9 @@ async function ready(page, errors) {
           assert.equal(share('gpt-4.1'),8,'gpt-4.1 legend share equals 40 of 500 tokens');
         }
       }
+      // TOKEN-188: sessions, weeks, requests, turns and activity sit in one closed fold below the chart.
+      assert.equal(await page.locator('#analytics-more').evaluate(d => d.open), false, 'the detail fold starts closed');
+      await page.locator('#analytics-more > summary').click();
       assert.ok(await page.locator('#analytics-sessions details.analytics-row').count() > 0, 'top sessions render drilldown rows');
       const summaries = await page.locator('#analytics-sessions details.analytics-row summary').allInnerTexts();
       assert.equal(summaries.filter(x=>x.includes('session-a')).length,2,'same session string from two harnesses remains two top-session groups');
@@ -188,11 +192,11 @@ async function ready(page, errors) {
 
       await page.locator('#model').selectOption({label:'sonnet'});
       const zeroBaseline = await page.locator('#analytics-kpis .analytics-kpi small').first().innerText();
-      assert.equal(zeroBaseline, locale.startsWith('sv') ? 'Nytt från noll' : 'New from zero', 'complete current tokens with a zero-token prior window avoid percentage division');
+      assert.ok(!zeroBaseline.includes('%'), 'a zero-token prior window never gives a percentage change');
       await page.locator('#reset').click();
       await page.locator('#from').fill('2026-10-08'); await page.locator('#to').fill('2026-10-10');
       await page.locator('#model').selectOption({label:'gpt-5'});
-      assert.equal((await page.locator('#analytics-kpis .analytics-kpi strong').first().innerText()).replace(/[^\d]/g,''),'70','global date and model filters update the analytics total');
+      assert.equal((await page.locator('#total').innerText()).replace(/[^\d]/g,''),'70','global date and model filters update the one total (TOKEN-188)');
       assert.ok(!(await page.locator('#analytics-sessions summary').allTextContents()).join(' ').includes('%'), 'incomplete session ranking suppresses exact shares');
       for (const selector of ['#analytics-sessions','#analytics-weeks','#analytics-requests','#analytics-turns']) {
         assert.ok((await page.locator(selector).textContent()).includes('≥'), selector + ' marks partial token counts as lower bounds');

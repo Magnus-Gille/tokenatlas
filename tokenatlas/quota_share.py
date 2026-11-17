@@ -17,7 +17,7 @@ from datetime import timedelta
 from itertools import islice
 from operator import itemgetter
 
-from tokenatlas import limits, plan_metadata, prompts
+from tokenatlas import limits, plan_metadata, prompts, shared
 
 WEEK, FIVE_HOURS = 10080, 300
 # Parallel sessions report their counter out of order (measured on real Codex data: thousands of small decreases inside one window), so a
@@ -903,7 +903,7 @@ def as_json(share):
 
 def compute(records, table, cost_of=None, only=None, claude=None, assigned=None, events=()):
     """(snapshots, {turn: largest-window share}) over all records; ([], {}) when no record carries a quota (`claude`: see snapshots_from_records)."""
-    snapshots = snapshots_from_records(records, assigned=assigned, events=events, claude=claude)
+    snapshots = shared.call(snapshots_from_records, records, assigned, events, claude=claude)
     return (snapshots, largest(turn_shares(records, snapshots, table, cost_of, only))) if snapshots else ([], {})
 
 

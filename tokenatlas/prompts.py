@@ -109,6 +109,7 @@ def top_prompts(records, table, k=5, by='cost', keep=None, credit_table=None, as
         prompts.append({
             'harness': harness, 'session': session, 'turn_id': turn, 'thread_kind': head['thread_kind'], 'machine': head.get('machine'),
             'project_id': head.get('project_id'), 'project_label': head.get('project_label'),
+            'project_path': head.get('project_path', head.get('project_id')), 'project_sub': head.get('project_sub'),
             'plan': plan,
             'first_ts': first, 'last_ts': last, 'duration_s': (_t(last) - _t(first)).total_seconds(),
             'models': sorted({r['model'] for r in rows if r.get('model')}), 'requests': len(rows),
