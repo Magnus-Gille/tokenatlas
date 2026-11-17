@@ -136,6 +136,41 @@ class ScalingTest(unittest.TestCase):
                     order_matters |= sum(costs, 0.0) != want[0]
         self.assertTrue(order_matters, 'the fixture must make time-order and input-order sums differ somewhere, or it cannot catch a reordering')
 
+    def test_turn_shares_does_not_scan_every_participant_for_every_window_and_step(self):
+        """turn_shares used to test every request-only participant against every window instance and every step: epoch conversions grew with
+        participants x instances. Now each participant's span is converted once, and the result is unchanged by that."""
+        from datetime import datetime as real_datetime
+        from tokenatlas import quota_share
+        calls = []
+
+        class Counting(real_datetime):
+            def timestamp(self):
+                calls.append(1)
+                return super().timestamp()
+
+        def counted(text):
+            value = real_datetime.fromisoformat(text)
+            return Counting(value.year, value.month, value.day, value.hour, value.minute, value.second, value.microsecond, value.tzinfo)
+
+        codex = {'harness': 'codex', 'provider': 'openai'}
+        records, windows = [], 40
+        for w in range(windows):
+            start = 400 * w
+            reset = iso(start + 300)
+            for k, (minute, used) in enumerate(((0, 10), (5, 12), (10, 30))):
+                quota = {'limit_id': None, 'plan_type': 'pro', 'reached': None, 'status': 'ok',
+                         'windows': [{'slot': 'five_hour', 'minutes': 300, 'used_percent': used + w % 7, 'resets_at': reset}]} if k != 1 else None
+                records.append(obs(f'w{w}-{k}', iso(start + minute), 1000, session=f'a{w}', turn=f'turn{w}', quota=quota, **codex))
+        for n in range(1500):  # codex turns that carry no reading at all: participants of every window they overlap
+            records.append(obs(f'q{n}', iso(11 * n), 500, session=f'b{n}', turn=f'q{n}', **codex))
+        assigned = prompts.assign_prompts(records)
+        with patch.object(quota_share, '_when', side_effect=lambda text: counted(text) if isinstance(text, str) else text):
+            snapshots = quota_share.snapshots_from_records(records, assigned=assigned)
+            calls.clear()
+            shares = quota_share.turn_shares(records, snapshots, TABLE)
+        self.assertGreater(len(shares), windows // 2)
+        self.assertLess(len(calls), 20000, f'{len(calls)} epoch conversions: participants are scanned per window again')
+
     def test_timestamps_are_parsed_once(self):
         prompts._t.cache_clear()
         for _ in range(3):
