@@ -170,6 +170,25 @@ function withView(view, limitHit=null) {
       assert.deepEqual(subsOnly.errors,[]);
     } finally {await closeView(subsOnly.context)}
 
+    // Codex review of #200: the Subscriptions focus must work inside a saved view and must not blank a view that excludes it.
+    const focusIn = await pageFor({sections:['facts','subscriptions'],defaults:{}});
+    try {
+      await focusIn.page.click('header [data-view="subscriptions"]');
+      assert.equal(await focusIn.page.locator('#subscriptions').isVisible(),true,'subscriptions visible in focus mode');
+      assert.equal(await focusIn.page.locator('#cost-facts').isVisible(),false,'other sections are hidden in focus mode');
+      assert.equal(await focusIn.page.locator('#view-sections').isVisible(),true,'the wrapper holding subscriptions stays visible');
+      assert.deepEqual(focusIn.errors,[]);
+    } finally {await closeView(focusIn.context)}
+    const focusOut = await pageFor({sections:presets.minimal,defaults:{}});
+    try {
+      assert.equal(await focusOut.page.locator('header [data-view="subscriptions"]').isVisible(),false,'no subscriptions navigation without the section');
+      await focusOut.page.evaluate(()=>{location.hash='#subscriptions'});
+      await focusOut.page.waitForTimeout(100);
+      assert.equal(await focusOut.page.evaluate(()=>document.body.classList.contains('quota-focus')),false);
+      assert.equal(await focusOut.page.locator('#view-sections').isVisible(),true,'the report is not blanked');
+      assert.deepEqual(focusOut.errors,[]);
+    } finally {await closeView(focusOut.context)}
+
     // Preset layout and horizontal overflow checks at desktop and phone width.
     const domIds = {'limits':'limit-hits','facts':'cost-facts','turns':'prompts'};
     for(const preset of ['subscription','minimal'])for(const width of [1440,390]){

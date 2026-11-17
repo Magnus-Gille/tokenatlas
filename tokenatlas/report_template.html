@@ -23,7 +23,7 @@
 .glossary{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:12px 20px;margin:12px 0 0}.glossary summary{cursor:pointer;font-weight:600}.glossary dl{margin:10px 0 0}.glossary dt{font-weight:600;margin-top:8px}.glossary dd{margin:2px 0 0;color:var(--muted);line-height:1.5}
 @media(max-width:640px){.glance{padding:15px}.glance-list{font-size:15px;padding-left:18px}.glossary{padding:12px 15px}}
 .view-toggle{display:flex;gap:3px;padding:3px;background:var(--bg);border-radius:10px}.view-toggle button{border:0;background:transparent;font-size:12px;padding:6px 10px}.view-toggle button.active{background:var(--ink)}
-.quota-status{margin:20px 0 0}.quota-status .panel-top{margin-bottom:14px}.quota-status-intro{margin:6px 0 0;max-width:760px}.quota-scopes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.quota-primary-scopes{margin-bottom:14px}.quota-scope{border:1px solid var(--line);border-radius:11px;padding:15px;min-width:0}.quota-primary-scopes .quota-scope{border-color:#b9cbbd;box-shadow:0 2px 8px rgba(32,52,47,.06)}.quota-scope h3{overflow-wrap:anywhere}.quota-scope-kicker{margin:0 0 5px;color:var(--green);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}.quota-scope-meta{margin:3px 0 12px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.quota-history{margin-top:8px;border-top:1px solid var(--line);padding-top:12px}.quota-history summary{cursor:pointer;color:var(--ink);font-weight:650}.quota-history-scopes{margin-top:12px}.quota-window{border-top:1px solid var(--line);padding:10px 0 0;margin-top:10px}.quota-window:first-child{border-top:0;padding-top:0;margin-top:0}.quota-window-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline}.quota-window-label{font-size:12px;font-weight:650}.quota-values{font-size:15px;line-height:1.45}.quota-values strong{font-weight:650}.quota-meta{font-size:11px;color:var(--muted);margin-top:4px;overflow-wrap:anywhere}.quota-stale{color:#8a5a1d}.quota-status-empty{padding:22px 10px}.quota-status-empty strong{font-size:16px}.quota-focus main> :not(#subscriptions){display:none}.quota-focus footer{display:none}.quota-focus #subscriptions{margin-top:24px}
+.quota-status{margin:20px 0 0}.quota-status .panel-top{margin-bottom:14px}.quota-status-intro{margin:6px 0 0;max-width:760px}.quota-scopes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.quota-primary-scopes{margin-bottom:14px}.quota-scope{border:1px solid var(--line);border-radius:11px;padding:15px;min-width:0}.quota-primary-scopes .quota-scope{border-color:#b9cbbd;box-shadow:0 2px 8px rgba(32,52,47,.06)}.quota-scope h3{overflow-wrap:anywhere}.quota-scope-kicker{margin:0 0 5px;color:var(--green);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}.quota-scope-meta{margin:3px 0 12px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.quota-history{margin-top:8px;border-top:1px solid var(--line);padding-top:12px}.quota-history summary{cursor:pointer;color:var(--ink);font-weight:650}.quota-history-scopes{margin-top:12px}.quota-window{border-top:1px solid var(--line);padding:10px 0 0;margin-top:10px}.quota-window:first-child{border-top:0;padding-top:0;margin-top:0}.quota-window-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline}.quota-window-label{font-size:12px;font-weight:650}.quota-values{font-size:15px;line-height:1.45}.quota-values strong{font-weight:650}.quota-meta{font-size:11px;color:var(--muted);margin-top:4px;overflow-wrap:anywhere}.quota-stale{color:#8a5a1d}.quota-status-empty{padding:22px 10px}.quota-status-empty strong{font-size:16px}.quota-focus main> :not(#subscriptions):not(#view-sections){display:none}.quota-focus #view-sections> :not(#subscriptions){display:none}.quota-focus footer{display:none}.quota-focus #subscriptions{margin-top:24px}
 @media(max-width:640px){.view-toggle{order:3}.quota-scopes{grid-template-columns:1fr}.quota-status .panel-top{align-items:stretch}.quota-status .panel-top .view-toggle{width:100%}.quota-status .panel-top .view-toggle button{flex:1}.quota-scope{padding:13px}}
 .usage-table{width:100%;table-layout:fixed;border-collapse:collapse}.usage-table th,.usage-table td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left}.usage-table td:nth-child(n+2),.usage-table th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}.work-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.work-card{border:1px solid var(--line);border-radius:10px;padding:15px}.work-card h3{overflow-wrap:anywhere}.work-card p{margin:5px 0}.work-turn{border-top:1px solid var(--line);padding:9px 0;font-size:12px}.usage-note{margin-top:12px}
 .plan-facts-table td:nth-child(n+2),.plan-facts-table th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}.plan-facts-table td:first-child{font-weight:600}.plan-note{margin-top:12px}
@@ -131,8 +131,14 @@ const filterKeys=['harness','project_id','model','effort','provider','session','
 // positions (including nested children) before any mutation; restore parents first.
 const sectionIds={answer:'answer',glance:'glance',glossary:'glossary',kpis:'kpis',analytics:'analytics',efficiency:'token-efficiency',turns:'prompts',limits:'limit-hits','quota-windows':'quota-windows',subscriptions:'subscriptions',facts:'cost-facts','plan-facts':'plan-facts',usage:'usage',work:'work',energy:'energy',environment:'environment',charts:'charts',cache:'cache-section',sessions:'sessions',coverage:'coverage'};
 const sectionHomes=new Map(Object.entries(sectionIds).map(([key,id])=>{const node=$(id),home=document.createComment('view:'+key);node.before(home);return[key,{node,home}]}));
+function syncSubscriptionsNav(){
+  const present=!!document.getElementById('subscriptions');
+  document.querySelectorAll('header [data-view="subscriptions"]').forEach(button=>button.classList.toggle('hidden',!present));
+  if(!present)document.body.classList.remove('quota-focus');
+}
 function restoreSections(){
   for(const {node,home} of sectionHomes.values())home.after(node);
+  syncSubscriptionsNav();
   for(const id of ['quota-windows','token-efficiency'])$(id).classList.remove('view-standalone','panel','section');
 }
 function applySavedView(){
@@ -145,6 +151,7 @@ function applySavedView(){
     for(const id of ['quota-windows','token-efficiency'])if($(id).parentNode===$('view-sections'))$(id).classList.add('view-standalone','panel','section');
   }
   const active=changed||Object.keys(DATA.view?.defaults||{}).length>0||(DATA.view?.top||10)!==10||(DATA.view?.lang||'auto')!=='auto'||!!DATA.view?.money_first;
+  syncSubscriptionsNav();
   $('view-active').classList.toggle('hidden',!active);
   $('show-everything').classList.toggle('hidden',!active);
 }
@@ -282,6 +289,7 @@ function renderSubscriptions(){
   updateQuotaCountdowns(now);
 }
 function setView(view,writeHash=true){
+  if(view==='subscriptions'&&!document.getElementById('subscriptions'))view='overview';/* a saved view without the subscriptions section has nothing to focus */
   const subscriptions=view==='subscriptions';document.body.classList.toggle('quota-focus',subscriptions);
   queryAll('[data-view]').forEach(button=>{const active=button.dataset.view===view;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active))});
   if(writeHash)history.replaceState(null,'',subscriptions?'#subscriptions':'#overview');
