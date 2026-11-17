@@ -94,7 +94,7 @@ All commands print JSON. `refresh` imports only changed files; running it twice
 or importing a copied transcript does not add the same usage again. Recorded
 history survives source deletion. Schedule refresh separately if desired;
 there is no background service, and already-deleted logs cannot be recovered.
-`refresh` exits 2 for missing sources or partial imports and records diagnostics.
+`refresh` exits 3 when every requested source root is absent and 1 for other source problems or partial imports, and records diagnostics.
 
 Logs are read from each harness's default location unless the harness itself has been moved with its own
 variable, which TokenAtlas reads at every run (an unset, empty or relative value means the default):

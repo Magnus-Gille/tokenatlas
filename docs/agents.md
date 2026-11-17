@@ -70,6 +70,7 @@ change and a **breaking-change entry in the CHANGELOG**.
 | 2 | Invalid options, dates, values, or combinations | `usage` |
 | 3 | Missing session, thread, database, report, snapshot, or requested source | `not_found` |
 | 4 | No observations match an analytics range/filter | `no_data` |
+| 75 | The history database is locked by another writer; retry shortly | `locked` |
 
 With `--json`, errors go to stderr, not stdout:
 

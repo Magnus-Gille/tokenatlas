@@ -198,7 +198,7 @@ def run(args):
         diagnostics.seek(0)
         data=dict(steps=steps,skipped=skipped or ('collection lock busy' if not steps and rc==0 else None),diagnostics=diagnostics.read())
     if rc:
-        exc=CLIError('Collection failed.',1,'Inspect error.details.steps and diagnostics; run tokenatlas doctor --json.')
+        exc=CLIError('Collection failed.',rc if rc>=128 else 1,'Inspect error.details.steps and diagnostics; run tokenatlas doctor --json.')
         exc.details=data
         raise exc
     emit('collect',data)

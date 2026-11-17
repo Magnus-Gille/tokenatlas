@@ -132,7 +132,7 @@ class Parser(argparse.ArgumentParser):
         command = self.prog.removeprefix('tokenatlas').strip()
         self.epilog = 'Examples:\n  ' + EXAMPLES.get(command, 'tokenatlas --help')
         if not command:
-            self.epilog += '\n\nAgent guide: docs/agents.md (task → command → JSON fields). Exit codes: 0 ok, 1 internal, 2 usage, 3 not found, 4 no data. TOKENATLAS_NO_BROWSER=1 disables browser launch.'
+            self.epilog += '\n\nAgent guide: docs/agents.md (task → command → JSON fields). Exit codes: 0 ok, 1 internal, 2 usage, 3 not found, 4 no data, 75 database locked. TOKENATLAS_NO_BROWSER=1 disables browser launch.'
 
     def format_help(self):
         for action in self._actions:

@@ -627,7 +627,7 @@ def _main(argv=None):
                     data=usage_profiles.save(args.db,data)
         except (OSError,ValueError) as exc:raise
         emit(args.command,data);return 0
-    slow=args.command in ('refresh','open','report','top','insights','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead' and args.refresh
+    slow=args.command in ('refresh','open','report','top','insights','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead'
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout
     try:
@@ -713,7 +713,7 @@ def _main(argv=None):
             with History(args.db) as history:
                 history.connection.execute('BEGIN')
                 return budget.run(args,args.db,lambda:_plan_history(history)[0],pricing.load_prices,_printing(done)) or 0
-        if args.command not in ('refresh','import','open','doctor') and not args.db.expanduser().is_file():
+        if args.command not in ('refresh','import','open') and not args.db.expanduser().is_file():
             raise NotFound('history database does not exist; run refresh first')
         if args.command=='rate' and (args.unit or args.thread or args.outcome) and not (args.unit and args.thread and args.outcome):
             raise ValueError('rating needs --unit, --thread and --outcome')
@@ -836,8 +836,8 @@ def _main(argv=None):
                 with progress.step('Rank turns'):
                     global_ranked=shared.call(prompts.top_prompts,everything,table,args.limit,args.by,assigned=assigned)
                     result=global_ranked if not filtered else prompts.top_prompts(everything,table,args.limit,args.by,keep,assigned=assigned)
-                if not selected:raise NoData()
                 kept=prompt_store.update(store,everything,table,history.machine,args.limit,args.by,local=history.local_source_paths(),ranked=global_ranked,assigned=assigned,revision=history.revision,history_token=history.revision_token,prices=budget.table_id(table)) if args.keep_text else None
+                if not selected:raise NoData()  # after the store refresh: the stored text follows the global ranking, not the filters
                 with progress.step('Limit hits'):hits=shared.call(limits.limit_hits,everything,events,table,assigned=assigned)  # windows come from the whole history; the CLI filters then pick the hits
                 all_hits=hits
                 if filtered:hits=limits.scope_hits(hits,selected,args.harness,start,end,args.project,universe=everything,assigned=assigned)
