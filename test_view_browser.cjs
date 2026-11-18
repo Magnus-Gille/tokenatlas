@@ -179,6 +179,12 @@ function withView(view, limitHit=null) {
       assert.equal(await focusIn.page.locator('#view-sections').isVisible(),true,'the wrapper holding subscriptions stays visible');
       assert.deepEqual(focusIn.errors,[]);
     } finally {await closeView(focusIn.context)}
+    const staleView = await pageFor({sections:['subscriptions'],defaults:{}});
+    try {
+      assert.equal(await staleView.page.locator('#subscriptions').evaluate(n=>n.classList.contains('quota-stale-section')),true,'no fresh reading: the section is marked stale inside a saved view');
+      assert.ok((await staleView.page.locator('#subscriptions-title').getAttribute('data-stale')),'stale heading marker');
+      assert.deepEqual(staleView.errors,[]);
+    } finally {await closeView(staleView.context)}
     const focusOut = await pageFor({sections:presets.minimal,defaults:{}});
     try {
       assert.equal(await focusOut.page.locator('header [data-view="subscriptions"]').isVisible(),false,'no subscriptions navigation without the section');

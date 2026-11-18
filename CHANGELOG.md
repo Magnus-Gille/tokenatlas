@@ -8,7 +8,7 @@ All notable changes to this project are documented in this file. The project fol
 
 - `collect` (and `top`/`report`) are about 3x faster on a 700k-request history: quota shares were computed in quadratic time and are now near-linear with an identical result (TOKEN-189). The 90 s goal is still open; see docs/performance.md.
 - Saved report views now cover the answer panel, the subscriptions view and the environment block as sections (`answer`, `subscriptions`, `environment`), so `view set --sections ''` and `view preset minimal` hide them. Answer-panel turn and project links only appear when their target is in the page (TOKEN-202).
-- `quota show` opens the history database through the same read-only path as `report` and `top` (no schema migration, no write transaction, only shared reader locks), so it finishes while `collect` is writing. Like those commands it can still recover a hot journal left by a killed writer (TOKEN-203).
+- `quota show` opens the history database through the same read-only path as `report` and `top` (no schema migration and no write transaction; in normal operation it takes only shared reader locks), so it finishes while `collect` is writing. Like those commands it can still recover a hot journal left by a killed writer (TOKEN-203).
 
 ### Added
 

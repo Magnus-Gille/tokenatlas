@@ -685,7 +685,7 @@ def _main(argv=None):
             from tokenatlas import budget,pricing
             if args.quota!='calibrate':
                 if args.quota=='show' and args.db.expanduser().is_file():
-                    with History(args.db,read_only=True) as history:  # the automatic budgets are computed from the history (#116); read-only so it never locks or migrates (TOKEN-203)
+                    with History(args.db,read_only=True) as history:  # the automatic budgets are computed from the history (#116); read-only so it neither migrates the schema nor opens a write transaction (TOKEN-203)
                         history.connection.execute('BEGIN')
                         cache={}
                         def cached_records():
