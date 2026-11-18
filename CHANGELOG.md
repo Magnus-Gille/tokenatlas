@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.28.1] - 2026-11-18
+
 ### Fixed
 
 - `collect` (and `top`/`report`) are about 3x faster on a 700k-request history: quota shares were computed in quadratic time and are now near-linear with an identical result (TOKEN-189). The 90 s goal is still open; see docs/performance.md.
