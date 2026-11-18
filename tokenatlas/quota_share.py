@@ -8,6 +8,7 @@ a fixed dollars-per-percent rate. Usage tokenatlas does not see (other machines,
 The counter is whole-percent: a share is shown without decimals, and '< 1%' when it did not move."""
 import functools
 import gc
+import heapq
 import math
 import json
 import os
@@ -605,10 +606,41 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
         here.setdefault(_series(s['key']), set()).add(s['who'])
         kin.setdefault((*s['key'][:2], s['key'][4]), set()).add(s['who'])
     nowhere = [w for w in requests if w not in bearing]  # participants whose requests carry no snapshot at all
+    stamps = {}
+
+    def rspan(w):  # the first and last request of a participant as epoch seconds, converted once (TOKEN-189)
+        if w not in stamps:
+            stamps[w] = (requests[w][0].timestamp(), requests[w][1].timestamp())
+        return stamps[w]
+
+    def indexed(ws):
+        """(participants in their order, their indices by first request, those first requests, the widest span): finds the ones that meet a time range."""
+        by_start = sorted(range(len(ws)), key=lambda k: rspan(ws[k])[0])
+        return ws, by_start, [rspan(ws[k])[0] for k in by_start], max((rspan(w)[1] - rspan(w)[0] for w in ws), default=0.0)
+
+    def overlapping(index, first, last):
+        """The indexed participants whose first-to-last request span meets [first, last], in their original order."""
+        ws, by_start, starts, widest = index
+        found = [k for k in by_start[bisect_left(starts, first - widest):bisect_right(starts, last)] if rspan(ws[k])[1] >= first]
+        found.sort()
+        return [ws[k] for k in found]
+
+    loose = {}  # harness -> the indexed participants whose requests carry no snapshot at all
+    for w in nowhere:
+        loose.setdefault(w[0], []).append(w)
+    loose = {harness: indexed(ws) for harness, ws in loose.items()}
+    session_index = {}
     ledger = {}
     sessions = {}  # (harness, session) -> the participants (turns) that ran in it
     for who in requests:
         sessions.setdefault(who[:2], []).append(who)
+
+    def session_overlapping(session, first, last):
+        if session not in sessions:
+            return []
+        if session not in session_index:
+            session_index[session] = indexed(sessions[session])
+        return overlapping(session_index[session], first, last)
 
     def books(who):
         """A participant's requests by time with running totals: (times, priced cost so far, unpriced requests so far)."""
@@ -643,7 +675,7 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
         mine = {}
         for s in rows:
             mine.setdefault(s['who'], []).append(s)
-        spans = {w: (requests[w][0].timestamp(), requests[w][1].timestamp()) for w in mine}
+        spans = {w: rspan(w) for w in mine}
         for w, rs in mine.items():  # a reading follows its request: the participant is active until its last reading (request times stay as they are)
             spans[w] = (spans[w][0], max(spans[w][1], rs[-1]['t'].timestamp()))
         first, last = rows[0]['t'].timestamp(), rows[-1]['t'].timestamp()
@@ -654,10 +686,12 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
         known.update(s['root'] for s in rows)
         # and any turn of a session that reported this counter in this or an earlier instance, whether or not it has a reading in this instance
         # (readings lost after a reset leave the turn running without them)
-        for w in [*(kin.get((*key[:2], key[4]), ()) - here.get(series, set())), *(x for x in nowhere if x[0] == key[0]),
-                  *(x for session in known for x in sessions.get(session, ()))]:
-            lo, hi = requests[w][0].timestamp(), requests[w][1].timestamp()
-            if w not in spans and hi >= first and lo <= last:
+        for w in [*(kin.get((*key[:2], key[4]), ()) - here.get(series, set())), *(overlapping(loose[key[0]], first, last) if key[0] in loose else ()),
+                  *(x for session in known for x in session_overlapping(session, first, last))]:
+            if w in spans:
+                continue
+            lo, hi = rspan(w)
+            if hi >= first and lo <= last:
                 spans[w] = (lo, hi)
         # An unpriced request weighs its tokens at the instance's average list price per token of its priced requests (none priced: no rate).
         priced_cost = priced_tokens = 0.0
@@ -667,12 +701,24 @@ def turn_shares(records, snapshots, table=None, cost_of=None, only=None):
                 priced_tokens += _weight(records[i])
         rate = priced_cost / priced_tokens if priced_cost > 0 and priced_tokens > 0 else None
         lower, upper, point, estimated, nopoint = {}, {}, {}, set(), set()  # per participant: sole-step movement, all active-step movement, cost-split movement
+        # The participants active in a step (first request at or before its end, last request after its start), in the order of `spans`. Steps
+        # move forward in time, so one sweep keeps the open set instead of testing every participant in every step.
+        entries = list(spans.items())
+        by_first = sorted(range(len(entries)), key=lambda k: entries[k][1][0])
+        opened, live, expiry = 0, set(), []
         for g in range(1, len(groups)):
             move = pcts[g] - pcts[g - 1]
             if not move:
                 continue
             tp, tc = times[g - 1].timestamp(), times[g].timestamp()
-            active = [w for w, (lo, hi) in spans.items() if lo <= tc and hi > tp]
+            while opened < len(by_first) and entries[by_first[opened]][1][0] <= tc:
+                k = by_first[opened]
+                heapq.heappush(expiry, (entries[k][1][1], k))
+                live.add(k)
+                opened += 1
+            while expiry and expiry[0][0] <= tp:
+                live.discard(heapq.heappop(expiry)[1])
+            active = [entries[k][0] for k in sorted(live)]
             if not active:
                 continue
             if only is not None and not (only & set(active)):

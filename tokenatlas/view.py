@@ -13,11 +13,12 @@ import sys
 import tempfile
 
 SECTIONS = {
-    'glance': 'At a glance', 'glossary': 'Terms (collapsed)', 'kpis': 'Token KPIs',
+    'answer': 'Answer panel', 'glance': 'At a glance', 'glossary': 'Terms (collapsed)', 'kpis': 'Token KPIs',
     'analytics': 'Request analytics', 'efficiency': 'Token efficiency',
     'turns': 'Costliest turns', 'limits': 'Limit hits', 'quota-windows': 'Quota windows',
+    'subscriptions': 'Subscriptions',
     'facts': 'Cost facts', 'plan-facts': 'Plan facts', 'usage': 'Clients and local inference',
-    'work': 'Work context', 'energy': 'Energy', 'charts': 'Timeline and ranking',
+    'work': 'Work context', 'energy': 'Energy', 'environment': 'Environment', 'charts': 'Timeline and ranking',
     'cache': 'Cache comparisons', 'sessions': 'Sessions', 'coverage': 'Data coverage',
 }
 FILTERS = ('period', 'harness', 'plan', 'project_id', 'session', 'account', 'model',
@@ -25,8 +26,8 @@ FILTERS = ('period', 'harness', 'plan', 'project_id', 'session', 'account', 'mod
 # Allowlist rather than a denylist: newly added defaults stay private until reviewed.
 SHARED_FILTERS = frozenset(('period', 'harness', 'plan', 'model', 'effort', 'provider', 'thread_kind'))
 PRESETS = {
-    'subscription': ['limits', 'quota-windows', 'glance', 'turns', 'plan-facts', 'facts', 'sessions'],
-    'api-cost': ['facts', 'turns', 'glance', 'kpis', 'analytics', 'charts', 'cache', 'sessions'],
+    'subscription': ['subscriptions', 'limits', 'quota-windows', 'glance', 'turns', 'plan-facts', 'facts', 'sessions'],
+    'api-cost': ['answer', 'facts', 'turns', 'glance', 'kpis', 'analytics', 'charts', 'cache', 'sessions'],
     'minimal': ['glance', 'kpis', 'turns'],
     'full': list(SECTIONS),
 }

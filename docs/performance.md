@@ -71,3 +71,22 @@ A real incremental design (recompute only periods, turns and projects touched si
 state and is not part of this change.
 
 Target status: top + report is about 160-170 s on this history, so the 90 s goal for refresh + top + report is not yet met (about 2x remains).
+
+## Sprint 4: quota shares were quadratic
+
+Profiling a 700k-request history (synthetic, 12 projects, about 20 requests per session, 4 cores) showed that `quota_share.turn_shares`, which both `top` and `report` run, was the largest single cost and grew faster than the history:
+
+- every step of a window tested every participant for activity (steps x participants);
+- every window instance scanned all participants without any reading, and every turn of every session that had reported the counter (instances x participants);
+- epoch seconds were recomputed for each of those tests (26 million `timestamp()` calls on a 150k history).
+
+It now converts each participant's request span once, keeps the participants active in a step with one forward sweep (an expiry heap over participants sorted by first request), and finds the overlapping participants of a window through a per-harness and per-session index sorted by first request. Participants are still visited in their original order, so the sums are taken in the same order and the result is identical (the report payload matches the old one apart from the generation time).
+
+| 700k requests, one process, shared scope | top | report | together |
+|---|---|---|---|
+| before | 202 s | 207 s | 409 s |
+| after | 62 s | 73 s | 135 s |
+
+Both were measured in the same container, one after the other, so only the ratio (about 3x) carries over to another machine. `test_scaling.py` guards it by counting epoch conversions (122,000 before, under 20,000 allowed).
+
+The 90 s goal is still not met. The profile is now flat: loading and decoding rows (about 7 %), `build_report` row work, `price_observation` (about 3 calls per request, each copying the memoised result), `cost_facts` (per-record price and tier classification repeated for the 30-day window, the whole history and `top`), subscription annotation and credit resolution. A persisted per-revision cache of cost, window and credit vector would remove only part of that and adds invalidation risk (price table, plan annotation, project roots), so it was not started. Cheaper next steps, in order: a read-only price accessor that does not copy the memoised result, computing `_rates` once for both memos, and sharing the per-record cost-fact classification between the three `cost_facts` calls.

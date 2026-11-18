@@ -141,6 +141,60 @@ function withView(view, limitHit=null) {
       }),true,'limit-hit anchor should target a connected turn card');
     } finally {await closeView(limitsOnly.context)}
 
+    // TOKEN-202: answer, subscriptions and environment are sections, and the answer panel's links follow the hidden sections.
+    const empty = await pageFor({sections:[],defaults:{}});
+    try {
+      assert.equal(await empty.page.locator('#answer, #subscriptions, #environment').count(),0,'empty view hides the answer, subscriptions and environment blocks');
+      assert.deepEqual(empty.errors,[]);
+    } finally {await closeView(empty.context)}
+    const answerOnly = await pageFor({sections:['answer'],defaults:{}});
+    try {
+      assert.equal(await answerOnly.page.locator('#answer a[href^="#turn-"]').count(),0,'no turn links without the turns section');
+      assert.equal(await answerOnly.page.locator('#answer-turns-more').evaluate(n=>n.classList.contains('hidden')),true);
+      assert.equal(await answerOnly.page.locator('#answer-projects-more').evaluate(n=>n.classList.contains('hidden')),true);
+      assert.ok(await answerOnly.page.locator('#answer-turns li').count()>0,'the top turns are still listed as text');
+      assert.deepEqual(answerOnly.errors,[]);
+    } finally {await closeView(answerOnly.context)}
+    const answerTurns = await pageFor({sections:['answer','turns'],top:1,defaults:{}});
+    try {
+      assert.equal(await answerTurns.page.locator('#answer a[href^="#turn-"]').count(),1,'only the one rendered turn card is linked');
+      assert.equal(await answerTurns.page.locator('#answer-turns-more').evaluate(n=>n.classList.contains('hidden')),false);
+      for(const href of await answerTurns.page.locator('#answer a[href^="#turn-"]').evaluateAll(a=>a.map(x=>x.getAttribute('href').slice(1))))
+        assert.equal(await answerTurns.page.evaluate(id=>!!document.getElementById(id),href),true,'turn link target exists');
+      assert.deepEqual(answerTurns.errors,[]);
+    } finally {await closeView(answerTurns.context)}
+    const subsOnly = await pageFor({sections:['subscriptions','environment'],defaults:{}});
+    try {
+      assert.deepEqual(await ids(subsOnly.page),['subscriptions','environment']);
+      assert.equal(await subsOnly.page.locator('#answer, #glance').count(),0);
+      assert.deepEqual(subsOnly.errors,[]);
+    } finally {await closeView(subsOnly.context)}
+
+    // Codex review of #200: the Subscriptions focus must work inside a saved view and must not blank a view that excludes it.
+    const focusIn = await pageFor({sections:['facts','subscriptions'],defaults:{}});
+    try {
+      await focusIn.page.click('header [data-view="subscriptions"]');
+      assert.equal(await focusIn.page.locator('#subscriptions').isVisible(),true,'subscriptions visible in focus mode');
+      assert.equal(await focusIn.page.locator('#cost-facts').isVisible(),false,'other sections are hidden in focus mode');
+      assert.equal(await focusIn.page.locator('#view-sections').isVisible(),true,'the wrapper holding subscriptions stays visible');
+      assert.deepEqual(focusIn.errors,[]);
+    } finally {await closeView(focusIn.context)}
+    const staleView = await pageFor({sections:['subscriptions'],defaults:{}});
+    try {
+      assert.equal(await staleView.page.locator('#subscriptions').evaluate(n=>n.classList.contains('quota-stale-section')),true,'no fresh reading: the section is marked stale inside a saved view');
+      assert.ok((await staleView.page.locator('#subscriptions-title').getAttribute('data-stale')),'stale heading marker');
+      assert.deepEqual(staleView.errors,[]);
+    } finally {await closeView(staleView.context)}
+    const focusOut = await pageFor({sections:presets.minimal,defaults:{}});
+    try {
+      assert.equal(await focusOut.page.locator('header [data-view="subscriptions"]').isVisible(),false,'no subscriptions navigation without the section');
+      await focusOut.page.evaluate(()=>{location.hash='#subscriptions'});
+      await focusOut.page.waitForTimeout(100);
+      assert.equal(await focusOut.page.evaluate(()=>document.body.classList.contains('quota-focus')),false);
+      assert.equal(await focusOut.page.locator('#view-sections').isVisible(),true,'the report is not blanked');
+      assert.deepEqual(focusOut.errors,[]);
+    } finally {await closeView(focusOut.context)}
+
     // Preset layout and horizontal overflow checks at desktop and phone width.
     const domIds = {'limits':'limit-hits','facts':'cost-facts','turns':'prompts'};
     for(const preset of ['subscription','minimal'])for(const width of [1440,390]){
