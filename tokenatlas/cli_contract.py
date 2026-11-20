@@ -67,6 +67,7 @@ EXAMPLES = {
     'session': 'tokenatlas session codex:SESSION_ID --json',
     'rate': 'tokenatlas rate claude:SESSION_ID --json\n  tokenatlas rate claude:SESSION_ID --unit task-1 --thread claude:agent:AGENT_ID --outcome pass --json',
     'top': 'tokenatlas top -n 1 --start 2026-10-03 --end 2026-10-04 --json',
+    'cache': 'tokenatlas cache --days 30\n  tokenatlas cache --json --top 5',
     'insights': 'tokenatlas insights --days 7 --json\n  tokenatlas insights --start 2026-10-03 --end 2026-10-04 --json',
     'overhead': 'tokenatlas overhead --refresh --json',
     'collect': 'tokenatlas collect --no-report --json',
