@@ -626,7 +626,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
         for wid, start, end in (('30d', now - timedelta(days=INSIGHT_DAYS), now), ('all', None, None)):
             found = cache_spend.analyze(whole, table, start, end, top=5, memo=memo)
             found = {k: found[k] for k in ('schema', 'provenance', 'assumptions', 'window', 'applicable', 'cache_write_cost_usd', 'total_cost_usd', 'cache_write_share', 'recache_cost_usd', 'causes', 'resume_tax', 'ttl_what_if')}  # no per-model table: model names would need the redaction the cost facts apply
-            found['resume_tax'] = [dict(x, session=alias('session', f"{x['harness']}:{x['session']}") if redact else x['session']) for x in found['resume_tax']]
+            found['idle_recache_sessions'] = [dict(x, session=alias('session', f"{x['harness']}:{x['session']}") if redact else x['session']) for x in found.pop('resume_tax')]
             cache_windows.append(dict(id=wid, **found))
     # the page's energy card (filter-following) sums tokens x per-class constant x a multiplier per (provider, model); only Claude tiers have one
     # (the rest is unweighted, multiplier 1), keyed by the provider and model names as the rows carry them (after redaction)
