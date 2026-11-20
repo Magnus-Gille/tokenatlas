@@ -501,6 +501,16 @@ def _main(argv=None):
     top.add_argument('--keep-text',action='store_true',help='Store the text and context of the current global top -n turns in top-prompts.json next to the history (0600).')
     top.add_argument('--forget-text',action='store_true',help='Delete the stored prompt text.')
     top.add_argument('--with-text',action='store_true',help='With --json: include stored text and turn context.')
+    cache=commands.add_parser('cache',help='Explain cache spend: full re-caches by cause (idle gap, model switch, ...), the resume tax per session and a 5-minute versus 1-hour TTL what-if (Claude; list-price estimates).')
+    cache.add_argument('--days',type=int,help='Only the last N days (default: all history).')
+    cache.add_argument('--start',help='Inclusive ISO 8601 date/time; no offset uses the command timezone (UTC).')
+    cache.add_argument('--end',help='Exclusive ISO 8601 date/time; no offset uses the command timezone (UTC).')
+    cache.add_argument('--prices',type=Path,help='Price table JSON; default the packaged price table.')
+    cache.add_argument('--json',action='store_true')
+    cache.add_argument('--min-write',type=int,default=5000,help='Smallest cache write (tokens) counted as a full re-cache (default 5000).')
+    cache.add_argument('--share',type=float,default=0.5,help='Smallest share of a request input that is cache write to count as a full re-cache, 0-1 (default 0.5).')
+    cache.add_argument('--top',type=int,default=10,help='Sessions listed in the resume-tax ranking (default 10).')
+    cache.add_argument('--private',action='store_true',help='Name the project of each ranked session; by default only the session id prefix is shown.')
     facts=commands.add_parser('insights',help='Cost facts: deterministic list-price statements computed from the saved observations (no language model, no interpretation).')
     facts.add_argument('--days',type=int,help='Only the last N days (default: all history).')
     facts.add_argument('--start',help='Inclusive ISO 8601 date/time; no offset uses the command timezone (UTC for top/insights).')
@@ -627,7 +637,7 @@ def _main(argv=None):
                     data=usage_profiles.save(args.db,data)
         except (OSError,ValueError) as exc:raise
         emit(args.command,data);return 0
-    slow=args.command in ('refresh','open','report','top','insights','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead'
+    slow=args.command in ('refresh','open','report','top','insights','cache','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead'
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout
     try:
@@ -642,7 +652,12 @@ def _main(argv=None):
             if args.context_threshold<1:raise ValueError('--context-threshold must be positive')
             if (args.scenario_population is None)!=(args.reduction_percent is None):raise ValueError('--scenario-population and --reduction-percent must be supplied together')
             if args.reduction_percent is not None and not 0<=args.reduction_percent<=100:raise ValueError('--reduction-percent must be finite and between 0 and 100')
-        if args.command in ('report','top','insights'):
+        if args.command=='cache':
+            if args.days is not None and (args.days<1 or args.start or args.end):raise ValueError('--days must be at least 1 and cannot be combined with --start or --end')
+            if args.min_write<1:raise ValueError('--min-write must be at least 1')
+            if not 0<=args.share<=1:raise ValueError('--share must be between 0 and 1')
+            if args.top<1:raise ValueError('--top must be at least 1')
+        if args.command in ('report','top','insights','cache'):
             if args.command=='report':
                 max_age=parse_duration(args.max_age) if args.max_age is not None else None
                 if (args.if_changed or max_age is not None) and not args.html:raise ValueError('--if-changed and --max-age need --html')
@@ -654,7 +669,7 @@ def _main(argv=None):
                     if name=='start':start=parsed
                     else:end=parsed
             if start and end and start>=end:raise ValueError('--start must precede --end')
-            if args.command=='insights' and args.days:end=datetime.now(ZoneInfo('UTC'));start=end-timedelta(days=args.days)  # one captured now: the exclusive end
+            if args.command in ('insights','cache') and args.days:end=datetime.now(ZoneInfo('UTC'));start=end-timedelta(days=args.days)  # one captured now: the exclusive end
             if args.command=='report' and args.html:_output_path(args.html,args.db)
         if args.command=='open':path=_output_path(args.html or args.db.parent/'report.html',args.db)
         if args.command=='collect':
@@ -718,10 +733,21 @@ def _main(argv=None):
         if args.command=='rate' and (args.unit or args.thread or args.outcome) and not (args.unit and args.thread and args.outcome):
             raise ValueError('rating needs --unit, --thread and --outcome')
         if args.command=='import' and not args.snapshot.expanduser().is_file():raise NotFound(f'snapshot not found: {args.snapshot}')
-        read_only = (args.command in ('report', 'insights', 'session', 'doctor')
+        read_only = (args.command in ('report', 'insights', 'cache', 'session', 'doctor')
                      or args.command == 'top' and not args.keep_text and not args.forget_text
                      or args.command == 'quota' and args.quota == 'show')
         with History(args.db, read_only=read_only) as history:
+            if args.command=='cache':
+                from tokenatlas import cache_spend
+                history.connection.execute('BEGIN')
+                table=shared.call(pricing.load_prices,args.prices)
+                with progress.step('Read history'):everything,_events=_plan_history(history)
+                with progress.step('Cache spend'):result=cache_spend.analyze(everything,table,start,end,min_write=args.min_write,share=args.share,top=args.top,private=args.private)
+                done()
+                if not result['applicable']['requests'] and not result['applicable']['not_applicable_requests_with_cache_writes']:raise NoData()
+                if args.json:emit('cache',result)
+                else:print(cache_spend.render_text(result))
+                return 0
             if args.command in ('session','rate'):
                 history.connection.execute('BEGIN')
                 price,retrieved=sessions.default_pricer(args.prices)
