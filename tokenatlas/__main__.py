@@ -744,7 +744,7 @@ def _main(argv=None):
                 with progress.step('Read history'):everything,_events=_plan_history(history)
                 with progress.step('Cache spend'):result=cache_spend.analyze(everything,table,start,end,min_write=args.min_write,share=args.share,top=args.top,private=args.private)
                 done()
-                if not result['applicable']['requests']:raise NoData()
+                if not result['applicable']['requests'] and not result['applicable']['not_applicable_requests_with_cache_writes']:raise NoData()
                 if args.json:emit('cache',result)
                 else:print(cache_spend.render_text(result))
                 return 0

@@ -94,6 +94,50 @@ class ClassifyTests(unittest.TestCase):
         quick = [req(n, n, read=0 if n == 0 else 100000 * n, write=100000) for n in range(4)]
         self.assertEqual(causes(quick)[1]['ttl_what_if']['cheaper'], '5m')
 
+
+    def test_window_keeps_the_request_before_it_as_context(self):
+        records = [req(1, 0, write=50000), req(2, 1, read=50000, write=500), req(3, 2, write=52000)]
+        start = T0 + timedelta(minutes=2)
+        found, result = causes(records, start=start)
+        self.assertEqual(found, {'other': 1})  # not a cold start: the thread began before the window
+        self.assertEqual(result['applicable']['requests'], 1)
+
+    def test_one_hour_write_followed_by_a_read_is_not_a_five_minute_expiry(self):
+        records = [req(1, 0, write=50000, hour=50000), req(2, 1, read=50000), req(3, 11, write=52000)]
+        self.assertEqual(causes(records)[0], {'cold_start': 1, 'other': 1})
+
+    def test_unknown_counters_are_not_zero(self):
+        bad = req(1, 0, write=50000)
+        bad['tokens']['cache_read'] = None
+        self.assertEqual(causes([bad])[0], {})
+
+    def test_ambiguous_identity_is_left_out(self):
+        bad = dict(req(1, 0, write=50000), id_synthetic=True)
+        found, result = causes([bad])
+        self.assertEqual(found, {})
+        self.assertEqual(result['applicable']['excluded_ambiguous_requests'], 1)
+
+    def test_missing_model_is_not_a_switch(self):
+        first, second = req(1, 0, write=50000), req(2, 1, write=50000)
+        second['model'] = None
+        self.assertEqual(causes([first, second])[0], {'cold_start': 1, 'other': 1})
+
+    def test_prefix_miss_within_the_ttl_is_not_replayed_as_a_read(self):
+        records = [req(1, 0, write=100000), req(2, 1, write=100000)]  # the second read nothing: the prefix really changed
+        w = causes(records)[1]['ttl_what_if']
+        self.assertAlmostEqual(w['cost_5m_usd'], 2 * 100000 * 2.5 / 1e6)
+
+    def test_missing_one_hour_rate_is_unpriced_in_the_what_if(self):
+        table = {**TABLE, 'models': [dict(m, cache_write_1h=None) if m['model'] == MODEL else m for m in TABLE['models']]}
+        result = cache_spend.analyze([req(1, 0, write=50000)], table)
+        self.assertIsNone(result['ttl_what_if']['cheaper'])
+        self.assertEqual(result['ttl_what_if']['unpriced_requests'], 1)
+
+    def test_by_model_lists_tokens(self):
+        _, result = causes([req(1, 0, write=50000)])
+        self.assertEqual(result['by_model'][0]['write_tokens'], 50000)
+        self.assertIn('by model', cache_spend.render_text(result))
+
     def test_other_harness_is_not_applicable(self):
         other = dict(req(1, 0, write=50000), harness='codex')
         _, result = causes([other])
