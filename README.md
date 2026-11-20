@@ -196,6 +196,7 @@ Stable section ids, in the default order:
 | `quota-windows` | Quota windows |
 | `subscriptions` | Subscriptions view |
 | `facts` | Cost facts |
+| `cache-spend` | Cache spend: full re-caches by cause, resume tax, TTL what-if |
 | `plan-facts` | Plan facts |
 | `usage` | Clients and local inference |
 | `work` | Work context |

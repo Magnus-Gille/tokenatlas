@@ -17,7 +17,7 @@ SECTIONS = {
     'analytics': 'Request analytics', 'efficiency': 'Token efficiency',
     'turns': 'Costliest turns', 'limits': 'Limit hits', 'quota-windows': 'Quota windows',
     'subscriptions': 'Subscriptions',
-    'facts': 'Cost facts', 'plan-facts': 'Plan facts', 'usage': 'Clients and local inference',
+    'facts': 'Cost facts', 'cache-spend': 'Cache spend', 'plan-facts': 'Plan facts', 'usage': 'Clients and local inference',
     'work': 'Work context', 'energy': 'Energy', 'environment': 'Environment', 'charts': 'Timeline and ranking',
     'cache': 'Cache comparisons', 'sessions': 'Sessions', 'coverage': 'Data coverage',
 }
