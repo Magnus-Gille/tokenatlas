@@ -220,3 +220,15 @@ def browser_fixture():
         minutes=10080, resets_at='2026-09-22T00:00:00+00:00', peak_percent=70,
         peak_at='2026-09-20T10:00:00+00:00', hit=False, cost=2)]
     return report.render_report(data)
+
+
+class CacheSpendSectionContract(unittest.TestCase):
+    def test_a_view_saved_before_cache_spend_existed_keeps_the_default_layout(self):
+        from tokenatlas import view
+        old = [s for s in view.SECTIONS if s != 'cache-spend']
+        self.assertEqual(view.clean({'sections': old})['sections'], list(view.SECTIONS))
+        self.assertEqual(view.clean({'sections': old[:3]})['sections'], old[:3])
+
+    def test_api_cost_preset_includes_it(self):
+        from tokenatlas import view
+        self.assertIn('cache-spend', view.PRESETS['api-cost'])

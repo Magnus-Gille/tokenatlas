@@ -27,7 +27,7 @@ FILTERS = ('period', 'harness', 'plan', 'project_id', 'session', 'account', 'mod
 SHARED_FILTERS = frozenset(('period', 'harness', 'plan', 'model', 'effort', 'provider', 'thread_kind'))
 PRESETS = {
     'subscription': ['subscriptions', 'limits', 'quota-windows', 'glance', 'turns', 'plan-facts', 'facts', 'sessions'],
-    'api-cost': ['answer', 'facts', 'turns', 'glance', 'kpis', 'analytics', 'charts', 'cache', 'sessions'],
+    'api-cost': ['answer', 'facts', 'cache-spend', 'turns', 'glance', 'kpis', 'analytics', 'charts', 'cache', 'sessions'],
     'minimal': ['glance', 'kpis', 'turns'],
     'full': list(SECTIONS),
 }
@@ -65,6 +65,8 @@ def clean(data):
         raise ValueError('unsupported view version (expected 1)')
     if 'sections' in data:
         result['sections'] = sections(data['sections'])
+        if result['sections'] == [s for s in SECTIONS if s != 'cache-spend']:  # a list saved before cache-spend existed was the full default
+            result['sections'] = list(SECTIONS)
     if 'top' in data:
         if type(data['top']) is not int or not 1 <= data['top'] <= 10000:
             raise ValueError('view top must be between 1 and 10000')

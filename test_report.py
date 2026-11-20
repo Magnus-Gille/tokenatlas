@@ -773,9 +773,23 @@ class CacheSpendSection(unittest.TestCase):  # TOKEN-27: the report shows what `
         self.assertIsNotNone(windows['all']['ttl_what_if']['cost_5m_usd'])
         self.assertNotIn('by_model', windows['all'])
 
-    def test_redacted_report_names_no_session(self):
+    def test_redacted_report_names_no_session_and_aliases_like_the_sessions_table(self):
         report = build_report(self.rows(), {})
-        encoded = json.dumps(report['cache_spend'])
-        self.assertNotIn('private-sess', encoded)
         html = render_report(report)
+        self.assertNotIn('private-', json.dumps(decode_html(html)))
+        alias = report['cache_spend']['windows'][1]['idle_recache_sessions'][0]['session']
+        self.assertIn(alias, set(expand(report)[0]['session'] for _ in [0]) | {r['session'] for r in expand(report)})
         self.assertIn('id="cache-spend"', page_text(html))
+
+    def test_unredacted_report_carries_the_full_session_id(self):
+        report = build_report(self.rows('abcdefgh-0001'), {}, redact=False)
+        self.assertEqual(report['cache_spend']['windows'][1]['idle_recache_sessions'][0]['session'], 'claude:abcdefgh-0001')
+
+    def test_filtered_report_counts_only_its_own_rows(self):
+        mine, other = self.rows('mine-session'), self.rows('other-session')
+        other = [dict(r, id='o' + r['id']) for r in other]
+        everything = mine + other
+        report = build_report(mine, {}, universe=everything, redact=False)
+        window = report['cache_spend']['windows'][1]
+        self.assertEqual(window['applicable']['requests'], 3)
+        self.assertEqual([s['session'] for s in window['idle_recache_sessions']], ['claude:mine-session'])

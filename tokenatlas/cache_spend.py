@@ -114,11 +114,12 @@ def _what_if(rows, table, inside):
     return costs, priced, unpriced
 
 
-def analyze(records, table, start=None, end=None, min_write=MIN_WRITE, share=SHARE, top=10, memo=None, private=False):
-    """The `tokenatlas cache` result for the requests in [start, end)."""
+def analyze(records, table, start=None, end=None, min_write=MIN_WRITE, share=SHARE, top=10, memo=None, private=False, counted=None):
+    """The `tokenatlas cache` result for the requests in [start, end). `counted` (a set of prompts.ident values) limits what is counted while threads are still built from every record."""
     memo = {} if memo is None else memo
     def inside(r):
-        return (start is None or prompts._t(r['ts']) >= start) and (end is None or prompts._t(r['ts']) < end)
+        return ((start is None or prompts._t(r['ts']) >= start) and (end is None or prompts._t(r['ts']) < end)
+                and (counted is None or prompts.ident(r) in counted))
     # Threads are built from the whole history: the request before the window is context for the first one inside it.
     claude = [r for r in records if r['harness'] == 'claude' and not r.get('id_synthetic')]  # ambiguous identities are left out, as in budget
     excluded = sum(1 for r in records if r['harness'] == 'claude' and r.get('id_synthetic') and inside(r))
@@ -191,7 +192,7 @@ def analyze(records, table, start=None, end=None, min_write=MIN_WRITE, share=SHA
         'recache_cost_usd': recached,
         'causes': [dict(cause=c, share_of_write_cost=(v['cost_usd'] / write_cost) if write_cost else None, **v) for c, v in causes.items()],
         'by_model': [dict(harness=h, model=m, write_tokens=t, cost_usd=sum(by_model[(h, m)].values()), causes=dict(by_model[(h, m)])) for (h, m), t in sorted(model_tokens.items(), key=lambda kv: (-sum(by_model[kv[0]].values()), -kv[1], kv[0]))],
-        'resume_tax': [dict(harness=h, session=str(s)[:8], recaches=v['recaches'], write_tokens=v['write_tokens'], cost_usd=v['cost_usd'],
+        'resume_tax': [dict(harness=h, session=str(s)[:8], session_id=str(s), recaches=v['recaches'], write_tokens=v['write_tokens'], cost_usd=v['cost_usd'],
                             unpriced_requests=v['unpriced'], longest_gap_hours=round(v['longest_gap'] / 3600, 1),
                             **({'project': v.get('project')} if private else {})) for (h, s), v in ranked],
         'ttl_what_if': {'priced_requests': whatif_priced, 'unpriced_requests': whatif_unpriced,
