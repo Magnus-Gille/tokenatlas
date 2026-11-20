@@ -140,8 +140,10 @@ class CloudDigestTest(unittest.TestCase):
 
         class Redirect(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
+                self.rfile.read(int(self.headers.get('Content-Length', 0)))  # drain the body so the client sees the reply on every platform
                 self.send_response(302)
                 self.send_header("Location", "/elsewhere")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
 
             def log_message(self, *args):

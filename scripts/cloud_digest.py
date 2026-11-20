@@ -147,7 +147,7 @@ def _post(url: str, token: str, body: bytes) -> bool:
     try:
         with urllib.request.build_opener(_NoRedirect).open(req, timeout=3) as resp:
             return 200 <= resp.status < 300
-    except urllib.error.HTTPError:
+    except (urllib.error.URLError, OSError):  # a refusal, a redirect left unfollowed, or a dropped connection
         return False
 
 
