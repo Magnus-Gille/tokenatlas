@@ -1,0 +1,16 @@
+# Worker + D1 for the TokenAtlas cloud ingest (docs/architecture/cloud-ingest.md, slice 2).
+# Deploy is a manual, operator step; nothing here is applied by CI. Before the first deploy:
+#   wrangler d1 create tokenatlas-ingest [--jurisdiction eu]   # jurisdiction is fixed at creation: decide first (design section 9)
+#   put the printed database_id below
+#   wrangler d1 migrations apply tokenatlas-ingest --remote
+# No `routes`/custom domain is configured here on purpose (design section 11 wants one; that is a DNS decision for the owner).
+name = "tokenatlas-ingest"
+main = "worker/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tokenatlas-ingest"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+migrations_dir = "migrations/sqlite"
