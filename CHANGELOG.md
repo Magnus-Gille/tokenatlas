@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Added
+
+- Remote sync backs off a failing host (TOKEN-198): after 3 failed syncs in a row (`TOKENATLAS_BACKOFF_AFTER`, 0 disables) `remote_sync.sh` skips the host for an hour, doubling per further failure up to 12 hours (`TOKENATLAS_BACKOFF_BASE`, `TOKENATLAS_BACKOFF_MAX`); `TOKENATLAS_FORCE_SYNC=1` tries it now. `tokenatlas doctor` lists each host's failures, last success and next attempt (`remote_sync`), and the report's coverage section flags a host whose syncs keep failing.
+
 ## [1.29.0] - 2026-11-21
 
 ### Added

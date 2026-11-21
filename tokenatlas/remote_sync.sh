@@ -23,6 +23,11 @@
 #   TOKENATLAS_HOST_TIMEOUT overall seconds per host (default 300); a host over the limit is killed (with its
 #                           children) and reported as "<host>: ERROR (timeout after Ns)", then the next host runs.
 #                           The script then exits 1 once it has finished the remaining hosts.
+#
+# Back-off (TOKEN-198): a host that fails TOKENATLAS_BACKOFF_AFTER runs in a row (default 3; 0 disables) is skipped, not
+# retried on every cron run: for TOKENATLAS_BACKOFF_BASE seconds (default 3600), doubling with each further failure up to
+# TOKENATLAS_BACKOFF_MAX (default 43200). A skip prints "history: SKIPPED ..." and is not a failure. TOKENATLAS_FORCE_SYNC=1
+# ignores the back-off. The per-host state lives in <state>/remote/<tag>.sync-state (read by `tokenatlas doctor` and the report).
 
 set -euo pipefail
 
@@ -49,6 +54,12 @@ else
     REMOTE_HOSTS=("${DEFAULT_REMOTE_HOSTS[@]}")
 fi
 
+for v in TOKENATLAS_BACKOFF_AFTER:3 TOKENATLAS_BACKOFF_BASE:3600 TOKENATLAS_BACKOFF_MAX:43200; do
+    name="${v%%:*}"; value="${!name:-${v#*:}}"
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then printf "%s must be a non-negative integer, got '%s'\n" "$name" "$value" >&2; exit 2; fi
+    printf -v "$name" '%s' "$((10#$value))"  # 10#: a leading zero is not octal
+done
+
 # Tags become file names and hosts become ssh/scp arguments: accept only plain characters and never a
 # host that could be read as an option.  (ssh/scp get `--` before the host.)
 valid_pair() {
@@ -73,6 +84,50 @@ build_terminal_safe_sed() {
 build_terminal_safe_sed
 terminal_safe() {
     printf '%s\n' "$1" | LC_ALL=C sed -e "$TERMINAL_SAFE_SED"
+}
+
+# Per-host sync state: fails (consecutive), last_ok / last_try / next_try (epoch seconds). Best effort: a state file that cannot
+# be written or read only disables the back-off, it never fails a sync.
+STATE_DIR="$HOME/.local/state/tokenatlas/remote"
+state_get() { # tag key -> value (empty when unknown)
+    { sed -n "s/^$2=\([0-9]*\)\$/\1/p" "$STATE_DIR/$1.sync-state" 2>/dev/null | head -n 1; } || true
+}
+state_put() { # tag fails last_ok last_try next_try
+    { mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR" &&
+      printf 'fails=%s\nlast_ok=%s\nlast_try=%s\nnext_try=%s\n' "$2" "$3" "$4" "$5" > "$STATE_DIR/$1.sync-state"; } 2>/dev/null || true  # four short lines: one write
+}
+fmt_ts() { # epoch -> UTC text (GNU or BSD date), else the epoch itself
+    [[ -n "$1" ]] || { printf 'never'; return; }
+    date -u -d "@$1" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || date -u -r "$1" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || printf '%s' "$1"
+}
+record_result() { # tag rc
+    local tag="$1" rc="$2" now fails last_ok wait
+    now=$(date +%s)
+    last_ok=$(state_get "$tag" last_ok)
+    if [[ "$rc" -eq 0 ]]; then
+        state_put "$tag" 0 "$now" "$now" 0
+        return
+    fi
+    fails=$(( $(state_get "$tag" fails) + 1 ))
+    wait=0
+    if [[ "$TOKENATLAS_BACKOFF_AFTER" -gt 0 && $fails -ge $TOKENATLAS_BACKOFF_AFTER ]]; then
+        wait=$TOKENATLAS_BACKOFF_BASE
+        local i=$((fails - TOKENATLAS_BACKOFF_AFTER))
+        while [[ $i -gt 0 && $wait -lt $TOKENATLAS_BACKOFF_MAX ]]; do wait=$((wait * 2)); i=$((i - 1)); done
+        [[ $wait -gt $TOKENATLAS_BACKOFF_MAX ]] && wait=$TOKENATLAS_BACKOFF_MAX
+    fi
+    state_put "$tag" "$fails" "${last_ok:-0}" "$now" "$((now + wait))"
+}
+# Returns 0 (after printing why) when the host is inside its back-off window.
+backing_off() {
+    local tag="$1" next now
+    [[ -z "${TOKENATLAS_FORCE_SYNC:-}" && "$TOKENATLAS_BACKOFF_AFTER" -gt 0 ]] || return 1
+    next=$(state_get "$tag" next_try); now=$(date +%s)
+    [[ -n "$next" && "$next" -gt "$now" ]] || return 1
+    # A deadline further away than the longest back-off (clock jump, or a lowered TOKENATLAS_BACKOFF_MAX) is not trusted.
+    [[ $((next - now)) -le "$TOKENATLAS_BACKOFF_MAX" ]] || return 1
+    printf '  history: SKIPPED %s: %s failed syncs in a row, next try after %s (last success %s); TOKENATLAS_FORCE_SYNC=1 tries now\n' \
+        "$tag" "$(state_get "$tag" fails)" "$(fmt_ts "$next")" "$(fmt_ts "$(state_get "$tag" last_ok)")"
 }
 
 # Merge the remote machine's history database (tokenatlas snapshot -> scp -> local import).
@@ -212,8 +267,10 @@ for entry in "${REMOTE_HOSTS[@]}"; do
         continue
     fi
 
+    if backing_off "$tag"; then continue; fi
     rc=0
     run_with_deadline "$tag" "$host" || rc=$?
+    record_result "$tag" "$rc"
     if [[ $rc -eq 124 ]]; then
         echo "$host: ERROR (timeout after ${HOST_TIMEOUT}s)" >&2
         overall_rc=1

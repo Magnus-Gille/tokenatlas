@@ -18,6 +18,7 @@ from tokenatlas import budget, cache_spend, credits as credit_rates, energy, ins
 from tokenatlas.history import ALL_FIELDS
 from tokenatlas.resume import resume_info
 
+from tokenatlas import remote_state
 from tokenatlas import subscriptions as subscription_plans
 
 PUBLIC_NAMES = dict(
@@ -131,6 +132,7 @@ def coverage_key(source_status):
     key['imports'] = [{k: imp.get(k) for k in IMPORT_FIELDS if k != 'last_success'}
                       for imp in source_status.get('imports', [])]
     key['files_by_harness'] = source_status.get('files_by_harness')
+    key['remote_sync'] = remote_state.failing(source_status.get('remote_sync'))
     return key
 
 
@@ -593,6 +595,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     coverage = {key: source_status.get(key) for key in COVERAGE_FIELDS}
     coverage.update(coverage_complete=False, billing_verified=False)
     coverage['imports'] = [{key: imp.get(key) for key in IMPORT_FIELDS} for imp in source_status.get('imports', [])]
+    coverage['remote_sync'] = [] if redact else remote_state.failing(source_status.get('remote_sync'))  # failing hosts (TOKEN-198); host tags stay out of shared reports
     coverage['files_by_harness'] = source_status.get('files_by_harness') or {}  # counts only, never paths (#151)
     coverage['ranges'] = []
     for harness in sorted({r['harness'] for r in rows}):
