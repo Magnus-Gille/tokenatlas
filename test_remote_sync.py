@@ -182,6 +182,19 @@ class RemoteSyncTest(unittest.TestCase):
         state = self.state('a')
         self.assertEqual(state['next_try'] - state['last_try'], 5000)
 
+    def test_first_ever_failure_is_recorded_with_no_success_and_a_far_deadline_is_ignored(self):
+        proc, _ = self.run_script('a:h1', bodies_override={'ssh': 'exit 255'})
+        self.assertEqual(self.state('a')['last_ok'], 0)
+        far = int(time.time()) + 10 * 86400  # beyond the longest back-off: a clock jump, not a real deadline
+        proc, log = self.run_script('a:h1', home_files={self.STATE.format('a'): f'fails=3\nlast_ok=0\nlast_try=5\nnext_try={far}\n'})
+        self.assertIn('history: OK', proc.stdout)
+
+    def test_leading_zero_setting_is_decimal(self):
+        future = int(time.time()) + 3600
+        proc, _ = self.run_script('a:h1', extra_env={'TOKENATLAS_BACKOFF_AFTER': '08'},
+                                  home_files={self.STATE.format('a'): f'fails=9\nlast_ok=0\nlast_try=5\nnext_try={future}\n'})
+        self.assertIn('history: SKIPPED a', proc.stdout)
+
     def test_backoff_can_be_disabled_and_rejects_bad_settings(self):
         future = int(time.time()) + 3600
         proc, log = self.run_script('a:h1', extra_env={'TOKENATLAS_BACKOFF_AFTER': '0'},

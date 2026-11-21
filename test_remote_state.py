@@ -31,6 +31,18 @@ class RemoteStateTest(unittest.TestCase):
         self.assertTrue(pi['next_attempt'].endswith('Z'))
         self.assertEqual((by_host['m5']['consecutive_failures'], by_host['m5']['backing_off'], by_host['m5']['next_attempt']), (0, False, None))
 
+    def test_never_succeeded_host_is_listed(self):
+        seed(self.home, 'new', f'fails=1\nlast_ok=\nlast_try={NOW}\nnext_try=0\n')
+        entry = remote_state.read(self.home, now=NOW)[0]
+        self.assertEqual((entry['host'], entry['consecutive_failures'], entry['last_success']), ('new', 1, None))
+
+    def test_shared_report_omits_host_tags(self):
+        seed(self.home, 'pi', f'fails=3\nlast_ok=0\nlast_try={NOW}\nnext_try=0\n')
+        with mock.patch.object(Path, 'home', return_value=self.home), tempfile.TemporaryDirectory() as tmp:
+            with History(Path(tmp) / 'h.sqlite3') as history:
+                status = history.doctor()
+            self.assertEqual(build_report([], status, redact=True)['coverage']['remote_sync'], [])
+
     def test_unreadable_or_odd_files_are_ignored(self):
         seed(self.home, 'bad', 'fails=many\n')
         seed(self.home, 'we ird', 'fails=1\n')
@@ -52,7 +64,7 @@ class RemoteStateTest(unittest.TestCase):
                 status = history.doctor()
             self.assertEqual(status['remote_sync'][0]['host'], 'pi')
             self.assertTrue(status['remote_sync'][0]['backing_off'])
-            payload = build_report([], status)
+            payload = build_report([], status, redact=False)
             self.assertEqual(payload['coverage']['remote_sync'], [dict(host='pi', consecutive_failures=3, last_success='2026-11-18T11:06:40Z')])
             key_failing = coverage_key(status)
             seed(self.home, 'pi', f'fails=3\nlast_ok=1795000000\nlast_try={NOW + 999}\nnext_try=4102444900\n')

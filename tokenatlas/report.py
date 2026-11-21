@@ -595,7 +595,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     coverage = {key: source_status.get(key) for key in COVERAGE_FIELDS}
     coverage.update(coverage_complete=False, billing_verified=False)
     coverage['imports'] = [{key: imp.get(key) for key in IMPORT_FIELDS} for imp in source_status.get('imports', [])]
-    coverage['remote_sync'] = remote_state.failing(source_status.get('remote_sync'))  # hosts whose last syncs failed (TOKEN-198)
+    coverage['remote_sync'] = [] if redact else remote_state.failing(source_status.get('remote_sync'))  # failing hosts (TOKEN-198); host tags stay out of shared reports
     coverage['files_by_harness'] = source_status.get('files_by_harness') or {}  # counts only, never paths (#151)
     coverage['ranges'] = []
     for harness in sorted({r['harness'] for r in rows}):

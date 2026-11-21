@@ -57,7 +57,7 @@ fi
 for v in TOKENATLAS_BACKOFF_AFTER:3 TOKENATLAS_BACKOFF_BASE:3600 TOKENATLAS_BACKOFF_MAX:43200; do
     name="${v%%:*}"; value="${!name:-${v#*:}}"
     if ! [[ "$value" =~ ^[0-9]+$ ]]; then printf "%s must be a non-negative integer, got '%s'\n" "$name" "$value" >&2; exit 2; fi
-    printf -v "$name" '%s' "$value"
+    printf -v "$name" '%s' "$((10#$value))"  # 10#: a leading zero is not octal
 done
 
 # Tags become file names and hosts become ssh/scp arguments: accept only plain characters and never a
@@ -116,7 +116,7 @@ record_result() { # tag rc
         while [[ $i -gt 0 && $wait -lt $TOKENATLAS_BACKOFF_MAX ]]; do wait=$((wait * 2)); i=$((i - 1)); done
         [[ $wait -gt $TOKENATLAS_BACKOFF_MAX ]] && wait=$TOKENATLAS_BACKOFF_MAX
     fi
-    state_put "$tag" "$fails" "$last_ok" "$now" "$((now + wait))"
+    state_put "$tag" "$fails" "${last_ok:-0}" "$now" "$((now + wait))"
 }
 # Returns 0 (after printing why) when the host is inside its back-off window.
 backing_off() {
@@ -124,6 +124,8 @@ backing_off() {
     [[ -z "${TOKENATLAS_FORCE_SYNC:-}" && "$TOKENATLAS_BACKOFF_AFTER" -gt 0 ]] || return 1
     next=$(state_get "$tag" next_try); now=$(date +%s)
     [[ -n "$next" && "$next" -gt "$now" ]] || return 1
+    # A deadline further away than the longest back-off (clock jump, or a lowered TOKENATLAS_BACKOFF_MAX) is not trusted.
+    [[ $((next - now)) -le "$TOKENATLAS_BACKOFF_MAX" ]] || return 1
     printf '  history: SKIPPED %s: %s failed syncs in a row, next try after %s (last success %s); TOKENATLAS_FORCE_SYNC=1 tries now\n' \
         "$tag" "$(state_get "$tag" fails)" "$(fmt_ts "$next")" "$(fmt_ts "$(state_get "$tag" last_ok)")"
 }

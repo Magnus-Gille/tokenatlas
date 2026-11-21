@@ -33,7 +33,7 @@ def read(home: Path | None = None, now: float | None = None) -> list[dict]:
             continue
         try:
             fields = dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line)
-            fails, last_ok, last_try, next_try = (int(fields.get(k, 0)) for k in ('fails', 'last_ok', 'last_try', 'next_try'))
+            fails, last_ok, last_try, next_try = (int(fields.get(k) or 0) for k in ('fails', 'last_ok', 'last_try', 'next_try'))
         except (OSError, ValueError):
             continue
         out.append(dict(host=tag, consecutive_failures=fails, last_success=_iso(last_ok), last_attempt=_iso(last_try),
