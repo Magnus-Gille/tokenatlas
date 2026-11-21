@@ -53,6 +53,16 @@ A stalled host must not block anything else, so every remote call is bounded:
   once its periodic browser check has expired. Run `ssh <host>` in a terminal and complete the login, or change the
   Tailscale ACL rule from `check` to `accept`. The login URL is never written to the log.
 
+### Back-off for a failing host
+
+A dead or unauthenticated host should not cost its timeout on every cron run. After `TOKENATLAS_BACKOFF_AFTER` consecutive
+failures (default 3; `0` turns the back-off off) the host is skipped for `TOKENATLAS_BACKOFF_BASE` seconds (default 3600),
+doubling with every further failure up to `TOKENATLAS_BACKOFF_MAX` (default 43200). A skipped host prints
+`history: SKIPPED <tag>: N failed syncs in a row, next try after <time> (last success <time>)` and is not counted as a failure.
+`TOKENATLAS_FORCE_SYNC=1` ignores the back-off, and one successful sync clears it. The state is a small file per host,
+`~/.local/state/tokenatlas/remote/<tag>.sync-state`. `tokenatlas doctor` shows it under `remote_sync` (consecutive failures,
+last success, next attempt) and the report's coverage section flags a host whose syncs keep failing.
+
 Schedule `tokenatlas collect` instead of calling `remote_sync.sh` from cron. The sync script ships inside the
 package (the repository-root `remote_sync.sh` is a shim that runs it for checkout users). `collect` takes a kernel
 lock (`flock` on `collect.lock` in the state directory; released by the OS on exit or crash, so no stale-lock
