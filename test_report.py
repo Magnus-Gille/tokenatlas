@@ -751,3 +751,45 @@ class CompactRowsTests(unittest.TestCase):
         out = decode_html(render_report(build_report(rows, {}, redact=False)))
         got = expand(out)
         self.assertEqual(sorted(r['environment']['co2e_grams'] for r in got), [0.0, 1.0, 2.0])
+
+
+class CacheSpendSection(unittest.TestCase):  # TOKEN-27: the report shows what `tokenatlas cache` computes
+    def rows(self, session='private-session'):
+        base = datetime(2026, 11, 1, 10, 0).replace(tzinfo=ZoneInfo('UTC'))
+        out = []
+        for n, minutes in enumerate((0, 1, 200)):  # cold start, healthy read, then a resume after more than an hour
+            fresh = dict(fresh_input=10, cache_read=0 if n != 1 else 50000, cache_write=50000 if n != 1 else 500, output=5, reasoning=None)
+            out.append(observation(f'c{n}', ts=(base.replace(hour=10) + __import__('datetime').timedelta(minutes=minutes)).isoformat(),
+                                   model='claude-sonnet-5', session=session, tokens=fresh,
+                                   raw_usage={'cache_creation': {'ephemeral_5m_input_tokens': fresh['cache_write'], 'ephemeral_1h_input_tokens': 0}}))
+        return out
+
+    def test_payload_has_windows_with_causes_and_what_if(self):
+        report = build_report(self.rows(), {})
+        windows = {w['id']: w for w in report['cache_spend']['windows']}
+        self.assertEqual(set(windows), {'30d', 'all'})
+        found = {c['cause']: c['requests'] for c in windows['all']['causes']}
+        self.assertEqual((found['cold_start'], found['idle_over_1h']), (1, 1))
+        self.assertIsNotNone(windows['all']['ttl_what_if']['cost_5m_usd'])
+        self.assertNotIn('by_model', windows['all'])
+
+    def test_redacted_report_names_no_session_and_aliases_like_the_sessions_table(self):
+        report = build_report(self.rows(), {})
+        html = render_report(report)
+        self.assertNotIn('private-', json.dumps(decode_html(html)))
+        alias = report['cache_spend']['windows'][1]['idle_recache_sessions'][0]['session']
+        self.assertIn(alias, set(expand(report)[0]['session'] for _ in [0]) | {r['session'] for r in expand(report)})
+        self.assertIn('id="cache-spend"', page_text(html))
+
+    def test_unredacted_report_carries_the_full_session_id(self):
+        report = build_report(self.rows('abcdefgh-0001'), {}, redact=False)
+        self.assertEqual(report['cache_spend']['windows'][1]['idle_recache_sessions'][0]['session'], 'claude:abcdefgh-0001')
+
+    def test_filtered_report_counts_only_its_own_rows(self):
+        mine, other = self.rows('mine-session'), self.rows('other-session')
+        other = [dict(r, id='o' + r['id']) for r in other]
+        everything = mine + other
+        report = build_report(mine, {}, universe=everything, redact=False)
+        window = report['cache_spend']['windows'][1]
+        self.assertEqual(window['applicable']['requests'], 3)
+        self.assertEqual([s['session'] for s in window['idle_recache_sessions']], ['claude:mine-session'])
