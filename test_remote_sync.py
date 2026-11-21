@@ -44,7 +44,7 @@ STUB = '#!/bin/bash\necho "{name} $*" >> "$STUB_LOG"\n{body}\n'
 
 @unittest.skipIf(os.name == 'nt', 'remote_sync.sh targets macOS/Linux hosts')
 class RemoteSyncTest(unittest.TestCase):
-    def run_script(self, hosts, bodies_override=None, mv_fails_first=False, rm_fails=False, extra_env=None, em_in_home_bin=False, remote_only=None, bash_args=()):
+    def run_script(self, hosts, bodies_override=None, mv_fails_first=False, rm_fails=False, extra_env=None, em_in_home_bin=False, remote_only=None, bash_args=(), home_files=None):
         # The prefix holds the host names on purpose: scp gets a local temp path, so a stub that matches a host
         # anywhere in "$*" (rather than the "host:path" argument) fails every time instead of when the random
         # temp name happens to contain it (TOKEN-195).
@@ -53,6 +53,10 @@ class RemoteSyncTest(unittest.TestCase):
         root = Path(tmp.name)
         (root / 'bin').mkdir()
         (root / 'home').mkdir()
+        self.home = root / 'home'
+        for rel, text in (home_files or {}).items():
+            (root / 'home' / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / 'home' / rel).write_text(text)
         log = root / 'log'
         counter = root / 'mv_count'
         bodies = {'ssh': 'exit 0', 'tokenatlas': 'exit 0', 'scp': 'touch "${@: -1}"',
@@ -132,6 +136,60 @@ class RemoteSyncTest(unittest.TestCase):
             'scp': 'printf "Permission denied (publickey).\\n\\tsecond line\\n" >&2; exit 1'})
         self.assertIn('scp failed for a: Permission denied (publickey).\n\tsecond line\n', proc.stderr)
         self.assertNotIn('\\x', proc.stderr)
+
+    STATE = '.local/state/tokenatlas/remote/{}.sync-state'
+
+    def state(self, tag):
+        text = (self.home / self.STATE.format(tag)).read_text()
+        return {k: int(v) for k, v in (line.split('=') for line in text.splitlines())}
+
+    def test_backoff_skips_a_host_after_repeated_failures(self):
+        future = int(time.time()) + 3600
+        proc, log = self.run_script('a:h1 b:h2', home_files={self.STATE.format('a'): f'fails=3\nlast_ok=1000\nlast_try=5\nnext_try={future}\n'})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('history: SKIPPED a: 3 failed syncs in a row', proc.stdout)
+        self.assertIn('last success', proc.stdout)
+        self.assertNotIn(' -- h1 ', log)  # no ssh to the skipped host
+        self.assertIn(' -- h2 ', log)
+        self.assertEqual(self.state('a')['fails'], 3)  # a skip changes nothing
+
+    def test_force_sync_ignores_backoff_and_success_resets_it(self):
+        future = int(time.time()) + 3600
+        proc, log = self.run_script('a:h1', extra_env={'TOKENATLAS_FORCE_SYNC': '1'},
+                                    home_files={self.STATE.format('a'): f'fails=5\nlast_ok=1000\nlast_try=5\nnext_try={future}\n'})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('history: OK', proc.stdout)
+        state = self.state('a')
+        self.assertEqual((state['fails'], state['next_try']), (0, 0))
+        self.assertGreater(state['last_ok'], 1000)
+
+    def test_expired_backoff_retries_and_a_failure_extends_it(self):
+        proc, _ = self.run_script('a:h1', bodies_override={'ssh': 'exit 255'},
+                                  home_files={self.STATE.format('a'): 'fails=3\nlast_ok=1000\nlast_try=5\nnext_try=10\n'})
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn('ssh exit 255', proc.stderr)
+        state = self.state('a')
+        self.assertEqual((state['fails'], state['last_ok']), (4, 1000))
+        self.assertAlmostEqual(state['next_try'] - state['last_try'], 7200, delta=5)  # 3600 doubled once
+
+    def test_backoff_starts_at_the_threshold_and_is_capped(self):
+        proc, _ = self.run_script('a:h1', bodies_override={'ssh': 'exit 255'},
+                                  home_files={self.STATE.format('a'): 'fails=1\nlast_ok=0\nlast_try=5\nnext_try=0\n'})
+        st = self.state('a')
+        self.assertEqual((st['fails'], st['next_try']), (2, st['last_try']))  # below the threshold of 3: no wait
+        proc, _ = self.run_script('a:h1', bodies_override={'ssh': 'exit 255'}, extra_env={'TOKENATLAS_BACKOFF_MAX': '5000'},
+                                  home_files={self.STATE.format('a'): 'fails=9\nlast_ok=0\nlast_try=5\nnext_try=0\n'})
+        state = self.state('a')
+        self.assertEqual(state['next_try'] - state['last_try'], 5000)
+
+    def test_backoff_can_be_disabled_and_rejects_bad_settings(self):
+        future = int(time.time()) + 3600
+        proc, log = self.run_script('a:h1', extra_env={'TOKENATLAS_BACKOFF_AFTER': '0'},
+                                    home_files={self.STATE.format('a'): f'fails=9\nlast_ok=0\nlast_try=5\nnext_try={future}\n'})
+        self.assertIn('history: OK', proc.stdout)
+        proc, _ = self.run_script('a:h1', extra_env={'TOKENATLAS_BACKOFF_BASE': 'soon'})
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn('TOKENATLAS_BACKOFF_BASE must be', proc.stderr)
 
     def test_invalid_pairs_rejected(self):
         proc, log = self.run_script('../../x:host pi:-oProxyCommand=x ok:good.host')
