@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-11-21
+
 ### Added
 
 - `tokenatlas cache` explains cache spend (TOKEN-27): full re-caches by cause (cold start, idle gap, model, effort or speed switch), the resume tax per session and a 5-minute versus 1-hour TTL what-if, as list-price estimates for Claude requests (`--json` schema `tokenatlas.cache/1`).
