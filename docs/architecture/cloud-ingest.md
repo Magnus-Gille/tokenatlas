@@ -30,7 +30,7 @@ flowchart LR
   SP -. "retry on next Stop" .-> W
   subgraph CF["Cloudflare"]
     W[Worker: auth, validate, dedupe] --> D1[(D1: events, sessions, tenants, tokens)]
-    W -. optional .-> R2[(R2: raw batches, 30d)]
+    W -. optional .-> R2[(R2: validated rows, tenant retention)]
   end
   subgraph Local["Mac / Pi"]
     C["tokenatlas sync-cloud<br/>(cron / refresh)"] -- "GET /v1/events?after=cursor (Bearer read token)" --> W
@@ -50,8 +50,8 @@ All bodies are UTF-8. Errors are `{"error": {"code": "...", "message": "..."}}` 
 
 | Endpoint | Auth scope | Purpose |
 | --- | --- | --- |
-| `POST /v1/ingest` | `ingest` | NDJSON, one digest row per line, max 200 rows / 256 KB per request (raise after measuring Worker CPU). Returns `{accepted, duplicates, rejected:[{line,code}]}`. Partial success is normal: 200 if the request was well-formed, 4xx only for the whole request (auth, size, content type) |
-| `GET /v1/events?after=<cursor>&limit=1000` | `read` | NDJSON page in ingest order plus `X-Next-Cursor`. Cursor is opaque (an encoded monotonic `seq`) |
+| `POST /v1/ingest` | `ingest` | NDJSON, one digest row per line, max 200 rows / 256 KB per request. Requires header `X-TokenAtlas-Client: 2`; an older client (no enclosing `session`, queue cleared on any 2xx) gets `426` for the **whole request**, so it can never lose rows to a partial 200. Returns the single receipt format in section 6. |
+| `GET /v1/events?after=<cursor>&limit=1000` | `read` | NDJSON page of **envelopes** `{seq, dedupe_key, source, token_id, session_id, rel_path, received_at, row}` (the digest row nested under `row`; `seq` values are not contiguous), plus `X-Next-Cursor`. The cursor is opaque (`generation`, `seq`). `410` when expired or reset (section 8) |
 | `GET /v1/health` | none | `{ok, api:1}`; no tenant data |
 
 Token minting/revoking and erasure are **not** HTTP endpoints in v1: they are an operator script (`wrangler d1 execute`
@@ -69,7 +69,7 @@ Rules: HTTPS only, no redirects honoured by the client (already enforced in `clo
   label, `created_at`, `last_used_at`, `revoked_at`. Scopes: `ingest` (write only) and `read` (pull only).
 - **The cloud container only ever gets an `ingest` token.** Environment secrets in a cloud session are readable by the
   agent and anything it runs, so assume the token leaks: it can add rows for that tenant but cannot read or delete. Mitigate
-  with per-environment tokens (revoke one without touching others), per-token daily row quotas, and strict field validation (section 5) so a leaked token cannot smuggle free text or paths. Rows from a token carry `token_id` for forensics and bulk
+  with per-environment tokens (revoke one without touching others), per-token daily row quotas, and strict field validation (section 5) so a leaked token can only store bounded, validated fields (short `cwd`/`gitBranch` text is the residual, section 5). Rows from a token carry `token_id` for forensics and bulk
   removal.
 - The `read` token lives on the Mac/Pi only, in the OS keychain or a 0600 file.
 - A leaked ingest token can still **forge plausible counters** for that tenant; validation limits what a row can carry, not
@@ -114,7 +114,7 @@ CREATE TABLE events (
 CREATE INDEX events_pull ON events (tenant_id, seq);
 CREATE INDEX events_session ON events (tenant_id, session_id);
 CREATE INDEX events_retention ON events (tenant_id, received_at);   -- chunked retention deletes
-CREATE TABLE quota_day (token_id TEXT, day TEXT, rows INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (token_id, day));  -- atomic daily counter, no scans
+CREATE TABLE quota_day (tenant_id TEXT, token_id TEXT, day TEXT, rows INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (token_id, day));  -- charged only for newly inserted rows (retries and duplicates are free); at the cap the batch is cut at the cap and the rest get status `quota`
 CREATE TABLE tombstones (tenant_id TEXT, dedupe_key TEXT, deleted_at TEXT, PRIMARY KEY (tenant_id, dedupe_key));  -- erased keys, kept for the replay window
 CREATE TABLE tenant_state (tenant_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1, deleted_through_seq INTEGER NOT NULL DEFAULT 0);
 ```
@@ -156,7 +156,16 @@ path to check it is under the tenant's spool root before writing. Reports escape
 - Never upsert in place: an updated row would keep its old `seq` and pullers already past it would never see it.
 - `INSERT ... ON CONFLICT DO NOTHING` on `UNIQUE(tenant_id, dedupe_key)`: a retry, a resend after a lost response, or two overlapping Stops
   all converge. A row with the same `uuid` is by definition the same line; a rewritten transcript with new uuids simply adds rows, which the local `requestId` rule collapses.
-- The client does not need the response to be exact: 2xx means "queued rows may be dropped", anything else means "keep".
+- **One receipt, one action per status.** `200 {results:[{line, status, code?}]}`, one entry per line, in order. Insert is
+  `ON CONFLICT DO NOTHING` followed by a check of the stored `row_json` hash, so the Worker can tell `duplicate` (same
+  content) from `conflict` (same key, different content). Client action: `accepted`, `duplicate` -> remove; `conflict`,
+  `rejected`, `row_too_large`, `suppressed` (tombstoned) -> move to local quarantine, count, never retry; `quota`, a
+  missing/short receipt, any non-200 -> keep and retry later. `_post` reads the body.
+- **Tombstones are enforced atomically**: the insert is `... WHERE NOT EXISTS (SELECT 1 FROM tombstones ...)` and a hit
+  returns `suppressed`. Tombstones do not expire while the source is active, because a transcript reread can replay old rows
+  and would otherwise restart the retention clock.
+- Source labels are stable per environment and not rewritten on token rotation (rotation keeps `source`). `line_id` for rows
+  without `uuid` hashes the row's canonical JSON (sorted keys, after stripping unknown keys).
 - Local import dedupes again by `requestId`, so pulling the same range twice is harmless.
 
 ## 7. Client: spool, retry, backoff
@@ -184,10 +193,10 @@ path to check it is under the tenant's spool root before writing. Reports escape
 
 ## 8. Pull / sync model
 
-`tokenatlas sync-cloud` (also run inside `refresh --all`):
+`tokenatlas sync-cloud` (**opt-in** in `refresh --all`, off by default, so an outage never blocks ordinary local refresh):
 
 1. Read `cursor` from the local DB (`meta` key per source id, e.g. `cloud:<tenant>`).
-2. `GET /v1/events?after=<cursor>&limit=...` (page capped by rows and bytes, below D1's per-query result limit) until a page is empty. Store each pulled event once in a local table keyed `(source, tenant, seq)` and commit the page and the new cursor in **one transaction**. Then build the `cloud` root JSONL (one per session and subagent path, the layout the Claude collector reads) from the stored events in stable `seq` order and call the normal collect/import. Replaying a page therefore cannot move a request between turns (the collector assigns turns by file order).
+2. `GET /v1/events?after=<cursor>&limit=...` (page capped by rows and bytes, below D1's per-query result limit) until a page is empty. Store each pulled event once in a local table keyed by `dedupe_key` (delivery position `(generation, seq)` is kept separately and is never an identity, so a restore that reuses `seq=42` cannot drop a different event) and commit the page and the new cursor in **one transaction**. Then build the `cloud` root JSONL (one per session and subagent path, the layout the Claude collector reads) from the stored events in stable `seq` order and call the normal collect/import. Replaying a page therefore cannot move a request between turns (the collector assigns turns by file order).
 3. Pull is at-least-once, the local event table makes it exactly-once. Cursor loss means a full re-pull from the table's keys.
 4. Pi and Mac each hold their own cursor, so both converge on the same rows; the existing snapshot/`remote_sync.sh` merge
    rules (machine id on each observation) then treat cloud rows as one more source, not as a machine: cloud observations carry a stable shared origin id instead of the local machine id (otherwise Mac and Pi count the same row twice), and cloud `cwd` values are never used for local filesystem discovery. Slice 0 verifies this.
@@ -195,7 +204,7 @@ path to check it is under the tenant's spool root before writing. Reports escape
    the list of cloud sessions is known to be longer than the ingested session count.
 
 `seq` on D1 is safe because D1 has a single serialized writer. On Postgres, identity values are not commit-ordered, so the
-same cursor can skip rows under concurrent writers (and `(received_at, id)` has the same flaw): the AWS port must take a per-tenant lock before allocating the sequence and hold it through commit (a fixed lag does not help against a long-open transaction), or define a watermark that proves no lower sequence can still commit. The cursor is opaque and encodes `(tenant, generation, seq)`; `seq` is per tenant once there are other tenants (a global one leaks cross-tenant volume). A reply to a cursor older than `deleted_through_seq` or from an older `generation` (restore, migration) is an explicit `410 cursor_expired`/`reset` rather than an empty page, so "caught up" and "rows expired" are distinguishable. A puller
+same cursor can skip rows under concurrent writers (and `(received_at, id)` has the same flaw): the AWS port must take a per-tenant lock before allocating the sequence and hold it through commit (a fixed lag does not help against a long-open transaction), or define a watermark that proves no lower sequence can still commit. The cursor is opaque and encodes `(tenant, generation, seq)`; `seq` is per tenant once there are other tenants (a global one leaks cross-tenant volume). A reply to a cursor older than `deleted_through_seq` or from an older `generation` (restore, migration) is an explicit `410 cursor_expired`/`reset` (never an empty page; recovery: drop the cursor, re-pull from zero, local dedupe by `dedupe_key` absorbs the overlap), so "caught up" and "rows expired" are distinguishable. A puller
 offline longer than `retention_days` silently misses rows: warn when the cursor is older than retention.
 
 ## 9. Privacy and GDPR
@@ -220,8 +229,8 @@ Assumed load for one user: ~100 Stops/day; the measured digest was 151 KB for 72
 | Item | Free-tier headroom (as of this writing) | This workload |
 | --- | --- | --- |
 | Workers requests | 100,000/day | ~100-300/day ingest + a few pulls |
-| Workers CPU | ~10 ms per request on free | Validation of 500 rows is within reach but should be measured; paid plan raises it |
-| D1 rows written | 100,000/day | a few thousand rows/day; each row costs ~4 writes (table, UNIQUE index, two indexes), retention deletes count too |
+| Workers CPU | ~10 ms per request on free | Validation of 200 rows is within reach but should be measured; paid plan raises it |
+| D1 rows written | 100,000/day | a few thousand rows/day; each row costs ~5 writes (table, UNIQUE index, three secondary indexes), retention deletes count too |
 | D1 rows read | 5,000,000/day | pulls are index scans on `(tenant_id, seq)`: tiny |
 | D1 storage | 5 GB per account, but I believe 500 MB per database on free | a few MB/day; 90-day retention may approach the per-database cap, so measure and shorten retention if needed |
 | R2 (optional) | 10 GB, no egress fees | unused by default |
@@ -284,3 +293,16 @@ Behaviour when the daily quota is exhausted: ingest returns 429/5xx, clients kee
 - `cwd`/branch: keep, hash or drop by default for non-owner tenants?
 - Is the product a hosted service or a self-host template (`wrangler deploy` for your own account)? The self-host route
   removes the processor/DPA burden and fits the vendor-neutral contract; recommended as the first "product" step.
+
+## 15. Decisions deferred to implementation (from review round 2)
+
+These are real but are implementation-level; each is owned by a rollout slice and must be settled with a test, not more prose:
+
+- Per-tenant `seq` allocator before a second tenant exists (today's single global `AUTOINCREMENT` is fine for one tenant). Slice 2.
+- Cutover recipe must also move tombstones, quota rows, `tenant_state` and token state, and needs a write freeze (old Worker returns 503) before the final export, not only an empty last page. Slice 2 / section 12.
+- Local import must be origin-aware: cloud observations share one origin id, sources stay separate through the `requestId` merge, and cloud paths never enter project-root discovery. Slice 4.
+- Materialize only the files touched by a pulled page, not the whole cloud root, so changed-log refresh keeps working. Slice 4.
+- `safe_usage` must keep iteration `type` and `model` (advisor-iteration warnings); bound `_path` component lengths so a validated row always materializes. Slices 1 and 3.
+- Hook file discovery must also queue `subagents/workflows/wf_*/agent-*.jsonl`. Slice 3.
+- Slice-0 reachability probe uses the real custom hostname with the real client headers; the `workers.dev` echo is only a first check. Slice 0.
+- The missing-final-turn mitigation (catch-up wait, extra flushes) and the Cloudflare rate rule are mitigations, not guarantees; completeness stays *unknown* until the harness offers an independent session-end signal.
