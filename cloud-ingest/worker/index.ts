@@ -2,6 +2,7 @@
 // core's HttpRequest (capping the body while it reads it), runs the core, and turns the HttpResponse back.
 import { d1Db, type D1Binding } from "../src/d1-adapter.ts";
 import { MAX_BODY_BYTES, errorResponse, handle } from "../src/handler.ts";
+import { purgeExpired } from "../src/retention.ts";
 
 export interface Env {
   DB: D1Binding;
@@ -63,4 +64,12 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
   return new Response(out.body, { status: out.status, headers: out.headers });
 }
 
-export default { fetch: fetchHandler };
+/** Daily cron (wrangler.toml [triggers]): retention. Counts only go to the log. */
+export async function scheduledHandler(env: Env): Promise<void> {
+  await purgeExpired({ db: d1Db(env.DB), clock: { now: () => new Date() }, log: (event, info) => console.log(JSON.stringify({ event, ...info })) });
+}
+
+export default {
+  fetch: fetchHandler,
+  scheduled: (_controller: unknown, env: Env) => scheduledHandler(env),
+};

@@ -222,6 +222,8 @@ offline longer than `retention_days` silently misses rows: warn when the cursor 
 - R2 raw payloads (if used) store only validated, re-serialized rows, get the same retention and are off by default: they add no value while the digest is the
   contract, and they enlarge the personal-data surface.
 
+Implemented in slice 5 (TOKEN-211): `cloud-ingest/src/retention.ts` (scheduled Worker, tombstones also for retention deletes, expiring after 30 days), `cloud-ingest/admin/erase.ts` and the notice draft `docs/privacy-cloud-ingest.md`.
+
 ## 10. Cost (free tier; verify current limits before building, they change)
 
 Assumed load for one user: ~100 Stops/day; the measured digest was 151 KB for 72 requests, i.e. about 2 KB per request including all content-block rows, so budget ~2 KB/row plus index overhead.

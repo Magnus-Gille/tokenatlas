@@ -207,7 +207,9 @@ async function pull(deps: Deps, req: HttpRequest): Promise<HttpResponse> {
     const c = decodeCursor(req.query.after);
     if (!c || c.tenant !== who.tenant) return errorResponse(400, "bad_cursor", "malformed cursor");
     if (c.generation !== Number(state.generation)) return errorResponse(410, "cursor_reset", "storage was reset: drop the cursor and pull from the start");
-    if (c.seq < state.deleted) return errorResponse(410, "cursor_expired", "rows behind this cursor were deleted: drop the cursor and pull from the start");
+    // A gap exists only when rows were deleted after this cursor was issued (state.deleted moved past what it knew) and beyond its position:
+    // a re-pull from zero issues cursors that already carry the current marker, so it can page through live rows below it.
+    if (c.seq < state.deleted && state.deleted > (c.deleted ?? 0)) return errorResponse(410, "cursor_expired", "rows behind this cursor were deleted: drop the cursor and pull from the start");
     after = c.seq;
   }
   const requested = req.query.limit === undefined ? MAX_PULL_ROWS : Number(req.query.limit);
@@ -235,7 +237,7 @@ async function pull(deps: Deps, req: HttpRequest): Promise<HttpResponse> {
   }
   return {
     status: 200,
-    headers: baseHeaders({ "content-type": "application/x-ndjson", "x-next-cursor": encodeCursor({ tenant: who.tenant, generation: state.generation, seq: last }) }),
+    headers: baseHeaders({ "content-type": "application/x-ndjson", "x-next-cursor": encodeCursor({ tenant: who.tenant, generation: state.generation, seq: last, deleted: state.deleted }) }),
     body: out.map((l) => l + "\n").join(""),
   };
 }

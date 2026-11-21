@@ -17,3 +17,7 @@ binding = "DB"
 database_name = "tokenatlas-ingest"
 database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
 migrations_dir = "migrations/sqlite"
+
+# Retention (design section 9): runs once a day. Deleting is bounded per run; if there was more to do the next day continues.
+[triggers]
+crons = ["17 3 * * *"]
