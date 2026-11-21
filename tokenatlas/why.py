@@ -1486,19 +1486,17 @@ def _opencode_rows(
     problems: list[str],
 ) -> list[sqlite3.Row] | None:
     """Read one OpenCode message generation. Only id, session_id and data (plus type for session_message) are required;
-    other columns read as NULL when absent. Returns None when the generation is unreadable (reason appended to problems)."""
-    if table not in tables and session_table not in tables:
-        return []
-    if table not in tables or session_table not in tables:
-        # One table of the pair: a partial migration or an unknown layout. Say so instead of silently reading nothing.
-        diagnostics["schema_errors"] += 1
-        present = table if table in tables else session_table
-        problems.append(f"{present} exists without {session_table if present == table else table}")
-        return None
+    other columns read as NULL when absent, and so is the whole session side when its table is missing. Returns None when the
+    generation is unreadable (reason appended to problems)."""
+    if table not in tables:
+        return []  # nothing to read: at most the session table of this generation exists (metadata without messages)
     message_columns = _opencode_columns(connection, table)
-    session_columns = _opencode_columns(connection, session_table)
+    # The session table can be missing (a partial migration, or a layout whose session metadata lives elsewhere): the messages are
+    # still read, with parent, directory and version unknown, and each such row is counted in orphan_rows (TOKEN-205).
+    has_session = session_table in tables
+    session_columns = _opencode_columns(connection, session_table) if has_session else set()
     required = {"id", "session_id", "data"} | ({"type"} if table == "session_message" else set())  # V2 rows carry no role; type says assistant
-    if not required <= message_columns or "id" not in session_columns:
+    if not required <= message_columns or (has_session and "id" not in session_columns):
         diagnostics["schema_errors"] += 1
         problems.append(f"{table}/{session_table} lack required columns ({', '.join(sorted(required))} / id)")
         return None
@@ -1508,8 +1506,8 @@ def _opencode_rows(
                {pick("m", message_columns, "time_updated")} AS time_updated, m.data,
                {pick("m", message_columns, "type")} AS message_type, {pick("s", session_columns, "parent_id")} AS parent_id,
                {pick("s", session_columns, "directory")} AS directory, {pick("s", session_columns, "version")} AS version,
-               {pick("m", message_columns, "seq")} AS seq, s.id AS session_row
-        FROM {_quote(table)} AS m LEFT JOIN {_quote(session_table)} AS s ON s.id = m.session_id
+               {pick("m", message_columns, "seq")} AS seq, {pick("s", session_columns, "id")} AS session_row
+        FROM {_quote(table)} AS m {f'LEFT JOIN {_quote(session_table)} AS s ON s.id = m.session_id' if has_session else ''}
     ''').fetchall()
 
 
