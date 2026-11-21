@@ -49,3 +49,15 @@ Open items for later slices: the hook (slice 3) must send `session`, keep iterat
 send `cwd` over 256 characters, more than 64 iterations or a model such as `<synthetic>` (the validator rejects those and
 the client quarantines them); the host adapter (slice 2) must cap the body while reading it and pass a `log` sink; the
 Postgres port needs a lock for tombstone-vs-insert and the `json_each` dialect change.
+
+## Retention and erasure (TOKEN-211)
+
+- `src/retention.ts` + the Worker's `scheduled` handler (`[triggers] crons` in `wrangler.toml`, 03:17 UTC daily) delete events whose
+  `received_at` is older than the tenant's `retention_days`. Each batch of up to 500 rows is one transaction: tombstones, the
+  `deleted_through_seq` marker (cursors behind it answer 410 and re-pull) and the delete. At most 20 batches per tenant per run;
+  the next day continues (the whole run is capped at 36 database calls so it fits a Worker invocation). Pull cursors carry the
+  deletion marker they were issued under, so only a cursor that predates a deletion gets 410; a re-pull from zero is never wedged by one. Tombstones expire after 30 days, quota counters after 14. Only counts are logged.
+- `node admin/erase.ts --tenant <id> (--session <id> | --token-id <id> | --before YYYY-MM-DD)` prints SQL for
+  `wrangler d1 execute`; the last statement reports the erased row count. Export is `GET /v1/events`.
+- The cron is configuration only: nothing is deployed by CI, and the trigger starts running when the Worker is deployed.
+- Privacy notice draft: `docs/privacy-cloud-ingest.md`.

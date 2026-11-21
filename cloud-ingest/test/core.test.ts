@@ -104,8 +104,9 @@ describe("dedupe key", () => {
 
 describe("cursor", () => {
   it("round-trips and rejects garbage", () => {
-    const c = { tenant: "t1", generation: 2, seq: 42 };
+    const c = { tenant: "t1", generation: 2, seq: 42, deleted: 7 };
     assert.deepEqual(decodeCursor(encodeCursor(c)), c);
+    assert.equal(decodeCursor(encodeCursor({ tenant: "t1", generation: 2, seq: 42 }))?.deleted, 0);
     for (const bad of ["", "!!", "e30", btoa("not json"), "A".repeat(600), encodeCursor({ tenant: "t", generation: 0, seq: 1 }), encodeCursor({ tenant: "t", generation: 1, seq: -1 })]) assert.equal(decodeCursor(bad), null, bad);
   });
 });
