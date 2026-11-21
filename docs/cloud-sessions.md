@@ -67,3 +67,23 @@ repo hook did not fire in TOKEN-206). `SessionStart` and `SessionEnd` also flush
   (30 s doubling to 1 h). A `401/403` or `426` turns sending off (`<state>/WARNING.txt`) until the token or the script
   changes. All of it is kept in `<state>/send-state.json`, together with how many rows each session still has queued.
 - The hook never exits non-zero and stays inside a 4.5 s budget of the 5 s limit.
+
+## Pulling into the local history (TOKEN-210)
+
+`tokenatlas sync-cloud` (and `tokenatlas refresh --all --cloud`, opt-in so an outage never blocks an ordinary refresh) pulls
+`/v1/events` and imports the rows as one more Claude root.
+
+- Configure `TOKENATLAS_CLOUD_READ_TOKEN` (a `read` token) and either `TOKENATLAS_CLOUD_URL` (the ingest URL; the events URL is
+  derived from it) or `TOKENATLAS_CLOUD_PULL_URL`. `https://` only (plain http only for loopback); redirects are refused.
+- State lives in `cloud/` next to the history database: `events.sqlite3` holds every event once by `dedupe_key`, and the
+  cursor commits in the same transaction as each page. Deleting the directory only means a full re-pull.
+- A `410` (storage reset or rows deleted) drops the cursor and re-pulls from zero; the event table absorbs the overlap.
+  When the last pull is older than `TOKENATLAS_CLOUD_RETENTION_DAYS` (default 90) the result carries a warning.
+- Rows are untrusted: ids and paths are validated, rows are reduced to the same allowlist the hook uses, and a cloud `cwd`
+  is rewritten to a `cloud:<folder name>` label, so it never reaches local project or git discovery.
+- Cloud requests merge by request id, so a Mac and a Pi that both pull (and then exchange snapshots) count them once. Known
+  limits: there is no shared origin id yet, so the machine shown for a cloud row is whichever copy wins the merge, and a row
+  with neither `requestId` nor `message.id` (the receiver allows it; the hook always sends one) would be counted per machine.
+  On a case-insensitive filesystem two session ids that differ only in case share a transcript file.
+- The report's coverage section shows a cloud line: sessions seen, rows, the latest event and the last pull. Sessions that
+  never sent anything are invisible to it (the per-session check is TOKEN-212).

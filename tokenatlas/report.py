@@ -133,6 +133,8 @@ def coverage_key(source_status):
                       for imp in source_status.get('imports', [])]
     key['files_by_harness'] = source_status.get('files_by_harness')
     key['remote_sync'] = remote_state.failing(source_status.get('remote_sync'))
+    cloud = source_status.get('cloud') or {}
+    key['cloud'] = {k: cloud.get(k) for k in ('sessions', 'events', 'last_event_at', 'last_pull_at')} if cloud else None
     return key
 
 
@@ -596,6 +598,7 @@ def build_report(records, source_status, timezone_name='Europe/Stockholm', redac
     coverage.update(coverage_complete=False, billing_verified=False)
     coverage['imports'] = [{key: imp.get(key) for key in IMPORT_FIELDS} for imp in source_status.get('imports', [])]
     coverage['remote_sync'] = [] if redact else remote_state.failing(source_status.get('remote_sync'))  # failing hosts (TOKEN-198); host tags stay out of shared reports
+    coverage['cloud'] = source_status.get('cloud') or None  # cloud freshness (TOKEN-210): counts and times, never ids
     coverage['files_by_harness'] = source_status.get('files_by_harness') or {}  # counts only, never paths (#151)
     coverage['ranges'] = []
     for harness in sorted({r['harness'] for r in rows}):

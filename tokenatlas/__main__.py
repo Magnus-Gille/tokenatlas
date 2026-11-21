@@ -115,6 +115,17 @@ def _refresh_roots(history,name,found):
     return (results[0] if len(results)==1 else aggregate(results)) if results else {'harness':name,'status':'ok','errors':[]}
 
 
+def _sync_cloud(history,db):
+    """Pull the cloud service and import what came; the cloud copy is one more Claude root. Raises CloudSyncError when it cannot."""
+    from tokenatlas import cloud_sync
+    with progress.step('Pull cloud sessions'):
+        pulled=cloud_sync.pull(db)
+    with progress.step('Refresh cloud root'):
+        imported=history.refresh('claude',Path(pulled['root']))
+    with progress.step('Update statusline cache'):statusline.refresh_cache(history)
+    return dict(pulled,status=imported['status'],refresh=imported)
+
+
 def refresh_all(history):
     """Refresh every harness from its default roots; absent ones are reported, an OSError only fails its own harness. Then rewrites the statusline cache."""
     from tokenatlas import why
@@ -439,6 +450,8 @@ def _main(argv=None):
     which.add_argument('--harness',choices=('claude','codex','pi','opencode'),help='Harness to import; required unless --all is given.')
     which.add_argument('--all',action='store_true',help='Refresh every harness from its default roots; missing ones are reported as absent.')
     refresh.add_argument('--root',type=Path,help='Override the harness session directory (with --harness); default the harness configured root.')
+    refresh.add_argument('--cloud',action='store_true',help='With --all: also pull cloud-session usage after the refresh (sync-cloud). An unreachable service is reported, never fatal.')
+    syncer=commands.add_parser('sync-cloud',help='Pull cloud-session usage from the ingest service (TOKENATLAS_CLOUD_URL, TOKENATLAS_CLOUD_READ_TOKEN) and import it as a cloud root.')
     opener=commands.add_parser('open',help='Refresh, build the report (private by default) and open it in the browser.')
     opener.add_argument('--html',type=Path,help=f'Report path; default: report.html next to the database ({_state_base()/"tokenatlas"/"report.html"}).')  # no migration side effect
     opener.add_argument('--shared',action='store_true',help='Pseudonymize the report instead of keeping project labels.')
@@ -637,12 +650,13 @@ def _main(argv=None):
                     data=usage_profiles.save(args.db,data)
         except (OSError,ValueError) as exc:raise
         emit(args.command,data);return 0
-    slow=args.command in ('refresh','open','report','top','insights','cache','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead'
+    slow=args.command in ('refresh','sync-cloud','open','report','top','insights','cache','session','rate','import','import-emissions','snapshot','collect') or args.command=='quota' and args.quota in ('show','calibrate') or args.command=='overhead'
     owned=slow and progress.start()
     done=lambda:progress.finish() if owned else None  # before any result goes to stdout
     try:
         start=end=None
         if args.command=='refresh' and args.all and args.root:raise ValueError('--root cannot be used with --all')
+        if args.command=='refresh' and args.cloud and not args.all:raise ValueError('--cloud needs --all')
         if args.command=='top' and args.limit<1:raise ValueError('--limit must be at least 1')
         if args.command=='top' and args.keep_text and args.forget_text:raise ValueError('--keep-text and --forget-text cannot be combined')
         if args.command=='insights':
@@ -728,7 +742,7 @@ def _main(argv=None):
             with History(args.db) as history:
                 history.connection.execute('BEGIN')
                 return budget.run(args,args.db,lambda:_plan_history(history)[0],pricing.load_prices,_printing(done)) or 0
-        if args.command not in ('refresh','import','open') and not args.db.expanduser().is_file():
+        if args.command not in ('refresh','import','open','sync-cloud') and not args.db.expanduser().is_file():
             raise NotFound('history database does not exist; run refresh first')
         if args.command=='rate' and (args.unit or args.thread or args.outcome) and not (args.unit and args.thread and args.outcome):
             raise ValueError('rating needs --unit, --thread and --outcome')
@@ -822,8 +836,14 @@ def _main(argv=None):
                 if no_browser and not args.json:
                     print(path.absolute());return 0
                 print(f'Report: {path.absolute()} (reopen any time with: {_reopen(path,args.db,always=True)})',file=sys.stderr)
+            elif args.command=='sync-cloud':
+                result=_sync_cloud(history,args.db)
             elif args.command=='refresh' and args.all:
                 result=refresh_all(history)
+                if args.cloud:
+                    from tokenatlas.cloud_sync import CloudSyncError
+                    try:result['cloud']=_sync_cloud(history,args.db)
+                    except CloudSyncError as exc:result['cloud']={'status':'error','error':str(exc)}
             elif args.command=='refresh':
                 roots={h:why.harness_root(h)[0] for h in ('claude','codex','pi','opencode')}
                 if args.root or args.harness!='claude':

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from tokenatlas import progress, remote_state, why
+from tokenatlas import cloud_sync, progress, remote_state, why
 from tokenatlas.provenance import REMOTE_PATH, is_machine_id
 
 OBSERVATION_VERSION = 1  # the 'v' field inside observation dicts
@@ -1185,7 +1185,7 @@ class History:
                     last_event=None if last is None else _ts_text(last),
                     missing_source_files=missing, imports=imports, files_by_harness=distinct, coverage_complete=False,
                     incomplete_observations=incomplete, unlinked_turns=unlinked,
-                    billing_verified=False, remote_sync=remote_state.read(),
+                    billing_verified=False, remote_sync=remote_state.read(), cloud=cloud_sync.status(self.path),
                     notes=['Local retained sources only; missing history cannot be reconstructed.',
                            'Request observations are not verified billable inference passes.'])
 
