@@ -65,6 +65,14 @@ describe("worker entrypoint", () => {
     const res = await worker.fetch(new Request("http://x/v1/ingest", { method: "POST", body: big, duplex: "half" } as any), s.env);
     assert.equal(res.status, 413);
   });
+  it("does not buffer a body for paths that never need one, and a failing body read is a JSON 400", async () => {
+    const res = await worker.fetch(new Request("http://x/v1/health", { method: "POST", headers: { "content-length": String(300 * 1024) }, body: "x" }), s.env);
+    assert.equal(res.status, 405);
+    const broken = new ReadableStream({ start(c) { c.error(new Error("client went away")); } });
+    const bad = await worker.fetch(new Request("http://x/v1/ingest", { method: "POST", body: broken, duplex: "half" } as any), s.env);
+    assert.equal(bad.status, 400);
+    assert.equal(bad.headers.get("x-tokenatlas-api"), "1");
+  });
   it("answers health and unknown paths with the API header", async () => {
     const ok = await worker.fetch(new Request("http://x/v1/health"), s.env);
     assert.equal(ok.headers.get("x-tokenatlas-api"), "1");
@@ -83,6 +91,8 @@ describe("token admin CLI", () => {
     const id = (raw.prepare("SELECT token_id FROM tokens").get() as any).token_id;
     raw.exec((await admin(["revoke", "--token-id", id])).sql);
     assert.ok((raw.prepare("SELECT revoked_at FROM tokens").get() as any).revoked_at);
+    const missing = (await admin(["revoke", "--token-id", "nosuchtoken1"])).sql;
+    assert.match(missing, /NO TOKEN REVOKED/);
   });
   it("refuses values that could break out of the SQL", async () => {
     for (const bad of [["create-tenant", "--id", "x'; DROP TABLE tokens;--", "--name", "n"], ["mint", "--tenant", "t1", "--scope", "admin", "--source", "s", "--label", "l"],

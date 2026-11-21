@@ -31,7 +31,7 @@ wrangler deploy
 node contract/run.ts --url https://<worker> --ingest-token ... --read-token ...   # staging tenant
 ```
 
-No route or custom domain is configured (design section 11 asks for one from day one; that is a DNS decision for the owner).
+No route or custom domain is configured and `workers_dev = false`, so a first deploy is unreachable until the owner decides how to expose it (design section 11 asks for a custom domain from day one; that is a DNS decision). For a throwaway staging deploy set `workers_dev = true`.
 The same suite passes against the real runtime locally: `wrangler d1 migrations apply tokenatlas-ingest --local`, seed with the
 admin CLI and `wrangler d1 execute ... --local --file`, `wrangler dev --local`, then `node contract/run.ts --url http://localhost:8787 ...`.
 Rate limiting in front of the Worker (design section 4) is a Cloudflare dashboard rule and is not part of this directory.

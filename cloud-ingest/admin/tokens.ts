@@ -42,7 +42,7 @@ export async function run(argv: string[], now = new Date()): Promise<{ sql: stri
       return { sql, secret: t.token };
     }
     case "revoke":
-      return { sql: `UPDATE tokens SET revoked_at = ${q(ts)} WHERE token_id = ${q(need(values, "token-id", /^[a-z0-9]{8,32}$/))} AND revoked_at IS NULL;\n` };
+      return { sql: `UPDATE tokens SET revoked_at = ${q(ts)} WHERE token_id = ${q(need(values, "token-id", /^[a-z0-9]{8,32}$/))} AND revoked_at IS NULL;\nSELECT CASE WHEN changes() = 0 THEN 'NO TOKEN REVOKED: unknown id or already revoked' ELSE 'revoked' END AS result;\n` };
     default:
       throw new Error("usage: tokens.ts create-tenant|mint|revoke (see the header of this file)");
   }

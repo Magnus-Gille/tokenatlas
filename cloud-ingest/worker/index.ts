@@ -36,8 +36,14 @@ async function readCapped(request: Request, limit: number): Promise<string | nul
 export async function fetchHandler(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   let body = "";
-  if (request.method === "POST") {
-    const read = await readCapped(request, MAX_BODY_BYTES);
+  if (request.method === "POST" && url.pathname === "/v1/ingest") { // other paths never need a body: do not buffer it
+    let read: string | null;
+    try {
+      read = await readCapped(request, MAX_BODY_BYTES);
+    } catch {
+      const r = errorResponse(400, "bad_body", "request body could not be read");
+      return new Response(r.body, { status: r.status, headers: r.headers });
+    }
     if (read === null) {
       const r = errorResponse(413, "payload_too_large", "request over 256 KB");
       return new Response(r.body, { status: r.status, headers: r.headers });

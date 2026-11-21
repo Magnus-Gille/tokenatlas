@@ -77,7 +77,7 @@ interface Candidate {
   item: { k: string; s: string; p: string; l: string; r: string | null; t: string; h: string; j: string };
 }
 
-const INSERT_CHUNK_BYTES = 64 * 1024; // D1 caps a bound parameter near 100 KB
+const INSERT_CHUNK_BYTES = 64 * 1024; // keeps each statement's bound JSON small (D1 limits SQL text to 100 KB and about 2 MB per bound value)
 
 // One statement per chunk of rows (not per row). The daily cap is enforced inside the statement (LIMIT from the counter)
 // and the counter is charged in the same atomic batch, so parallel requests cannot overshoot the cap; a tombstone makes
