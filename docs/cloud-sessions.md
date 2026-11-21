@@ -50,3 +50,20 @@ record grain is needed: a `cloud` source can be one more Claude root deduplicate
 Every repo that runs cloud sessions needs this file (user-level hooks do not carry over), and the script must be
 available there: vendor `scripts/cloud_digest.py` into the repo (it is not part of the PyPI package), or fetch it in the
 environment's setup script.
+
+## Sending to the ingest service (TOKEN-209)
+
+Set `TOKENATLAS_CLOUD_URL` (the `/v1/ingest` endpoint, `https://` or loopback only) and `TOKENATLAS_CLOUD_TOKEN`
+(`tka_...`, minted with `cloud-ingest/admin/tokens.ts`). Without a URL the hook only spools. Registered events:
+`Stop`, `SessionStart` and `SessionEnd` (a user-level hook in `~/.claude/settings.json` fires for all three; a committed
+repo hook did not fire in TOKEN-206). `SessionStart` and `SessionEnd` also flush queues other sessions left behind.
+
+- Each queued row carries `session` and `_path` (`""`, `subagents/agent-*.jsonl` or
+  `subagents/workflows/wf_*/agent-*.jsonl`), and is sent with `X-TokenAtlas-Client: 2`.
+- Rows leave the queue only on a per-line receipt of `accepted` or `duplicate`. `conflict`, `rejected`,
+  `row_too_large` and `suppressed` are moved to `<state>/quarantine.jsonl` (capped at 1 MB) and counted;
+  `quota` and anything unknown stay queued with a 5-minute back-off.
+- `413` halves the batch, then quarantines a single row. `429` honours `Retry-After`; 5xx and timeouts back off
+  (30 s doubling to 1 h). A `401/403` or `426` turns sending off (`<state>/WARNING.txt`) until the token or the script
+  changes. All of it is kept in `<state>/send-state.json`, together with how many rows each session still has queued.
+- The hook never exits non-zero and stays inside a 4.5 s budget of the 5 s limit.

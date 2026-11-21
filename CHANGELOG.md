@@ -10,6 +10,7 @@ All notable changes to this project are documented in this file. The project fol
 
 ### Added
 
+- The cloud digest hook sends to the ingest service (TOKEN-209): per-line receipts decide what leaves the queue, rejected rows are quarantined, 413/429/5xx/401/426 are handled with back-off or a warning, workflow subagent transcripts are shipped, and `SessionStart`/`SessionEnd` flush queues that other sessions left behind. See `docs/cloud-sessions.md`.
 - Remote sync backs off a failing host (TOKEN-198): after 3 failed syncs in a row (`TOKENATLAS_BACKOFF_AFTER`, 0 disables) `remote_sync.sh` skips the host for an hour, doubling per further failure up to 12 hours (`TOKENATLAS_BACKOFF_BASE`, `TOKENATLAS_BACKOFF_MAX`); `TOKENATLAS_FORCE_SYNC=1` tries it now. `tokenatlas doctor` lists each host's failures, last success and next attempt (`remote_sync`), and the report's coverage section flags a host whose syncs keep failing.
 
 ## [1.29.0] - 2026-11-21
