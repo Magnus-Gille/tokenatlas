@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenCode: a database with `session_message` but no `session_v2` (or `message` without `session`) is read instead of reported as a schema error (TOKEN-205, TOKEN-199). Session metadata comes from whichever session table exists; with none, the messages import with parent, directory and version unknown and count in `orphan_rows`. Existing OpenCode files are re-read once; a missing required column is still a schema error. Unverified against the real m5/Pi databases (not reachable from the cloud session): if they still report a schema error, `doctor` now names the missing columns.
+
 ### Added
 
 - Remote sync backs off a failing host (TOKEN-198): after 3 failed syncs in a row (`TOKENATLAS_BACKOFF_AFTER`, 0 disables) `remote_sync.sh` skips the host for an hour, doubling per further failure up to 12 hours (`TOKENATLAS_BACKOFF_BASE`, `TOKENATLAS_BACKOFF_MAX`); `TOKENATLAS_FORCE_SYNC=1` tries it now. `tokenatlas doctor` lists each host's failures, last success and next attempt (`remote_sync`), and the report's coverage section flags a host whose syncs keep failing.

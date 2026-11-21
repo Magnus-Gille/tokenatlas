@@ -180,9 +180,39 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(diagnostics['orphan_rows'], 1)
 
+    def test_session_message_without_session_v2_is_read_with_unknown_session_metadata(self):
+        path = self.root / 'nosession.db'
+        c = sqlite3.connect(path)
+        c.execute('CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT)')
+        c.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?)', ('m1', 's1', 'assistant', 1, T0, json.dumps(v2_data(T0, T0 + 5))))
+        c.commit(); c.close()
+        records, diagnostics = self.collect(path)
+        self.assertEqual([r.call_id for r in records], ['m1'])
+        self.assertEqual((diagnostics['schema_errors'], diagnostics['orphan_rows']), (0, 1))
+        self.assertEqual(why.collect_opencode(path, START, END)[0].call_id, 'm1')  # and no longer raises
+
+    def test_session_metadata_comes_from_the_other_generations_session_table(self):
+        path = self.root / 'crosssession.db'
+        c = sqlite3.connect(path)
+        c.execute('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, version TEXT)')
+        c.execute("INSERT INTO session VALUES ('s1', 'p1', '/work/repo', '1.2.3')")
+        c.execute('CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT)')
+        c.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?)', ('m1', 's1', 'assistant', 1, T0, json.dumps(v2_data(T0, T0 + 5))))
+        c.commit(); c.close()
+        records, diagnostics = self.collect(path)
+        self.assertEqual(diagnostics['orphan_rows'], 0)
+        self.assertEqual((records[0].thread_kind, records[0].parent_session_id, records[0].harness_version), ('subagent', 'p1', '1.2.3'))
+
+    def test_session_table_without_its_message_table_reads_nothing_and_is_no_error(self):
+        path = self.root / 'sessiononly.db'
+        c = sqlite3.connect(path); c.execute('CREATE TABLE session_v2 (id TEXT PRIMARY KEY)'); c.close()
+        records, diagnostics = self.collect(path)
+        self.assertEqual(records, [])
+        self.assertEqual(diagnostics['schema_errors'], 0)
+
     def test_half_present_pair_and_missing_required_columns_are_schema_errors(self):
         for name, ddl, expected in (
-            ('half', 'CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);', 'exists without session_v2'),
+            ('nosession_nodata', 'CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);', 'lack required columns'),
             ('nodata', 'CREATE TABLE session_v2 (id TEXT); CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT);', 'lack required columns'),
             ('notype', 'CREATE TABLE session_v2 (id TEXT); CREATE TABLE session_message (id TEXT, session_id TEXT, data TEXT);', 'lack required columns'),
         ):
@@ -389,7 +419,7 @@ class HistoryTests(unittest.TestCase):
         first, _, _ = self.refresh(path)
         second, _, doctor = self.refresh(path)
         self.assertEqual((first['status'], first['schema_errors'], first['files_skipped']), ('partial', 1, 0))
-        self.assertIn('session_message exists without session_v2', first['errors'][0])
+        self.assertIn('lack required columns', first['errors'][0])
         self.assertEqual((second['status'], second['schema_errors'], second['files_skipped']), ('partial', 1, 1))
         self.assertEqual(doctor['files_by_harness']['opencode']['schema_errors'], 1)
 
