@@ -94,3 +94,22 @@ jobs:
           node test_subscriptions_browser.cjs "${{ runner.temp }}/tokenatlas-smoke.html"
           python scripts/plans_fixture.py "${{ runner.temp }}/tokenatlas-plans.html"
           node test_plans_browser.cjs "${{ runner.temp }}/tokenatlas-plans.html"
+
+  cloud-ingest:
+    name: Cloud ingest core (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Fixtures still match the production hook
+        run: |
+          python cloud-ingest/fixtures/generate.py
+          git diff --exit-code cloud-ingest/fixtures
+      - name: Unit and contract tests
+        working-directory: cloud-ingest
+        run: npm test

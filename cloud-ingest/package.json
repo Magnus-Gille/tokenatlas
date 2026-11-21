@@ -1,0 +1,12 @@
+{
+  "name": "tokenatlas-cloud-ingest",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Portable core of the TokenAtlas cloud ingest API (docs/architecture/cloud-ingest.md). No dependencies: Node >= 22.18 runs the TypeScript directly.",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "test": "node --test --no-warnings test/*.test.ts",
+    "contract": "node --no-warnings contract/run.ts"
+  }
+}
