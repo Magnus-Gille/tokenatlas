@@ -1,9 +1,10 @@
-# TokenAtlas cloud ingest: portable core (slice 1)
+# TokenAtlas cloud ingest: portable core and Cloudflare Worker (slices 1 and 2)
 
-Implements slice 1 of `docs/architecture/cloud-ingest.md` (TOKEN-207): validation, dedupe key, cursor, token format and the
-request handler (`POST /v1/ingest`, `GET /v1/events`, `GET /v1/health`) behind two ports (`Db`, `Clock`) in `src/ports.ts`.
-No dependencies; Node >= 22.18 runs the TypeScript directly. The Cloudflare entrypoint, D1 adapter and operator CLI are
-slice 2 (TOKEN-208).
+Implements slices 1 and 2 of `docs/architecture/cloud-ingest.md` (TOKEN-207, TOKEN-208): validation, dedupe key, cursor, token
+format and the request handler (`POST /v1/ingest`, `GET /v1/events`, `GET /v1/health`) behind two ports (`Db`, `Clock`) in
+`src/ports.ts`. No dependencies; Node >= 22.18 runs the TypeScript directly. The Cloudflare parts are thin: `worker/index.ts`
+(Request to core, body capped while read), `src/d1-adapter.ts`, `wrangler.toml` and `migrations/sqlite/`. `admin/tokens.ts` is the
+operator CLI (SQL on stdout, a minted token once on stderr, strict value patterns).
 
 ```
 cd cloud-ingest
@@ -15,6 +16,25 @@ node contract/run.ts --url https://ingest.example --ingest-token tka_ingest_... 
 The contract suite (`contract/suite.ts`) is black-box HTTP and uses a fresh session id per run, so it can be pointed at any
 deployment (Cloudflare now, AWS later) with a staging tenant's tokens. Fixtures in `fixtures/` are produced by the
 production hook's own `digest_row()` (`python fixtures/generate.py`); CI fails if they drift.
+
+## Deploy (manual, nothing here is applied by CI)
+
+```
+wrangler d1 create tokenatlas-ingest [--jurisdiction eu]    # jurisdiction cannot be changed later: decide first (design section 9)
+# put the database_id in wrangler.toml
+wrangler d1 migrations apply tokenatlas-ingest --remote
+node admin/tokens.ts create-tenant --id <id> --name <name> > t.sql
+node admin/tokens.ts mint --tenant <id> --scope ingest --source <env-label> --label "<text>" > i.sql   # token on stderr, once
+node admin/tokens.ts mint --tenant <id> --scope read --source mac --label "<text>" > r.sql
+wrangler d1 execute tokenatlas-ingest --remote --file t.sql   # then i.sql, r.sql
+wrangler deploy
+node contract/run.ts --url https://<worker> --ingest-token ... --read-token ...   # staging tenant
+```
+
+No route or custom domain is configured and `workers_dev = false`, so a first deploy is unreachable until the owner decides how to expose it (design section 11 asks for a custom domain from day one; that is a DNS decision). For a throwaway staging deploy set `workers_dev = true`.
+The same suite passes against the real runtime locally: `wrangler d1 migrations apply tokenatlas-ingest --local`, seed with the
+admin CLI and `wrangler d1 execute ... --local --file`, `wrangler dev --local`, then `node contract/run.ts --url http://localhost:8787 ...`.
+Rate limiting in front of the Worker (design section 4) is a Cloudflare dashboard rule and is not part of this directory.
 
 Deviations from the design text, all in `migrations/sqlite/0001_init.sql`: `tokens.source` (the namespace bound into dedupe
 keys) and `tokens.daily_row_cap`, `events.content_hash` (for `duplicate` vs `conflict`).
