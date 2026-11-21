@@ -1493,12 +1493,14 @@ def _opencode_rows(
     message_columns = _opencode_columns(connection, table)
     # The session table can be missing (a partial migration, or a layout whose session metadata lives elsewhere): the messages are
     # still read, with parent, directory and version unknown, and each such row is counted in orphan_rows (TOKEN-205).
+    if session_table not in tables:  # the other generation's session table still holds the parent, directory and version
+        session_table = next((t for _, t in _OPENCODE_GENERATIONS if t in tables), session_table)
     has_session = session_table in tables
     session_columns = _opencode_columns(connection, session_table) if has_session else set()
     required = {"id", "session_id", "data"} | ({"type"} if table == "session_message" else set())  # V2 rows carry no role; type says assistant
     if not required <= message_columns or (has_session and "id" not in session_columns):
         diagnostics["schema_errors"] += 1
-        problems.append(f"{table}/{session_table} lack required columns ({', '.join(sorted(required))} / id)")
+        problems.append(f"{table}/{session_table} lack required columns ({', '.join(sorted(required))}{' / id' if has_session else ''})")
         return None
     pick = lambda alias, columns, column: f'{alias}."{column}"' if column in columns else "NULL"
     return connection.execute(f'''

@@ -35,7 +35,7 @@ DIAGNOSTIC_KEYS = ('malformed_lines', 'partial_lines', 'unparsed_usage_lines', '
 # rewrite inside one filesystem timestamp tick leaves the metadata fingerprint unchanged (TOKEN-173). Like git's
 # "racily clean" index entries. 2 s covers the coarsest common timestamps (FAT; HFS+ has 1 s).
 RACY_FINGERPRINT_NS = 2 * 10**9
-HARNESS_REVISION = {'pi': 3, 'codex': 7, 'claude': 3, 'opencode': 3}  # bump to force a re-read of one harness's files only (appended to its fingerprint)
+HARNESS_REVISION = {'pi': 3, 'codex': 7, 'claude': 3, 'opencode': 4}  # bump to force a re-read of one harness's files only (appended to its fingerprint)
 FIELDS = ('fresh_input', 'cache_read', 'cache_write', 'output')
 ALL_FIELDS = FIELDS + ('reasoning',)
 

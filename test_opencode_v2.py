@@ -191,6 +191,18 @@ class CollectTests(unittest.TestCase):
         self.assertEqual((diagnostics['schema_errors'], diagnostics['orphan_rows']), (0, 1))
         self.assertEqual(why.collect_opencode(path, START, END)[0].call_id, 'm1')  # and no longer raises
 
+    def test_session_metadata_comes_from_the_other_generations_session_table(self):
+        path = self.root / 'crosssession.db'
+        c = sqlite3.connect(path)
+        c.execute('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, version TEXT)')
+        c.execute("INSERT INTO session VALUES ('s1', 'p1', '/work/repo', '1.2.3')")
+        c.execute('CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT)')
+        c.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?)', ('m1', 's1', 'assistant', 1, T0, json.dumps(v2_data(T0, T0 + 5))))
+        c.commit(); c.close()
+        records, diagnostics = self.collect(path)
+        self.assertEqual(diagnostics['orphan_rows'], 0)
+        self.assertEqual((records[0].thread_kind, records[0].parent_session_id, records[0].harness_version), ('subagent', 'p1', '1.2.3'))
+
     def test_session_table_without_its_message_table_reads_nothing_and_is_no_error(self):
         path = self.root / 'sessiononly.db'
         c = sqlite3.connect(path); c.execute('CREATE TABLE session_v2 (id TEXT PRIMARY KEY)'); c.close()
