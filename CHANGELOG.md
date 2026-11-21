@@ -4,9 +4,12 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-11-21
+
 ### Added
 
 - `tokenatlas cache` explains cache spend (TOKEN-27): full re-caches by cause (cold start, idle gap, model, effort or speed switch), the resume tax per session and a 5-minute versus 1-hour TTL what-if, as list-price estimates for Claude requests (`--json` schema `tokenatlas.cache/1`).
+- The HTML report has a Cache spend section (saved-view id `cache-spend`, TOKEN-27): cache-write cost and share, re-caches by cause, the resume-tax ranking and the TTL what-if for the last 30 days or all history, following the Cost facts window. Redacted reports show pseudonymized session names only
 - `scripts/cloud_digest.py` and `docs/cloud-sessions.md`: a proof of concept for shipping a text-free usage digest out of Claude Code cloud containers from a `Stop` hook (TOKEN-201). Nothing imports the digest yet.
 
 ## [1.28.1] - 2026-11-18
