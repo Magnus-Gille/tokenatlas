@@ -59,6 +59,7 @@ def iso_date(text, name, timezone='UTC'):
 EXAMPLES = {
     '': 'tokenatlas refresh --all --json\n  tokenatlas top -n 1 --json',
     'refresh': 'tokenatlas refresh --all --json\n  tokenatlas refresh --harness codex --root /tmp/demo/codex --json',
+    'sync-cloud': 'tokenatlas sync-cloud --json\n  tokenatlas refresh --all --cloud --json',
     'open': 'tokenatlas open --no-browser\n  tokenatlas open --no-refresh --json',
     'show': 'tokenatlas show --print-path\n  tokenatlas show --json',
     'snapshot': 'tokenatlas snapshot /tmp/history.sqlite3 --json',
