@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/probe_hook.sh\" SessionStart"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/probe_hook.sh\" Stop"}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/probe_hook.sh\" SessionEnd"}]}]
+  }
+}
