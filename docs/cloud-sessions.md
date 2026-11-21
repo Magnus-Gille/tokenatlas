@@ -86,4 +86,16 @@ repo hook did not fire in TOKEN-206). `SessionStart` and `SessionEnd` also flush
   with neither `requestId` nor `message.id` (the receiver allows it; the hook always sends one) would be counted per machine.
   On a case-insensitive filesystem two session ids that differ only in case share a transcript file.
 - The report's coverage section shows a cloud line: sessions seen, rows, the latest event and the last pull. Sessions that
-  never sent anything are invisible to it (the per-session check is TOKEN-212).
+  never sent anything are invisible to it.
+
+## Per-session coverage check (TOKEN-212)
+
+A container can die before the final flush, and a quiet tail looks like a lost one, so completeness cannot be proven from
+the rows alone. What can be seen: the hook ships a genuine user prompt and assistant rows with their `stop_reason`, never the
+tool results between them. A session whose last main-transcript row is a prompt, or an assistant row that stopped for
+`tool_use`, ends on a prompt or tool call with nothing after it. That means one of: the person interrupted it, it is still
+running, or its final rows were lost; the rows cannot tell which. `tokenatlas doctor --json` lists those session ids under
+`cloud.incomplete_sessions` (the 20 most recently active); the report shows only the count, never ids.
+Sessions quiet for under 2 hours are not counted (rows ship only at a Stop, so a long turn is silent), nothing is counted until a
+pull has caught up with the server, a lost tail after an intermediate row is invisible, a session that ends cleanly is only
+"no gap seen", and a session that never sent anything cannot be seen at all.
