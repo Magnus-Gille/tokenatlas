@@ -199,7 +199,7 @@ async function run() {
   for (const selector of ['.filters', '#analytics', '#sessions', '#coverage'])
     assert.equal(await full.page.locator(selector).isVisible(), false, `${selector} hidden in subscription view`);
   for (const target of ['sessions', 'coverage']) {
-    await full.page.locator(`a[href="#${target}"]`).click();
+    await full.page.locator(`a[href="#${target}"]`).first().click();
     await full.page.waitForTimeout(50);
     const top = await full.page.locator(`#${target}`).evaluate(node => node.getBoundingClientRect().top);
     assert.ok(top >= 0 && top < 1000, `${target} is reached from focused subscriptions (top=${top})`);
