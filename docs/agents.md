@@ -57,10 +57,10 @@ seven-day window ending now, not a calendar week.
 
 ## Number labels
 
-Labelled commands (`top` so far) add a top-level `labels` object: `fields` maps each numeric path to its default label
+Labelled commands (`top`, `session`, `report`, `cache`, `insights`, `overhead`) add a top-level `labels` object: `fields` maps each numeric path to its default label
 (`logged`, `derived`, `estimate`, `lower_bound`, `unknown`); `[]` is a list element and `*` any key. A row adds
 `labels: {"cost": "unknown"}` only where it differs from the default (a null value is `unknown`, an incomplete cost is
-`lower_bound`). Labels never change a value. Definitions are in the README, "Number labels".
+`lower_bound`); results with recursive or repeated structure add `labels.patterns` (an ordered list of `[regex, label]` pairs, `re.search` on the normalised path, first match wins; a node-level `labels` override beats a pattern) and `labels.overrides` holds overrides for the result's own top-level fields. Labels never change a value. Definitions are in the README, "Number labels".
 
 ## Output and errors
 
