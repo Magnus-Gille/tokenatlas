@@ -6,7 +6,7 @@ const zlib = require('node:zlib');
 const playwright = require(process.env.PLAYWRIGHT_MODULE || '/usr/local/lib/node_modules/@playwright/test');
 const norm = x => x.replace(/[\s  ]+/g, ' ').trim();
 const T = {
-  en: {locale: 'en-US', line: /^Coverage: \d+ of \d+ requests have a price · \d+ of \d+ have complete token counters\./, none: 'No observed requests in this selection. That means unknown, not zero usage.', energy: /^Coverage: \d+ of \d+ requests have a model weighting · \d+ of \d+ have complete token counters\./, groups: 'Incomplete or unpriced:', link: 'Data coverage and limitations'},
+  en: {locale: 'en-US', line: /^Coverage: \d+ of \d+ requests? ha(?:s|ve) a price · \d+ of \d+ ha(?:s|ve) complete token counters\./, none: 'No observed requests in this selection. That means unknown, not zero usage.', energy: /^Coverage: \d+ of \d+ requests? ha(?:s|ve) a model weighting · \d+ of \d+ ha(?:s|ve) complete token counters\./, groups: 'Incomplete or unpriced:', link: 'Data coverage and limitations'},
   sv: {locale: 'sv-SE', line: /^Täckning: \d+ av \d+ anrop har pris · \d+ av \d+ har kompletta tokenräknare\./, none: 'Inga observerade anrop i urvalet. Det betyder okänt, inte noll användning.', energy: /^Täckning: \d+ av \d+ anrop har modellviktning · \d+ av \d+ har kompletta tokenräknare\./, groups: 'Ofullständigt eller utan pris:', link: 'Datatäckning och begränsningar'},
 };
 function edited(html, change) {
