@@ -110,6 +110,75 @@ class TopLabels(unittest.TestCase):
         self.assertEqual(data, before, 'annotate must not mutate its input')
 
 
+class SessionAndReportLabels(TopLabels):
+    def labelled(self, *args):
+        code, out = self.run_cli(*args)
+        self.assertEqual(code, 0, out)
+        return json.loads(out)
+
+    def test_every_numeric_field_of_session_and_report_has_a_label(self):
+        for command, args in (('session', ('session', 'claude:partial', '--json')),
+                              ('session', ('session', 'claude:mixed', '--json')),
+                              ('report', ('report', '--json', '--timezone', 'UTC'))):
+            data = self.labelled(*args)
+            self.assertIn('labels', data)
+            missing = {p for p in labels.leaf_paths(data) if labels.lookup(command, p) is None}
+            self.assertEqual(missing, set(), command)
+
+    def test_session_cost_is_unknown_when_unpriced_and_tokens_are_logged(self):
+        data = self.labelled('session', 'claude:unpriced', '--json')
+        self.assertIsNone(data['root']['cost'])
+        self.assertEqual(data['root']['labels']['cost'], 'unknown')
+        self.assertEqual(data['root']['labels']['link'], 'logged')
+        self.assertEqual(labels.lookup('session', 'root.tokens.output'), 'logged')
+
+    def test_an_inferred_child_link_is_an_estimate(self):
+        node = {'link': 'inferred', 'cost': {'USD': 1.0}, 'cost_coverage': 1.0, 'lower_bound': False, 'tokens': {'output': 1}, 'total': 1}
+        out = labels.annotate('session', {'root': {'link': 'root', 'cost': {'USD': 1.0}, 'cost_coverage': 1.0, 'total': 2, 'tokens': {'output': 2}, 'children': [node]}})
+        self.assertEqual(out['root']['children'][0]['labels'], {'link': 'estimate'})
+        self.assertEqual(out['root']['labels'], {'link': 'logged'})
+
+    def test_report_bucket_with_a_lower_bound_output_is_a_lower_bound(self):
+        data = self.labelled('report', '--json', '--timezone', 'UTC')
+        partial = [b for b in data['buckets'] if b['complete'] is False]
+        self.assertTrue(partial, 'the unfinished request makes its day incomplete')
+        self.assertIsNone(partial[0]['tokens'])  # a missing counter makes the total unknown, not a floor
+        self.assertEqual(partial[0]['labels']['tokens'], 'unknown')
+        self.assertEqual(partial[0]['labels']['known_tokens'], 'lower_bound')
+        complete = [b for b in data['buckets'] if b['complete']]
+        self.assertTrue(all('tokens' not in b.get('labels', {}) for b in complete))
+
+    def test_cache_insights_and_overhead_are_fully_labelled(self):
+        self.run_cli('overhead', '--refresh', '--json')
+        for command, args in (('cache', ('cache', '--json')), ('insights', ('insights', '--json')), ('overhead', ('overhead', '--json'))):
+            code, out = self.run_cli(*args)
+            if code != 0:
+                continue  # nothing stored for this command in the fixture
+            data = json.loads(out)
+            missing = {p for p in labels.leaf_paths(data) if labels.lookup(command, p) is None}
+            self.assertEqual(missing, set(), command)
+            self.assertIn('labels', data, command)
+
+    def test_cache_costs_are_a_floor_when_requests_are_unpriced(self):
+        code, out = self.run_cli('cache', '--json')
+        data = json.loads(out)
+        self.assertGreater(data['applicable']['unpriced_requests'], 0)
+        self.assertEqual(data['labels']['overrides']['total_cost_usd'], 'lower_bound')
+
+    def test_insights_facts_follow_their_provenance_and_energy_is_an_estimate(self):
+        fact = {'provenance': 'measured', 'values': {'requests': 1, 'lower_bound': False}}
+        out = labels.annotate('insights', {'requests': 1, 'facts': [fact, {'provenance': 'estimate', 'values': {'mid_mwh': 3.0}},
+                                                                     {'provenance': 'computed', 'values': {'priced_cost': 1.0, 'lower_bound': True}}]})
+        self.assertEqual([f.get('labels') for f in out['facts']], [{'values': 'logged'}, {'values': 'estimate'}, {'values': 'lower_bound'}])
+        self.assertEqual(labels.lookup('insights', 'facts[].values.mid_mwh'), 'estimate')
+
+    def test_report_numbers_are_unchanged_by_labels(self):
+        _, labelled = self.run_cli('report', '--json', '--timezone', 'UTC')
+        with mock.patch.object(labels, 'annotate', lambda command, data: data):
+            _, plain = self.run_cli('report', '--json', '--timezone', 'UTC')
+        self.assertEqual(labels.strip(json.loads(labelled)), json.loads(plain))
+
+
 class Contract(unittest.TestCase):
     def test_nested_shapes_of_optional_blocks_are_covered(self):
         sample = {'total_prompts': 1, 'unattributed_observations': 0, 'text_store': {'added': 1, 'evicted': 0, 'kept': 1},
@@ -120,9 +189,9 @@ class Contract(unittest.TestCase):
         self.assertEqual({p for p in labels.leaf_paths(sample) if labels.lookup('top', p) is None}, set())
 
     def test_quota_share_label_follows_its_own_state(self):
-        rows = [{'cost': 1.0, 'credits': 1.0, 'quota_share': {'label': 'observed'}},
-                {'cost': 1.0, 'credits': 1.0, 'quota_share': {'label': 'calibrated', 'lower_bound': True}},
-                {'cost': 1.0, 'credits': 1.0, 'quota_share': {'label': 'estimate'}}]
+        rows = [{'cost': 1.0, 'cost_complete': True, 'credits': 1.0, 'quota_share': {'label': 'observed'}},
+                {'cost': 1.0, 'cost_complete': True, 'credits': 1.0, 'quota_share': {'label': 'calibrated', 'lower_bound': True}},
+                {'cost': 1.0, 'cost_complete': True, 'credits': 1.0, 'quota_share': {'label': 'estimate'}}]
         out = labels.annotate('top', {'total_prompts': 3, 'prompts': rows})['prompts']
         self.assertEqual([r.get('labels', {}).get('quota_share') for r in out], ['derived', 'lower_bound', None])
 
