@@ -55,6 +55,13 @@ Dates are ISO 8601, e.g. `2026-10-03`, `2026-10-03T14:00`, or
 resolve “yesterday”/“this week” yourself. `insights --days 7` means a trailing
 seven-day window ending now, not a calendar week.
 
+## Number labels
+
+Labelled commands (`top` so far) add a top-level `labels` object: `fields` maps each numeric path to its default label
+(`logged`, `derived`, `estimate`, `lower_bound`, `unknown`); `[]` is a list element and `*` any key. A row adds
+`labels: {"cost": "unknown"}` only where it differs from the default (a null value is `unknown`, an incomplete cost is
+`lower_bound`). Labels never change a value. Definitions are in the README, "Number labels".
+
 ## Output and errors
 
 Every JSON result/error has `schema: "tokenatlas.<command>/1"` (nested commands
