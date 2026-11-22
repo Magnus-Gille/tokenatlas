@@ -915,7 +915,9 @@ export and has different privacy semantics.
 The report works without a server, network, CDN or runtime model calls. Filters cover dates, harness,
 provider, model, effort, project, session, agent and thread type. Click a timeline bar to zoom from day
 to hour/minute, or a ranking to filter. Expand sessions and turns for individual observations. CSV/JSON
-exports preserve the current selection, and SVG/print exports support presentations. Top rankings
+exports preserve the current selection, and SVG/print exports support presentations. The calendar-month
+section compares a chosen month with the previous one in the report's time zone (the current month is marked
+partial, an empty month is unknown) and has its own monthly aggregate CSV. Top rankings
 retain an Other subtotal. Empty intervals are not claimed to be measured zeros. Large timelines group
 consecutive observed buckets with an explicit note; the horizontal spacing is categorical. Cache-read
 share comparisons show the highest and lowest comparable session, harness, model, and project with

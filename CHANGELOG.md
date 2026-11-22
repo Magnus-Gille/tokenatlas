@@ -10,6 +10,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ### Added
 
+- Report: calendar months (TOKEN-178). A new section compares a chosen month (`YYYY-MM`, in the report's time zone) with the previous calendar month: requests, turns, tokens by class, list-price cost, energy estimate and the covered span. The current month is marked partial, an empty month is unknown (not zero), and unpriced or incomplete data shows as a floor (`≥`). Other filters stay active. "Monthly CSV" exports one row per compared month with period, time zone, filters and coverage fields; the raw CSV export is unchanged.
+
 - Number labels, remaining JSON commands and report legend (TOKEN-28): `session`, `report`, `cache`, `insights` and `overhead` with `--json` carry a `labels` block, and the report's data-coverage section explains the five labels. Per-number markers inside the report are not included.
 
 - Number labels in JSON output (TOKEN-28, first slice): `top --json` carries a `labels` map with the default label of every numeric field (`logged`, `derived`, `estimate`, `lower_bound`, `unknown`) and a sparse per-row override for an unknown or incomplete cost or credits, token counts that are a floor, and a quota share that is observed or only a lower bound. Only keys are added; no number changes. See the README, "Number labels". `session --json` and `report --json` are labelled the same way (inferred links are estimates, incomplete aggregates are lower bounds); `cache`, `insights` and `overhead` are labelled too (facts follow their `provenance`, cache costs with unpriced requests are lower bounds, overhead figures are estimates); the HTML report follows.
