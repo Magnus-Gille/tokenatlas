@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-11-22
+
 ### Fixed
 
 - OpenCode: a database with `session_message` but no `session_v2` (or `message` without `session`) is read instead of reported as a schema error (TOKEN-205, TOKEN-199). Session metadata comes from whichever session table exists; with none, the messages import with parent, directory and version unknown and count in `orphan_rows`. Existing OpenCode files are re-read once; a missing required column is still a schema error. Unverified against the real m5/Pi databases (not reachable from the cloud session): if they still report a schema error, `doctor` now names the missing columns.
