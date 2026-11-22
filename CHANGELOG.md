@@ -10,6 +10,8 @@ All notable changes to this project are documented in this file. The project fol
 
 ### Added
 
+- Report: event timeline (TOKEN-179). A bounded, newest-first list of quota stops (the existing limit hits) and of requests without a price or with incomplete counters, grouped per day, harness and model rather than one event per request. Active date and harness filters apply. A blank day is never an event; import diagnostics have no trustworthy timestamp and are listed separately as undated. Limit hits link to the limit-hit section, or say "unlinked" when their turn is not in the report. Not included: timestamped import errors (the import status carries no timestamps) and per-event deep links to turns.
+
 - Report: calendar months (TOKEN-178). A new section compares a chosen month (`YYYY-MM`, in the report's time zone) with the previous calendar month: requests, turns, tokens by class, list-price cost, energy estimate and the covered span. The current month is marked partial, an empty month is unknown (not zero), and unpriced or incomplete data shows as a floor (`≥`). Other filters stay active. "Monthly CSV" exports one row per compared month with period, time zone, filters and coverage fields; the raw CSV export is unchanged.
 
 - Number labels, remaining JSON commands and report legend (TOKEN-28): `session`, `report`, `cache`, `insights` and `overhead` with `--json` carry a `labels` block, and the report's data-coverage section explains the five labels. Per-number markers inside the report are not included.
