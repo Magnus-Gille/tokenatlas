@@ -30,7 +30,8 @@ def payload(command, data):
 
 
 def emit(command, data):
-    print(json.dumps(payload(command, data), indent=2, sort_keys=True))
+    from tokenatlas import labels
+    print(json.dumps(payload(command, labels.annotate(command, data)), indent=2, sort_keys=True))
 
 
 def error(command, exc, json_mode):

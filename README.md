@@ -547,6 +547,24 @@ changes; and usage tokenatlas does not see (claude.ai chat, other machines, clou
 - `TOKENATLAS_PROGRESS=0`: no progress anywhere.
 - A stderr that cannot encode the spinner and check characters gets ASCII (`|/-\`, `ok`).
 
+## Number labels
+
+JSON output says where each number comes from (TOKEN-28). A labelled result carries a top-level `labels` map (`schema`
+`tokenatlas.labels/1`) with the default label of every numeric path, and a row carries a sparse `labels` override only where
+its own value differs. A value that is `null` is `unknown`, never zero. Labelling only adds keys; no number changes.
+Today `top --json` is labelled (including its optional text-store, context and quota-share blocks); `session`, `report`, `overhead`, `cache` and `insights` follow. A turn with an unfinished or incomplete request marks its token counts, and an unpriced part its cost, as `lower_bound`; a quota share is one `estimate` unless the share is observed (`derived`) or only a floor (`lower_bound`).
+
+| Label | Meaning |
+| --- | --- |
+| `logged` | Recorded by the harness: token counts and counts of what was seen. |
+| `derived` | Computed deterministically from logged values and a verified table, such as a list-price cost. |
+| `estimate` | Model-based or inferred: quota shares, energy estimates, character-based token estimates, inferred session links. |
+| `lower_bound` | A real value known to be incomplete: the true figure is at least this much (a cost with unpriced requests, an output that was not final). |
+| `unknown` | No value could be determined; the field is `null`. |
+
+Older fields keep their meaning: `provenance: measured | computed | estimate` on facts and `confidence` on observations map as
+measured, observed, exact to `logged`; computed to `derived`; estimate to `estimate`; absent and null to `unknown`.
+
 ## Fixed context overhead
 
 `tokenatlas overhead --refresh` reports the floor tokens of a session's first request, the sizes of
