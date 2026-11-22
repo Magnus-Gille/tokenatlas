@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -256,6 +257,55 @@ class CloudSyncTest(unittest.TestCase):
         with mock.patch.object(cloud_sync, "_get", lambda url, token: (200, {}, body)):
             with self.assertRaisesRegex(cloud_sync.CloudSyncError, "cursor"):
                 cloud_sync.pull(self.db)
+
+
+class SessionGapTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = self.tmp / "history.sqlite3"
+        self.c = cloud_sync._open(cloud_sync.directory(self.db))
+        self.addCleanup(self.c.close)
+        self.n = 0
+        cloud_sync._set(self.c, "caught_up", 1)
+
+    def add(self, session, kind, stop=None, received="2026-11-21T10:00:00Z", rel=""):
+        self.n += 1
+        row = {"type": kind, "uuid": f"u{self.n}", "message": {"stop_reason": stop} if stop else {}}
+        with self.c:
+            self.c.execute("INSERT INTO events (dedupe_key, generation, seq, session_id, rel_path, received_at, row) VALUES (?,?,?,?,?,?,?)",
+                           (f"{self.n:064x}", 1, self.n, session, rel, received, json.dumps(row)))
+
+    NOW = datetime(2026, 11, 22, 10, 0, tzinfo=timezone.utc).timestamp()  # a day after the rows below, far past the quiet window
+
+    def test_a_session_that_ends_mid_turn_is_listed_and_a_finished_one_is_not(self):
+        self.add("done", "user"); self.add("done", "assistant", "end_turn")
+        self.add("cut-prompt", "assistant", "end_turn"); self.add("cut-prompt", "user")
+        self.add("cut-tool", "user"); self.add("cut-tool", "assistant", "tool_use")
+        self.assertEqual(sorted(cloud_sync.session_gaps(self.c, self.NOW)), ["cut-prompt", "cut-tool"])
+        self.assertEqual(cloud_sync.freshness(self.c, self.NOW)["incomplete"], 2)
+
+    def test_a_session_quiet_for_less_than_two_hours_may_still_be_running(self):
+        self.add("live", "user", received="2026-11-22T08:30:00Z")
+        self.assertEqual(cloud_sync.session_gaps(self.c, self.NOW), [])  # 10 minutes after the last row
+
+    def test_only_the_main_transcript_decides_and_the_last_row_is_by_delivery_order(self):
+        self.add("s", "user"); self.add("s", "assistant", "end_turn")
+        self.add("s", "assistant", "tool_use", rel="subagents/agent-a.jsonl")  # a subagent ending mid-tool does not count
+        self.assertEqual(cloud_sync.session_gaps(self.c, self.NOW), [])
+
+    def test_nothing_is_counted_until_the_pull_has_caught_up_and_recent_ones_come_first(self):
+        self.add("old", "user", received="2026-11-20T10:00:00Z"); self.add("new", "user", received="2026-11-21T10:00:00Z")
+        self.assertEqual(cloud_sync.session_gaps(self.c, self.NOW), ["new", "old"])
+        cloud_sync._set(self.c, "caught_up", 0)
+        self.assertEqual(cloud_sync.session_gaps(self.c, self.NOW), [])
+
+    def test_the_report_gets_the_count_but_never_the_ids(self):
+        from tokenatlas.report import build_report
+        self.add("secret-session", "user")
+        cloud = cloud_sync.freshness(self.c, self.NOW)
+        coverage = build_report([], {"cloud": cloud})["coverage"]["cloud"]
+        self.assertEqual(coverage["incomplete"], 1)
+        self.assertNotIn("secret-session", json.dumps(coverage))
 
 
 if __name__ == "__main__":

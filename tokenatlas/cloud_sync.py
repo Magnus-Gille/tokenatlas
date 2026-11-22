@@ -310,9 +310,13 @@ def pull(db, now=None):
                 _set(c, "last_pull_at", int(now))
             result["pages"] += 1
             if not lines:
+                with c:
+                    _set(c, "caught_up", 1)
                 break
             cursor = next_cursor or cursor
         else:
+            with c:
+                _set(c, "caught_up", 0)
             result["warning"] = "stopped after the page limit; run sync-cloud again to continue"
         result["sessions_touched"] = len(touched)
         result.update(freshness(c, now))
@@ -327,13 +331,42 @@ def pull(db, now=None):
         c.close()
 
 
+QUIET_SECONDS = 2 * 3600  # rows only ship at a Stop, so a long turn is silent: a session quiet for less than this may simply be running
+
+
+def session_gaps(c, now=None):
+    """Sessions that end on a prompt or a `tool_use` row with nothing after it (TOKEN-212), most recently active first.
+
+    The hook ships an assistant row with stop_reason `tool_use` and a genuine user prompt, never the tool results between them, so a
+    session that finished normally ends on an assistant row with another stop reason. One that ends otherwise was interrupted by the
+    person, is still running, or lost its tail (the container died before the final flush): the rows cannot tell which. Sessions quiet
+    for under QUIET_SECONDS are not counted, and nothing is counted while the pull has not caught up (the tail may still be on the
+    server). A tail lost after an intermediate row is invisible here: this is a visible hint, not proof of completeness.
+    """
+    now = now if now is not None else time.time()
+    if _state(c, "caught_up") != "1":
+        return []
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - QUIET_SECONDS))
+    out = []
+    for session, received, last_type, stop in c.execute(
+            "SELECT e.session_id, (SELECT MAX(received_at) FROM events x WHERE x.session_id = e.session_id), "
+            "json_extract(e.row, '$.type'), json_extract(e.row, '$.message.stop_reason') FROM events e "
+            "WHERE e.rel_path = '' AND e.rowid = (SELECT rowid FROM events y WHERE y.session_id = e.session_id AND y.rel_path = '' "
+            "ORDER BY y.generation DESC, y.seq DESC LIMIT 1) ORDER BY e.session_id"):
+        if (last_type == "user" or (last_type == "assistant" and stop == "tool_use")) and received and received < cutoff:
+            out.append((received, session))
+    return [s for _, s in sorted(out, reverse=True)]
+
+
 def freshness(c, now=None):
     """Numbers for the report's cloud line: sessions, rows, the newest event and the last pull."""
     now = now if now is not None else time.time()
     sessions = c.execute("SELECT COUNT(DISTINCT session_id) FROM events").fetchone()[0]
     events = c.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    gaps = session_gaps(c, now)
     return dict(sessions=sessions, events=events, last_event_at=_state(c, "last_event_at") or None,
-                last_pull_at=int(float(_state(c, "last_pull_at", 0) or 0)) or None)
+                last_pull_at=int(float(_state(c, "last_pull_at", 0) or 0)) or None,
+                incomplete=len(gaps), incomplete_sessions=gaps[:20])
 
 
 def status(db):
